@@ -1,0 +1,34 @@
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+
+# Wails
+/build/bin/
+/frontend/dist/
+/frontend/wailsjs/
+
+# Node
+node_modules/
+*.log
+
+# Release artefacts
+*.dmg
+*.app
+*.exe
+*.msi
+*.AppImage
+*.deb
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Local scratch
+*.local
+.env
