@@ -46,3 +46,4 @@ build/android/gen/
 
 # Generated bindings
 frontend/bindings/
+.gitnexus
