@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,7 +68,7 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 	if err != nil {
 		return FolderDTO{}, fmt.Errorf("scan %s: %w", resolved, err)
 	}
-	hashes := hashGroups(groups, network, func(done int) {
+	hashes := hashGroups(groups, s.app.hashWorkers(network), func(done int) {
 		emitEvent(EventScanProgress, ScanProgress{Dir: resolved, Done: done, Total: len(groups)})
 	})
 
@@ -139,14 +138,12 @@ func primaryRef(g scan.PhotoGroup) *scan.FileRef {
 
 // hashGroups returns the identity hash of every group's primary file, aligned
 // with groups, using the empty string where the file could not be read. The
-// work is spread across the CPUs because opening a folder from a card reader
-// is dominated by the 64KB head read per frame — except on network volumes,
-// where piling on concurrent reads stalls the share; those get a low cap.
-// progress is called with the completed count, throttled to every few frames.
-func hashGroups(groups []scan.PhotoGroup, network bool, progress func(done int)) []string {
-	workers := runtime.NumCPU()
-	if network {
-		workers = 4
+// caller picks the worker count: CPUs for local sources, a low configured cap
+// for network volumes where parallel head reads stall the share. progress is
+// called with the completed count, throttled to every few frames.
+func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) []string {
+	if workers < 1 {
+		workers = 1
 	}
 	hashes := make([]string, len(groups))
 	sem := make(chan struct{}, workers)

@@ -100,7 +100,7 @@ func TestHashGroupsSkipsUnreadableFiles(t *testing.T) {
 		{Stem: "DSCF0002", Jpeg: &scan.FileRef{Path: filepath.Join(dir, "gone.JPG")}},
 		{Stem: "DSCF0003"},
 	}
-	hashes := hashGroups(groups, false, nil)
+	hashes := hashGroups(groups, 4, nil)
 	if len(hashes) != 3 {
 		t.Fatalf("%d hashes for 3 groups", len(hashes))
 	}

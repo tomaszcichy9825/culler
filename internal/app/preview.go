@@ -38,12 +38,8 @@ const (
 const previewCacheControl = "public, max-age=31536000, immutable"
 
 // Concurrent preview reads are capped so a folder of tiles cannot saturate
-// the source. Network shares stall badly under parallel reads of large RAW
-// files, so they get a much lower cap than local disks.
-const (
-	localReadSlots   = 16
-	networkReadSlots = 4
-)
+// the source — network shares stall badly under parallel reads of large RAW
+// files. The caps come from Behaviour.LocalReadSlots/NetworkReadSlots.
 
 // PreviewService serves preview bytes over the asset server rather than
 // through a binding: the webview can then use an ordinary <img src>, and the
@@ -57,12 +53,14 @@ type PreviewService struct {
 	netDir map[string]bool // directory -> lives on a network volume
 }
 
-// NewPreviewService binds the service to the shared state.
+// NewPreviewService binds the service to the shared state. The semaphores are
+// sized from the config at startup; changing the limits needs a relaunch.
 func NewPreviewService(a *App) *PreviewService {
+	b := a.Config().Behaviour
 	return &PreviewService{
 		app:      a,
-		localSem: make(chan struct{}, localReadSlots),
-		netSem:   make(chan struct{}, networkReadSlots),
+		localSem: make(chan struct{}, max(1, b.LocalReadSlots)),
+		netSem:   make(chan struct{}, max(1, b.NetworkReadSlots)),
 		netDir:   make(map[string]bool),
 	}
 }

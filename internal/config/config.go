@@ -41,6 +41,13 @@ type Behaviour struct {
 	BulkConfirmThreshold int             `json:"bulkConfirmThreshold"`
 	TrashMode            TrashMode       `json:"trashMode"`
 	RejectedFolderName   string          `json:"rejectedFolderName"`
+
+	// Concurrency limits for slow sources. Local disks tolerate parallel
+	// reads; network shares stall under them, so those caps stay low.
+	LocalReadSlots      int `json:"localReadSlots"`      // concurrent preview reads, local volumes
+	NetworkReadSlots    int `json:"networkReadSlots"`    // concurrent preview reads, network volumes
+	NetworkHashWorkers  int `json:"networkHashWorkers"`  // identity-hash workers on network volumes
+	SlowScanHintSeconds int `json:"slowScanHintSeconds"` // when the "still scanning" line appears
 }
 
 // Config is the whole settings file.
@@ -62,6 +69,10 @@ func Default() Config {
 			BulkConfirmThreshold: 20,
 			TrashMode:            TrashSystem,
 			RejectedFolderName:   "_Rejected",
+			LocalReadSlots:       16,
+			NetworkReadSlots:     4,
+			NetworkHashWorkers:   4,
+			SlowScanHintSeconds:  10,
 		},
 		Keymap:      DefaultKeymap(),
 		RawExts:     sc.RawExts,
@@ -195,6 +206,17 @@ func (c Config) Validate() error {
 
 	if c.Behaviour.BulkConfirmThreshold < 0 {
 		return fmt.Errorf("bulk confirm threshold must not be negative, got %d", c.Behaviour.BulkConfirmThreshold)
+	}
+
+	for name, v := range map[string]int{
+		"localReadSlots":      c.Behaviour.LocalReadSlots,
+		"networkReadSlots":    c.Behaviour.NetworkReadSlots,
+		"networkHashWorkers":  c.Behaviour.NetworkHashWorkers,
+		"slowScanHintSeconds": c.Behaviour.SlowScanHintSeconds,
+	} {
+		if v < 1 {
+			return fmt.Errorf("%s must be at least 1, got %d", name, v)
+		}
 	}
 
 	return c.validateKeymap()

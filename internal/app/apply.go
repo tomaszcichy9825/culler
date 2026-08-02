@@ -180,7 +180,7 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan %s: %w", resolved, err)
 	}
-	computed := hashGroups(groups, platform.IsNetwork(resolved), nil)
+	computed := hashGroups(groups, s.app.hashWorkers(platform.IsNetwork(resolved)), nil)
 
 	wanted := make(map[string]bool, len(hashes))
 	for _, h := range hashes {
