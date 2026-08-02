@@ -846,3 +846,55 @@ func FuzzExtractEXIFThumb(f *testing.F) {
 		}
 	})
 }
+
+// stripTIFF is a container whose IFD0 stores one preview split across strips
+// via the StripOffsets/StripByteCounts arrays. gap inserts padding between
+// the strips, making them non-contiguous.
+func stripTIFF(order binary.ByteOrder, payload []byte, cut int, gap int) []byte {
+	b := newTIFF(order)
+	first := b.blob(payload[:cut])
+	if gap > 0 {
+		b.blob(make([]byte, gap))
+	}
+	second := b.blob(payload[cut:])
+
+	offs := make([]byte, 8)
+	order.PutUint32(offs[0:], first)
+	order.PutUint32(offs[4:], second)
+	offsOff := b.blob(offs)
+
+	counts := make([]byte, 8)
+	order.PutUint32(counts[0:], uint32(cut))
+	order.PutUint32(counts[4:], uint32(len(payload)-cut))
+	countsOff := b.blob(counts)
+
+	ifd0 := b.ifd(
+		ifdEntry{tag: tagStripOffsets, typ: 4, count: 2, value: offsOff},
+		ifdEntry{tag: tagStripByteCounts, typ: 4, count: 2, value: countsOff},
+	)
+	b.setIFD0(ifd0)
+	return b.bytes()
+}
+
+func TestExtractsPreviewSplitAcrossContiguousStrips(t *testing.T) {
+	payload := jpegBlob(0xAB, 4096)
+	for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {
+		got, err := ExtractLargestJPEG(stripTIFF(order, payload, 1000, 0))
+		if err != nil {
+			t.Fatalf("%v: %v", order, err)
+		}
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("%v: got %d bytes, want the whole %d-byte preview — a first-strip slice is the top band of the image", order, len(got), len(payload))
+		}
+	}
+}
+
+func TestNonContiguousStripsNeverServeATruncatedPreview(t *testing.T) {
+	payload := jpegBlob(0xCD, 4096)
+	got, err := ExtractLargestJPEG(stripTIFF(binary.LittleEndian, payload, 1000, 64))
+	// Either the strips are stitched back together or the candidate is
+	// rejected outright; a partial image must never come back.
+	if err == nil && !bytes.Equal(got, payload) {
+		t.Fatalf("served %d of %d bytes: a truncated preview renders as the top band of the image", len(got), len(payload))
+	}
+}

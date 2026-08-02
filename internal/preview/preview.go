@@ -294,7 +294,36 @@ func (r *tiffReader) candidates(entries []entry, includeStrips bool) []candidate
 			jpegLengths = r.values(e)
 		}
 	}
-	return append(pairUp(stripOffsets, stripLengths), pairUp(jpegOffsets, jpegLengths)...)
+	return append(mergeStrips(stripOffsets, stripLengths), pairUp(jpegOffsets, jpegLengths)...)
+}
+
+// mergeStrips folds a strip set into whole-image candidates. A preview split
+// across strips is one JPEG: treating each strip as its own candidate would
+// pass SOI validation on the first strip alone and serve the top band of the
+// image. Contiguous runs merge into a single candidate; a strip that does not
+// continue the run starts a new one, so a non-contiguous tail is dropped
+// rather than ever served truncated.
+func mergeStrips(offsets, lengths []uint32) []candidate {
+	n := min(len(offsets), len(lengths))
+	var out []candidate
+	for i := 0; i < n; {
+		start := uint64(offsets[i])
+		total := uint64(lengths[i])
+		i++
+		for i < n && uint64(offsets[i]) == start+total {
+			total += uint64(lengths[i])
+			i++
+		}
+		if i < n {
+			// broken run: the remaining strips do not follow on, so this
+			// candidate would be a partial image
+			continue
+		}
+		if start+total <= uint64(^uint32(0)) {
+			out = append(out, candidate{offset: uint32(start), length: uint32(total)})
+		}
+	}
+	return out
 }
 
 // jpegAt returns the candidate's bytes if they lie inside the buffer and
