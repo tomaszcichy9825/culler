@@ -5,6 +5,9 @@
 # rather than the exported one — so wails3 is always invoked by full path.
 GOBIN := $(shell go env GOPATH)/bin
 WAILS3 := $(shell command -v wails3 2>/dev/null || echo $(GOBIN)/wails3)
+# ...while wails3's own task runner re-invokes `wails3` by name, so the
+# children still need GOBIN on PATH.
+export PATH := $(PATH):$(GOBIN)
 
 .PHONY: all build dev run test test-race fuzz vet fmt check clean package release tools help
 
