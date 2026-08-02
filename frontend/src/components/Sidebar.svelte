@@ -28,17 +28,22 @@
       </button>
     </div>
 
+    <!-- The typed path lives with the Add button it complements — both are
+         ways in, so burying the input at the bottom read as unrelated. -->
+    <div class="path-entry">
+      <FolderPicker bind:value={path} />
+    </div>
+
     <Tree />
 
-    <div class="foot">
-      {#if app.folder}
+    {#if app.folder}
+      <div class="foot">
         <div class="current" title={app.folder.dir}>
           <span class="leaf">{basename(app.folder.dir)}</span>
           <span class="count">{app.groups.length} frames</span>
         </div>
-      {/if}
-      <FolderPicker bind:value={path} />
-    </div>
+      </div>
+    {/if}
   </aside>
 {:else}
   <aside class="rail">
@@ -128,6 +133,13 @@
     color: var(--text);
   }
 
+  .path-entry {
+    flex: 0 0 auto;
+    padding: 0 10px 8px;
+    border-bottom: 1px solid var(--border);
+    min-width: 0;
+  }
+
   .foot {
     flex: 0 0 auto;
     padding: 8px 10px;
@@ -140,7 +152,6 @@
     align-items: baseline;
     gap: 6px;
     min-width: 0;
-    margin-bottom: 6px;
   }
 
   .leaf {

@@ -14,7 +14,9 @@
  * How many images may be fetching at once. Low enough to leave the connection
  * pool room for the ones that matter, high enough to keep the grid filling.
  */
-const MAX_IN_FLIGHT = 6;
+// Browsers cap ~6 connections per origin and service calls share that pool
+// with previews — saturating it starves every button in the app.
+const MAX_IN_FLIGHT = 3;
 
 /**
  * How far outside the viewport a tile still counts as wanted, matching the

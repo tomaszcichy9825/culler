@@ -43,9 +43,9 @@
     spellcheck="false"
     autocapitalize="off"
     autocorrect="off"
-    placeholder="~/Pictures/card"
+    placeholder="Open folder by path…  (~ works)"
     title={value}
-    aria-label="Folder to cull"
+    aria-label="Open folder by typed path"
   />
   <!-- Never disabled: a disabled default button also blocks the form's
        implicit submission, so Enter would stop working during a slow scan —

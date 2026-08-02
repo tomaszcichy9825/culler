@@ -22,6 +22,12 @@ export interface Toast {
 const TOAST_MS = 2200;
 
 /**
+ * Used until the configuration has been read, and if it cannot be. Matches the
+ * backend's own default so the two never disagree in practice.
+ */
+export const DEFAULT_SLOW_SCAN_SECONDS = 10;
+
+/**
  * groupKey identifies a frame for selection and for Svelte's keyed each.
  * The content hash is the real identity, but a frame whose primary file could
  * not be read has none, and it still has to be selectable.
@@ -94,6 +100,8 @@ class CullerState {
   treeIndex = $state(0);
 
   keymap = $state<Record<string, string[]>>({});
+  /** How long a scan runs before the "still scanning" line appears, in seconds. */
+  slowScanSeconds = $state(DEFAULT_SLOW_SCAN_SECONDS);
 
   #toastSeq = 0;
   #toastTimer: ReturnType<typeof setTimeout> | null = null;

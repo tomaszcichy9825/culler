@@ -6,7 +6,7 @@ import { Clipboard, Events } from "@wailsio/runtime";
 
 import { ApplyService, ConfigService, LibraryService } from "./bindings";
 import { flush, message } from "./decisions";
-import { app } from "./state.svelte";
+import { app, DEFAULT_SLOW_SCAN_SECONDS } from "./state.svelte";
 
 /** Where the last opened folder is remembered, so a relaunch lands back in it. */
 const LAST_FOLDER = "culler.lastFolder";
@@ -149,17 +149,27 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
   "copy-path": ["y"],
 };
 
-/** loadKeymap reads the configured bindings, falling back to none on failure. */
-export async function loadKeymap() {
+/**
+ * loadSettings reads the configuration the UI depends on — the key bindings
+ * and the slow-scan threshold — in a single call. Failure is survivable: the
+ * stock bindings and default threshold apply and the user is told.
+ */
+export async function loadSettings() {
   const keymap: Record<string, string[]> = {};
+  let slowScanSeconds = DEFAULT_SLOW_SCAN_SECONDS;
   try {
     const cfg = await ConfigService.Get();
     for (const [action, chords] of Object.entries(cfg.keymap ?? {})) {
       keymap[action] = chords ?? [];
     }
+    // The backend rejects anything below 1, so a smaller value here means a
+    // payload that never came from a valid config.
+    const configured = cfg.behaviour?.slowScanHintSeconds;
+    if (typeof configured === "number" && configured >= 1) slowScanSeconds = configured;
   } catch (err) {
     app.notify(`could not read settings: ${message(err)}`, "error");
   }
+  app.slowScanSeconds = slowScanSeconds;
 
   const taken = new Set(Object.values(keymap).flat());
   for (const [action, chords] of Object.entries(FRONTEND_BINDINGS)) {
@@ -169,9 +179,6 @@ export async function loadKeymap() {
   }
   app.keymap = keymap;
 }
-
-/** How long a scan runs before the UI says it is a slow one. */
-const SLOW_SCAN_MS = 10_000;
 
 /**
  * Scans are serialised by this counter rather than by cancelling: a folder
@@ -200,7 +207,7 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   app.scanProgressDir = null;
   const slow = setTimeout(() => {
     if (seq === scanSeq) app.scanSlow = true;
-  }, SLOW_SCAN_MS);
+  }, app.slowScanSeconds * 1000);
 
   try {
     // Decisions from the folder being left have to land before it is replaced.

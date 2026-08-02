@@ -17,7 +17,7 @@
     confirmApply,
     copyPath,
     lastFolder,
-    loadKeymap,
+    loadSettings,
     loadRoots,
     openFolder,
     pickRoot,
@@ -56,7 +56,7 @@
   void (async () => {
     loadRoots();
     watchScanProgress();
-    await loadKeymap();
+    await loadSettings();
     if (path !== "") await openFolder(path);
     if (app.folder) path = app.folder.dir;
   })();

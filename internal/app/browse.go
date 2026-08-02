@@ -36,10 +36,16 @@ func (s *LibraryService) PickFolder() (string, error) {
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
 		CanCreateDirectories(true)
+	if wins := application.Get().Window.GetAll(); len(wins) > 0 {
+		dialog.AttachToWindow(wins[0])
+	}
 	path, err := dialog.PromptForSingleSelection()
 	if err != nil {
-		// every platform reports cancel differently; treat it as no choice
-		return "", nil
+		if strings.Contains(strings.ToLower(err.Error()), "cancel") {
+			return "", nil
+		}
+		// a dialog that failed to open must surface, not read as a cancel
+		return "", fmt.Errorf("folder chooser: %w", err)
 	}
 	return path, nil
 }
