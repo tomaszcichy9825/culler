@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+          - name: windows-amd64
+            os: windows-latest
+          - name: linux-amd64
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Package
+        run: wails3 package
+
+      # Unsigned for now. When APPLE_CERT_P12 / APPLE_CERT_PASSWORD /
+      # APPLE_NOTARY_* secrets exist, add codesign + notarytool steps here
+      # before the DMG is created.
+      - name: Create DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist/dmg
+          cp -R bin/cull.app dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname cull -srcfolder dist/dmg -ov -format UDZO \
+            "dist/cull-${GITHUB_REF_NAME}-macos-arm64.dmg"
+
+      - name: Collect artefacts (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          # NSIS installer if the packager produced one, else the bare exe
+          found=0
+          for f in bin/*.exe; do
+            [ -e "$f" ] || continue
+            cp "$f" "dist/cull-${GITHUB_REF_NAME}-windows-amd64-$(basename "$f")"
+            found=1
+          done
+          [ "$found" = 1 ]
+
+      - name: Collect artefacts (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          for f in bin/*.AppImage bin/*.deb; do
+            cp "$f" dist/
+          done
+          ls dist | grep . # fail if nothing was packaged
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*
+          generate_release_notes: true
