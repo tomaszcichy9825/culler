@@ -46,18 +46,31 @@ func (t DirTrasher) Trash(path string) (string, error) {
 // UniquePath returns path if nothing exists there, otherwise the first
 // "name-2.ext", "name-3.ext", … that is free.
 func UniquePath(path string) (string, error) {
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
+	return uniqueName(path, pathFree)
+}
+
+// uniqueName returns the first of path, "name-2.ext", "name-3.ext", … that
+// free accepts. Trash backends that have to keep two directories in step pass
+// their own predicate so every backend numbers collisions the same way.
+func uniqueName(path string, free func(string) bool) (string, error) {
+	if free(path) {
 		return path, nil
 	}
 	ext := filepath.Ext(path)
 	base := strings.TrimSuffix(path, ext)
 	for i := 2; i < 10000; i++ {
 		candidate := fmt.Sprintf("%s-%d%s", base, i, ext)
-		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+		if free(candidate) {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("no free name for %s", path)
+}
+
+// pathFree reports whether nothing at all exists at path, symlinks included.
+func pathFree(path string) bool {
+	_, err := os.Lstat(path)
+	return os.IsNotExist(err)
 }
 
 // MoveFile renames src to dst, falling back to copy+remove when the rename
