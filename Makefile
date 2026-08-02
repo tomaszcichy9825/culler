@@ -1,8 +1,10 @@
 # Standard entry points. Wails' own task runner (Taskfile.yml) does the heavy
 # lifting; this is the familiar front door.
 
+# macOS ships make 3.81, which resolves plain commands against its own PATH
+# rather than the exported one — so wails3 is always invoked by full path.
 GOBIN := $(shell go env GOPATH)/bin
-export PATH := $(PATH):$(GOBIN)
+WAILS3 := $(shell command -v wails3 2>/dev/null || echo $(GOBIN)/wails3)
 
 .PHONY: all build dev run test test-race fuzz vet fmt check clean package release tools help
 
@@ -15,10 +17,10 @@ tools: ## install the wails3 CLI
 	go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
 
 build: ## build the app binary into bin/
-	wails3 build
+	"$(WAILS3)" build
 
 dev: ## run with hot reload
-	wails3 dev
+	"$(WAILS3)" dev
 
 run: build ## build then launch the app
 	./bin/culler
@@ -42,7 +44,7 @@ check: vet test-race ## what CI runs: vet + race tests + frontend check
 	cd frontend && npm run check
 
 package: ## production package for this platform (unsigned)
-	wails3 package
+	"$(WAILS3)" package
 
 release: package ## local unsigned release artefact for this platform
 
