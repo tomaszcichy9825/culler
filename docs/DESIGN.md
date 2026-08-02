@@ -1,4 +1,4 @@
-# cull — design
+# culler — design
 
 A keyboard-driven desktop app for reviewing photos straight off a card and deciding, per frame,
 what survives: both files, the JPEG only, the RAW only, or neither.
@@ -43,7 +43,7 @@ entanglement.
 ### Package layout
 
 ```
-cmd/cull/            main, Wails bootstrap
+cmd/culler/            main, Wails bootstrap
 internal/scan/       directory walk, grouping into PhotoGroups
 internal/preview/    embedded-JPEG extraction (IFD, RAF, CR3), thumbnail pipeline
 internal/cache/      content-addressed thumbnail cache, LRU eviction

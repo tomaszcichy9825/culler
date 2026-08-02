@@ -1,4 +1,4 @@
-# cull
+# culler
 
 A keyboard-driven desktop app for reviewing photos straight off a card and deciding, per frame, what survives: both files, the JPEG only, the RAW only, or neither.
 
@@ -8,7 +8,7 @@ A keyboard-driven desktop app for reviewing photos straight off a card and decid
 
 Existing open-source cullers treat the RAW as the primary asset and de-duplicate the JPEG away. If you shoot RAW+JPEG where the JPEG is a first-class deliverable (Fujifilm film simulations, in-camera profiles, straight-out-of-camera delivery) that is backwards.
 
-cull is built around a **per-frame three-way decision** over a RAW+JPEG pair, with the JPEG as the thing you actually look at when it exists.
+culler is built around a **per-frame three-way decision** over a RAW+JPEG pair, with the JPEG as the thing you actually look at when it exists.
 
 Explicit non-goals: no develop/edit module, no catalogue or library, no AI culling, no cloud, no telemetry, no plugin system.
 

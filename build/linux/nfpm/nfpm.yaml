@@ -3,26 +3,26 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "cull"
+name: "culler"
 arch: ${GOARCH}
 platform: "linux"
 version: "0.1.0"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "A cull application"
+description: "culler — RAW/JPEG culling tool"
 vendor: "My Company"
 homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/cull"
-    dst: "/usr/local/bin/cull"
+  - src: "./bin/culler"
+    dst: "/usr/local/bin/culler"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/cull.png"
-  - src: "./build/linux/cull.desktop"
-    dst: "/usr/share/applications/cull.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/culler.png"
+  - src: "./build/linux/culler.desktop"
+    dst: "/usr/share/applications/culler.desktop"
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:

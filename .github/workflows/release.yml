@@ -50,10 +50,10 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p dist/dmg
-          cp -R bin/cull.app dist/dmg/
+          cp -R bin/culler.app dist/dmg/
           ln -s /Applications dist/dmg/Applications
-          hdiutil create -volname cull -srcfolder dist/dmg -ov -format UDZO \
-            "dist/cull-${GITHUB_REF_NAME}-macos-arm64.dmg"
+          hdiutil create -volname culler -srcfolder dist/dmg -ov -format UDZO \
+            "dist/culler-${GITHUB_REF_NAME}-macos-arm64.dmg"
 
       - name: Collect artefacts (Windows)
         if: runner.os == 'Windows'
@@ -64,7 +64,7 @@ jobs:
           found=0
           for f in bin/*.exe; do
             [ -e "$f" ] || continue
-            cp "$f" "dist/cull-${GITHUB_REF_NAME}-windows-amd64-$(basename "$f")"
+            cp "$f" "dist/culler-${GITHUB_REF_NAME}-windows-amd64-$(basename "$f")"
             found=1
           done
           [ "$found" = 1 ]
