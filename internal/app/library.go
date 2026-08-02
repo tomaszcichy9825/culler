@@ -9,13 +9,15 @@ import (
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
 	"github.com/tomaszcichy9825/culler/internal/hash"
+	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
 
 // FolderDTO is one opened directory and its frames.
 type FolderDTO struct {
-	Dir    string     `json:"dir"`
-	Groups []GroupDTO `json:"groups"`
+	Dir     string     `json:"dir"`
+	Network bool       `json:"network"` // lives on a network volume
+	Groups  []GroupDTO `json:"groups"`
 }
 
 // GroupDTO is a PhotoGroup flattened for the frontend: paths instead of file
@@ -72,7 +74,11 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 		return FolderDTO{}, err
 	}
 
-	out := FolderDTO{Dir: resolved, Groups: make([]GroupDTO, 0, len(groups))}
+	out := FolderDTO{
+		Dir:     resolved,
+		Network: platform.IsNetwork(resolved),
+		Groups:  make([]GroupDTO, 0, len(groups)),
+	}
 	for i, g := range groups {
 		d := decide.None
 		if hashes[i] != "" {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -15,6 +16,16 @@ type DirEntryDTO struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	HasDirs bool   `json:"hasDirs"` // whether it has subdirectories, for the expand chevron
+}
+
+// IsNetwork reports whether path lives on a network volume, for the sidebar
+// badge. One statfs per root, not per tree node.
+func (s *LibraryService) IsNetwork(path string) (bool, error) {
+	resolved, err := expandPath(path)
+	if err != nil {
+		return false, err
+	}
+	return platform.IsNetwork(resolved), nil
 }
 
 // PickFolder opens the native directory chooser and returns the selected
