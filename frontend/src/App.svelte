@@ -15,6 +15,7 @@
   import {
     cancelApply,
     confirmApply,
+    copyPath,
     lastFolder,
     loadKeymap,
     loadRoots,
@@ -22,6 +23,7 @@
     pickRoot,
     requestApply,
     undo,
+    watchScanProgress,
   } from "./lib/actions";
   import { flush, setDecision } from "./lib/decisions";
   import { buildLookup, eventSignature, isMac, ownsKeys } from "./lib/keymap";
@@ -53,6 +55,7 @@
 
   void (async () => {
     loadRoots();
+    watchScanProgress();
     await loadKeymap();
     if (path !== "") await openFolder(path);
     if (app.folder) path = app.folder.dir;
@@ -164,6 +167,9 @@
       case "focus-tree":
         void focusTree();
         break;
+      case "copy-path":
+        void copyPath();
+        break;
       case "add-root":
         void pickRoot();
         break;
@@ -201,7 +207,9 @@
   <header>
     <span class="brand">culler</span>
     {#if app.folder}
-      <span class="where" title={app.folder.dir}>{app.folder.dir}</span>
+      <button class="where" onclick={() => void copyPath()} title="{app.folder.dir}&#10;Click to copy this path">
+        {app.folder.dir}
+      </button>
       {#if app.folder.network}<NetworkChip />{/if}
     {/if}
     {#if app.busy}<span class="working">working…</span>{/if}
@@ -281,11 +289,31 @@
   .where {
     flex: 1;
     min-width: 0;
+    font: inherit;
     font-size: 12px;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* Button semantics without button chrome: it reads as the path it is. */
+    padding: 2px 5px;
+    margin-left: -5px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    --wails-draggable: no-drag;
+  }
+
+  .where:hover {
+    background: var(--bg-raised);
+    color: var(--text);
+  }
+
+  .where:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .working {

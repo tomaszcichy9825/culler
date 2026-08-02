@@ -6,6 +6,7 @@
 
   import { app, groupKey } from "../lib/state.svelte";
   import { decisionBadge, kindBadge, previewURL } from "../lib/preview";
+  import { queuedImage } from "../lib/imageQueue";
 
   /** Target tile width; the real width divides the container evenly. */
   const TILE_W = 200;
@@ -100,7 +101,7 @@
       >
         <div class="thumb" style:height="{IMG_H}px">
           {#if url !== ""}
-            <img src={url} alt={g.stem} loading="lazy" decoding="async" />
+            <img use:queuedImage={url} alt={g.stem} decoding="async" />
           {:else}
             <span class="missing">no preview</span>
           {/if}

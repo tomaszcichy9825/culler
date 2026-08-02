@@ -2,6 +2,8 @@
 // talks to the backend goes through here so the busy flag, the error banner
 // and the toast are handled in one place.
 
+import { Clipboard, Events } from "@wailsio/runtime";
+
 import { ApplyService, ConfigService, LibraryService } from "./bindings";
 import { flush, message } from "./decisions";
 import { app } from "./state.svelte";
@@ -144,6 +146,7 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
   "focus-path": ["o"],
   "focus-tree": ["t"],
   "add-root": ["shift+o"],
+  "copy-path": ["y"],
 };
 
 /** loadKeymap reads the configured bindings, falling back to none on failure. */
@@ -193,6 +196,8 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   app.busy = true;
   app.scanning = target;
   app.scanSlow = false;
+  app.scanProgress = null;
+  app.scanProgressDir = null;
   const slow = setTimeout(() => {
     if (seq === scanSeq) app.scanSlow = true;
   }, SLOW_SCAN_MS);
@@ -220,6 +225,8 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
       app.busy = false;
       app.scanning = null;
       app.scanSlow = false;
+      app.scanProgress = null;
+      app.scanProgressDir = null;
     }
   }
 }
@@ -320,5 +327,51 @@ export async function undo() {
     app.notify(message(err), "error");
   } finally {
     app.busy = false;
+  }
+}
+
+/**
+ * belongsToScan decides whether a progress event is from the open currently
+ * being waited on. Events carry the backend's resolved path while the user may
+ * have typed a relative one or a ~, so an absolute target is matched exactly
+ * and anything else locks on to the first path it sees. Either way, events
+ * from an abandoned open are ignored rather than driving the bar backwards.
+ */
+function belongsToScan(eventDir: string, target: string): boolean {
+  if (app.scanProgressDir !== null) return eventDir === app.scanProgressDir;
+  return target.startsWith("/") ? eventDir === target : true;
+}
+
+/**
+ * watchScanProgress subscribes to the backend's scan progress for the life of
+ * the app. Call it once, at startup.
+ */
+export function watchScanProgress() {
+  Events.On("scan:progress", (event) => {
+    const progress = event.data;
+    const target = app.scanning;
+    if (!progress || target === null) return;
+    if (!belongsToScan(progress.dir, target)) return;
+    app.scanProgressDir = progress.dir;
+    app.scanProgress = { done: progress.done, total: progress.total };
+  });
+}
+
+/** copyPath puts the open folder's path on the clipboard. */
+export async function copyPath() {
+  const dir = app.folder?.dir;
+  if (!dir) return;
+  try {
+    await navigator.clipboard.writeText(dir);
+    app.notify("copied");
+    return;
+  } catch {
+    // A webview that withholds the async clipboard still has the native one.
+  }
+  try {
+    await Clipboard.SetText(dir);
+    app.notify("copied");
+  } catch (err) {
+    app.notify(`could not copy: ${message(err)}`, "error");
   }
 }

@@ -59,6 +59,17 @@ class CullerState {
   scanning = $state<string | null>(null);
   /** Set once a scan has run long enough to be worth reassuring the user about. */
   scanSlow = $state(false);
+  /**
+   * How far the running scan has got, once the backend has said. Null until
+   * the first progress event, which is why the loader starts indeterminate.
+   */
+  scanProgress = $state<{ done: number; total: number } | null>(null);
+  /**
+   * The resolved directory the current scan's progress events carry. The path
+   * the user typed may be relative or start with ~, so the first event of a
+   * scan establishes what its later events will look like.
+   */
+  scanProgressDir = $state<string | null>(null);
   /** Path -> whether it lives on a network volume, one lookup per root. */
   network = $state<Record<string, boolean>>({});
   /** A folder that would not open. Cleared on the next successful open. */

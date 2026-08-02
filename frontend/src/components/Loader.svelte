@@ -9,13 +9,38 @@
     const parts = p.replace(/\/+$/, "").split("/");
     return parts[parts.length - 1] || p;
   }
+
+  // A total of zero would divide by zero and means nothing to show anyway.
+  let progress = $derived(app.scanProgress !== null && app.scanProgress.total > 0 ? app.scanProgress : null);
+  let percent = $derived(progress === null ? 0 : Math.min(100, (progress.done / progress.total) * 100));
 </script>
 
 <div class="loading" role="status" aria-live="polite">
-  <div class="spinner" aria-hidden="true"></div>
+  {#if progress !== null}
+    <div
+      class="track"
+      role="progressbar"
+      aria-valuemin="0"
+      aria-valuemax={progress.total}
+      aria-valuenow={progress.done}
+      aria-label="Scan progress"
+    >
+      <div class="fill" style:width="{percent}%"></div>
+    </div>
+  {:else}
+    <!-- Indeterminate until the backend's first progress event: the scan has
+         to finish walking the directory before it knows how many frames. -->
+    <div class="spinner" aria-hidden="true"></div>
+  {/if}
+
   <p class="what" title={app.scanning ?? ""}>
     Scanning <span class="folder">{basename(app.scanning ?? "")}</span>…
   </p>
+
+  {#if progress !== null}
+    <p class="count">{progress.done} of {progress.total} frames</p>
+  {/if}
+
   {#if app.scanSlow}
     <p class="slow">large or slow folder — still scanning</p>
   {/if}
@@ -54,6 +79,28 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  .track {
+    width: min(260px, 60%);
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-raised);
+    overflow: hidden;
+  }
+
+  .fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.18s ease-out;
+  }
+
+  .count {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
   }
 
   .what,
