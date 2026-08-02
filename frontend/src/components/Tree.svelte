@@ -8,6 +8,7 @@
 
   import { collapseNode, expandNode, openFolder, removeRoot, toggleNode } from "../lib/actions";
   import { app, tree } from "../lib/state.svelte";
+  import NetworkChip from "./NetworkChip.svelte";
 
   interface Row {
     path: string;
@@ -180,6 +181,10 @@
       >
         <span class="label">{row.name}</span>
       </button>
+
+      {#if row.isRoot && app.network[row.path]}
+        <NetworkChip compact />
+      {/if}
 
       {#if row.isRoot}
         <button

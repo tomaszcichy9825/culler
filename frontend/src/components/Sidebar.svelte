@@ -20,7 +20,7 @@
   <aside class="sidebar">
     <div class="head">
       <span class="title">Folders</span>
-      <button class="add" onclick={() => void pickRoot()} disabled={app.busy} title="Add a folder to the sidebar">
+      <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar">
         + Add
       </button>
       <button class="icon" onclick={() => (app.sidebar = false)} title="Collapse sidebar" aria-label="Collapse sidebar">
@@ -103,13 +103,8 @@
     white-space: nowrap;
   }
 
-  .add:hover:not(:disabled) {
+  .add:hover {
     border-color: var(--accent);
-  }
-
-  .add:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 
   .icon {

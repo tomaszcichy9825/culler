@@ -72,6 +72,12 @@ export function flush(): Promise<void> {
  * advances so a run of decisions needs no navigation between them.
  */
 export function setDecision(d: Decision) {
+  // While a scan is running the grid is hidden behind the loader, so a
+  // decision key would be marking frames the user cannot see.
+  if (app.scanning !== null) {
+    app.notify("still scanning — hold on");
+    return;
+  }
   const targets = app.targets;
   if (targets.length === 0) return;
 

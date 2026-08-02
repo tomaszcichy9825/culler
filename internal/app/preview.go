@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
+	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/preview"
 )
 
@@ -35,16 +37,62 @@ const (
 // path rather than the bytes at it.
 const previewCacheControl = "public, max-age=31536000, immutable"
 
+// Concurrent preview reads are capped so a folder of tiles cannot saturate
+// the source. Network shares stall badly under parallel reads of large RAW
+// files, so they get a much lower cap than local disks.
+const (
+	localReadSlots   = 16
+	networkReadSlots = 4
+)
+
 // PreviewService serves preview bytes over the asset server rather than
 // through a binding: the webview can then use an ordinary <img src>, and the
 // bytes never take the trip through JSON.
 type PreviewService struct {
-	app *App
+	app      *App
+	localSem chan struct{}
+	netSem   chan struct{}
+
+	mu     sync.Mutex
+	netDir map[string]bool // directory -> lives on a network volume
 }
 
 // NewPreviewService binds the service to the shared state.
 func NewPreviewService(a *App) *PreviewService {
-	return &PreviewService{app: a}
+	return &PreviewService{
+		app:      a,
+		localSem: make(chan struct{}, localReadSlots),
+		netSem:   make(chan struct{}, networkReadSlots),
+		netDir:   make(map[string]bool),
+	}
+}
+
+// acquire takes a read slot for path's volume class, or reports false when
+// the request went away while waiting — a tile that scrolled out of view
+// must not cost a network read.
+func (s *PreviewService) acquire(r *http.Request, path string) (release func(), ok bool) {
+	sem := s.localSem
+	if s.isNetworkDir(filepath.Dir(path)) {
+		sem = s.netSem
+	}
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, true
+	case <-r.Context().Done():
+		return nil, false
+	}
+}
+
+// isNetworkDir caches one statfs per directory; a folder's tiles all share it.
+func (s *PreviewService) isNetworkDir(dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, hit := s.netDir[dir]; hit {
+		return v
+	}
+	v := platform.IsNetwork(dir)
+	s.netDir[dir] = v
+	return v
 }
 
 // Middleware answers preview requests and passes everything else to the
@@ -77,6 +125,12 @@ func (s *PreviewService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
+
+	release, ok := s.acquire(r, path)
+	if !ok {
+		return // client gone; nothing to write
+	}
+	defer release()
 
 	w.Header().Set("Cache-Control", previewCacheControl)
 	if tier == TierJPEG {

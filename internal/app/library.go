@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
@@ -63,11 +64,14 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 		return FolderDTO{}, fmt.Errorf("%s is not a folder", resolved)
 	}
 
+	network := platform.IsNetwork(resolved)
 	groups, err := scan.ScanDir(resolved, s.app.Config().ScanConfig())
 	if err != nil {
 		return FolderDTO{}, fmt.Errorf("scan %s: %w", resolved, err)
 	}
-	hashes := hashGroups(groups)
+	hashes := hashGroups(groups, network, func(done int) {
+		emitEvent(EventScanProgress, ScanProgress{Dir: resolved, Done: done, Total: len(groups)})
+	})
 
 	store, err := s.app.decisions()
 	if err != nil {
@@ -76,7 +80,7 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 
 	out := FolderDTO{
 		Dir:     resolved,
-		Network: platform.IsNetwork(resolved),
+		Network: network,
 		Groups:  make([]GroupDTO, 0, len(groups)),
 	}
 	for i, g := range groups {
@@ -136,11 +140,18 @@ func primaryRef(g scan.PhotoGroup) *scan.FileRef {
 // hashGroups returns the identity hash of every group's primary file, aligned
 // with groups, using the empty string where the file could not be read. The
 // work is spread across the CPUs because opening a folder from a card reader
-// is dominated by the 64KB head read per frame.
-func hashGroups(groups []scan.PhotoGroup) []string {
+// is dominated by the 64KB head read per frame — except on network volumes,
+// where piling on concurrent reads stalls the share; those get a low cap.
+// progress is called with the completed count, throttled to every few frames.
+func hashGroups(groups []scan.PhotoGroup, network bool, progress func(done int)) []string {
+	workers := runtime.NumCPU()
+	if network {
+		workers = 4
+	}
 	hashes := make([]string, len(groups))
-	sem := make(chan struct{}, runtime.NumCPU())
+	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	var done atomic.Int64
 	for i, g := range groups {
 		ref := primaryRef(g)
 		if ref == nil {
@@ -153,6 +164,9 @@ func hashGroups(groups []scan.PhotoGroup) []string {
 			defer func() { <-sem }()
 			if h, err := hash.Content(path); err == nil {
 				hashes[i] = h
+			}
+			if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
+				progress(int(n))
 			}
 		}(i, ref.Path)
 	}

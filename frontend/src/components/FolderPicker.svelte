@@ -47,7 +47,11 @@
     title={value}
     aria-label="Folder to cull"
   />
-  <button type="submit" disabled={app.busy}>Open</button>
+  <!-- Never disabled: a disabled default button also blocks the form's
+       implicit submission, so Enter would stop working during a slow scan —
+       exactly when switching folders matters most. Concurrent scans are made
+       safe by sequencing them, not by locking the control. -->
+  <button type="submit">Open</button>
 </form>
 
 <style>
@@ -96,12 +100,7 @@
     white-space: nowrap;
   }
 
-  button:hover:not(:disabled) {
+  button:hover {
     border-color: var(--accent);
-  }
-
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 </style>

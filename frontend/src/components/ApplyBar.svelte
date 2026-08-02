@@ -6,6 +6,7 @@
   import { cancelApply, confirmApply } from "../lib/actions";
   import { decisionBadge, decisionLabel, formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
+  import NetworkChip from "./NetworkChip.svelte";
 
   const order = ["keep_all", "drop_raw", "drop_jpeg", "drop_all"];
 
@@ -33,6 +34,7 @@
     <span class="muted">↩ to apply</span>
   {/if}
   <span class="spacer"></span>
+  {#if app.folder?.network}<NetworkChip />{/if}
   {#if app.selection.size > 0}
     <span class="muted">{app.selection.size} selected</span>
   {/if}

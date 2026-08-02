@@ -51,6 +51,16 @@ class CullerState {
 
   /** Set while a backend call is in flight, so the chrome can say so. */
   busy = $state(false);
+  /**
+   * The folder currently being scanned, or null. A scan of a card over SMB can
+   * take a long time, so the grid says what it is waiting for rather than
+   * going blank.
+   */
+  scanning = $state<string | null>(null);
+  /** Set once a scan has run long enough to be worth reassuring the user about. */
+  scanSlow = $state(false);
+  /** Path -> whether it lives on a network volume, one lookup per root. */
+  network = $state<Record<string, boolean>>({});
   /** A folder that would not open. Cleared on the next successful open. */
   error = $state("");
   /** The plan awaiting confirmation. Non-null means the panel is up. */

@@ -7,7 +7,9 @@
   import ApplyBar from "./components/ApplyBar.svelte";
   import Grid from "./components/Grid.svelte";
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
+  import Loader from "./components/Loader.svelte";
   import Loupe from "./components/Loupe.svelte";
+  import NetworkChip from "./components/NetworkChip.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import Toast from "./components/Toast.svelte";
   import {
@@ -200,6 +202,7 @@
     <span class="brand">culler</span>
     {#if app.folder}
       <span class="where" title={app.folder.dir}>{app.folder.dir}</span>
+      {#if app.folder.network}<NetworkChip />{/if}
     {/if}
     {#if app.busy}<span class="working">working…</span>{/if}
   </header>
@@ -212,7 +215,9 @@
     <Sidebar bind:path />
 
     <main>
-      {#if app.folder === null}
+      {#if app.scanning !== null}
+        <Loader />
+      {:else if app.folder === null}
         <div class="empty">
           <p>Type a folder in the sidebar and press ↩.</p>
           <p class="hint">Absolute paths and ~ both work. Press ? for the keys.</p>

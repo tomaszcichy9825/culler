@@ -28,6 +28,7 @@ export function loadRoots() {
   } catch {
     app.roots = [];
   }
+  for (const root of app.roots) void markNetwork(root);
 }
 
 function saveRoots() {
@@ -70,6 +71,7 @@ export function addRoot(dir: string): boolean {
   // not show the same folder at two levels.
   app.roots = [...app.roots.filter((r) => !under(r, path)), path];
   saveRoots();
+  void markNetwork(path);
   return true;
 }
 
@@ -81,6 +83,7 @@ export function removeRoot(dir: string) {
   for (const path of Object.keys(app.children)) {
     if (under(path, dir)) delete app.children[path];
   }
+  delete app.network[dir];
   saveRoots();
 }
 
@@ -164,34 +167,88 @@ export async function loadKeymap() {
   app.keymap = keymap;
 }
 
-export async function openFolder(dir: string) {
-  if (dir.trim() === "") return;
-  // Decisions from the folder being left have to land before it is replaced.
-  await flush();
+/** How long a scan runs before the UI says it is a slow one. */
+const SLOW_SCAN_MS = 10_000;
+
+/**
+ * Scans are serialised by this counter rather than by cancelling: a folder
+ * switch while a slow one is still running must not have the older scan's
+ * result land on top of the newer one's. The last request issued is the only
+ * one allowed to touch the state, whichever order they come back in.
+ */
+let scanSeq = 0;
+
+interface ScanOptions {
+  /** Whether to record the folder as the one to reopen next launch. */
+  remember: boolean;
+  /** Whether to reset the view and say something about an empty folder. */
+  announce: boolean;
+}
+
+async function scan(dir: string, { remember, announce }: ScanOptions) {
+  const seq = ++scanSeq;
+  const target = dir.trim();
+  if (target === "") return;
+
   app.busy = true;
+  app.scanning = target;
+  app.scanSlow = false;
+  const slow = setTimeout(() => {
+    if (seq === scanSeq) app.scanSlow = true;
+  }, SLOW_SCAN_MS);
+
   try {
-    const folder = await LibraryService.OpenFolder(dir.trim());
+    // Decisions from the folder being left have to land before it is replaced.
+    await flush();
+    const folder = await LibraryService.OpenFolder(target);
+    if (seq !== scanSeq) return;
     app.setFolder(folder);
-    app.view = "grid";
-    app.resetZoom();
-    rememberFolder(folder.dir);
-    if ((folder.groups ?? []).length === 0) app.notify("no photos in that folder");
+    if (announce) {
+      app.view = "grid";
+      app.resetZoom();
+    }
+    if (remember) rememberFolder(folder.dir);
+    if (announce && (folder.groups ?? []).length === 0) app.notify("no photos in that folder");
   } catch (err) {
+    if (seq !== scanSeq) return;
     app.error = message(err);
   } finally {
-    app.busy = false;
+    clearTimeout(slow);
+    // Only the newest scan clears the indicator; a superseded one leaving
+    // would blank the state the live scan is still using.
+    if (seq === scanSeq) {
+      app.busy = false;
+      app.scanning = null;
+      app.scanSlow = false;
+    }
   }
 }
 
-/** reload rescans the open folder, picking up whatever an apply changed. */
-export async function reload() {
-  const dir = app.folder?.dir;
-  if (!dir) return;
+export async function openFolder(dir: string) {
+  await scan(dir, { remember: true, announce: true });
+}
+
+/**
+ * reload rescans a folder, picking up whatever an apply changed. It defaults
+ * to the open one, and does nothing if that folder has since been left.
+ */
+export async function reload(dir?: string) {
+  const target = dir ?? app.folder?.dir;
+  if (!target || app.folder?.dir !== target) return;
+  await scan(target, { remember: false, announce: false });
+}
+
+/**
+ * markNetwork looks up whether a path is on a network volume, once. The
+ * answer is cached because it costs a statfs and a root does not move.
+ */
+export async function markNetwork(path: string) {
+  if (path in app.network) return;
   try {
-    const folder = await LibraryService.OpenFolder(dir);
-    app.setFolder(folder);
-  } catch (err) {
-    app.error = message(err);
+    app.network[path] = await LibraryService.IsNetwork(path);
+  } catch {
+    // Not knowing is the same as no badge; it is a hint, not a guarantee.
+    app.network[path] = false;
   }
 }
 
@@ -202,6 +259,12 @@ export async function reload() {
 export async function requestApply() {
   const dir = app.folder?.dir;
   if (!dir) return;
+  // A plan describes the folder as it is now; planning against one that is
+  // mid-rescan would describe a folder about to be replaced.
+  if (app.scanning !== null) {
+    app.notify("still scanning — hold on");
+    return;
+  }
   const hashes = app.pending.map((g) => g.hash).filter((h) => h !== "");
   if (hashes.length === 0) {
     app.notify("nothing to apply");
@@ -228,13 +291,15 @@ export async function confirmApply() {
     const batch = await ApplyService.Apply(dir, hashes);
     const failed = (batch.actions ?? []).filter((a) => a.outcome !== "ok").length;
     app.plan = null;
-    await reload();
+    // Refresh the folder that was applied to, not whatever is open by now:
+    // a folder switch during the apply must not pull the user back.
+    await reload(dir);
     app.clearSelection();
     if (failed > 0) app.notify(`${failed} action(s) failed; their frames kept their decision`, "error");
     else app.notify(batch.description || "applied");
   } catch (err) {
     app.plan = null;
-    await reload();
+    await reload(dir);
     app.notify(`apply failed: ${message(err)}`, "error");
   } finally {
     app.busy = false;
