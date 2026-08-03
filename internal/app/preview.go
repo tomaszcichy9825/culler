@@ -14,6 +14,7 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/preview"
+	"github.com/tomaszcichy9825/culler/internal/thumbs"
 )
 
 // PreviewRoute is the asset-server path the preview handler owns. The webview
@@ -51,6 +52,10 @@ type PreviewService struct {
 
 	mu     sync.Mutex
 	netDir map[string]bool // directory -> lives on a network volume
+
+	thumbsOnce sync.Once
+	thumbs     *thumbs.Store // lazily opened; nil when the cache dir is unusable
+	thumbDir   string        // overrides the OS cache dir; tests point it at a temp dir
 }
 
 // NewPreviewService binds the service to the shared state. The semaphores are
@@ -118,10 +123,55 @@ func (s *PreviewService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tier == "" {
 		tier = TierJPEG
 	}
+
+	// A grid-size request with a content hash is answered from the local
+	// thumb cache before the source is even stat'd: a hit costs one local
+	// disk read no matter how slow — or how gone — the folder's volume is,
+	// and it survives folder switches and relaunches. The extension check
+	// still runs first; the cache is not a way around the whitelist.
+	key := query.Get("hash")
+	if query.Get("size") == "grid" && key != "" && allowedExt(s.app.Config(), query.Get("path"), tier) {
+		if store := s.thumbStore(); store != nil {
+			if cached, ok := store.Path(key, thumbs.SizeGrid); ok {
+				store.Touch(key, thumbs.SizeGrid)
+				w.Header().Set("Cache-Control", previewCacheControl)
+				w.Header().Set("Content-Type", "image/jpeg")
+				http.ServeFile(w, r, cached)
+				return
+			}
+		}
+	}
+
 	path, info, status, err := resolvePreview(s.app.Config(), query.Get("path"), tier)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
+	}
+
+	if query.Get("size") == "grid" && key != "" {
+		if store := s.thumbStore(); store != nil {
+			release, ok := s.acquire(r, path)
+			if !ok {
+				return
+			}
+			defer release()
+			cached, err := s.fillThumb(store, key, path, tier)
+			if err == nil {
+				w.Header().Set("Cache-Control", previewCacheControl)
+				w.Header().Set("Content-Type", "image/jpeg")
+				http.ServeFile(w, r, cached)
+				return
+			}
+			// unresizable source: fall through and serve it uncached, with
+			// the slot already held
+			w.Header().Set("Cache-Control", previewCacheControl)
+			if tier == TierJPEG {
+				servePassthrough(w, r, path, info)
+				return
+			}
+			serveExtracted(w, r, path, info, tier)
+			return
+		}
 	}
 
 	release, ok := s.acquire(r, path)
@@ -136,6 +186,62 @@ func (s *PreviewService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serveExtracted(w, r, path, info, tier)
+}
+
+// thumbStore lazily opens the on-disk thumbnail cache in the OS cache dir.
+// A machine where that fails just serves previews uncached.
+func (s *PreviewService) thumbStore() *thumbs.Store {
+	s.thumbsOnce.Do(func() {
+		dir := s.thumbDir
+		if dir == "" {
+			base, err := os.UserCacheDir()
+			if err != nil {
+				return
+			}
+			dir = filepath.Join(base, "culler", "thumbs")
+		}
+		store, err := thumbs.NewStore(dir, 0)
+		if err != nil {
+			return
+		}
+		s.thumbs = store
+	})
+	return s.thumbs
+}
+
+// fillThumb reads the source once, downsizes it, and files it under the
+// frame's content hash. The caller holds a read slot.
+func (s *PreviewService) fillThumb(store *thumbs.Store, key, path, tier string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	src := data
+	if tier == TierEmbedded {
+		src, err = preview.ExtractLargestJPEG(data)
+		if err != nil {
+			return "", err
+		}
+	}
+	return store.Put(key, thumbs.SizeGrid, src)
+}
+
+// allowedExt is the stat-free half of the request guard: an absolute, clean
+// path whose extension the configuration serves for this tier.
+func allowedExt(cfg config.Config, path, tier string) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	var allowed []string
+	switch tier {
+	case TierJPEG, TierThumb:
+		allowed = cfg.JpegExts
+	case TierEmbedded:
+		allowed = cfg.RawExts
+	default:
+		return false
+	}
+	return contains(allowed, strings.ToLower(filepath.Ext(path)))
 }
 
 // resolvePreview is the whole guard on what the handler will read. The

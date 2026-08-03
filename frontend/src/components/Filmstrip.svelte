@@ -119,7 +119,7 @@
   {onkeydown}
 >
   {#each groups as g, i (groupKey(g))}
-    {@const url = previewURL(g)}
+    {@const url = previewURL(g, "grid")}
     <button
       type="button"
       class="frame"

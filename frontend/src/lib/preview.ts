@@ -4,12 +4,19 @@
 
 import type { GroupDTO } from "./bindings";
 
-export function previewURL(g: GroupDTO): string {
+/**
+ * previewURL builds the asset-server URL for a frame. size "grid" lets the
+ * backend serve a locally cached thumbnail keyed on the frame's content hash
+ * — instant on revisits, even over the network. "full" is byte-accurate
+ * passthrough for the loupe, where colour fidelity matters.
+ */
+export function previewURL(g: GroupDTO, size: "grid" | "full" = "full"): string {
+  const cache = size === "grid" && g.hash !== "" ? `&size=grid&hash=${encodeURIComponent(g.hash)}` : "";
   if (g.hasJpeg && g.jpegPath !== "") {
-    return `/preview?path=${encodeURIComponent(g.jpegPath)}&tier=jpeg`;
+    return `/preview?path=${encodeURIComponent(g.jpegPath)}&tier=jpeg${cache}`;
   }
   if (g.hasRaw && g.rawPath !== "") {
-    return `/preview?path=${encodeURIComponent(g.rawPath)}&tier=embedded`;
+    return `/preview?path=${encodeURIComponent(g.rawPath)}&tier=embedded${cache}`;
   }
   return "";
 }

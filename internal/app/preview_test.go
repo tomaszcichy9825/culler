@@ -1,6 +1,9 @@
 package app
 
 import (
+	"bytes"
+	"image"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -157,5 +160,54 @@ func TestPreviewHonoursConfiguredExtensions(t *testing.T) {
 	}
 	if got := getPreview(t, s, path, TierJPEG).Code; got != http.StatusForbidden {
 		t.Errorf("extension removed from the config: status = %d, want 403", got)
+	}
+}
+
+func TestGridThumbSurvivesSourceRemoval(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "DSCF0001.JPG")
+	writeTestJPEG(t, src, 1200, 800)
+
+	s := previewApp(t)
+	s.thumbDir = t.TempDir()
+
+	target := PreviewRoute + "?path=" + url.QueryEscape(src) + "&tier=jpeg&size=grid&hash=deadbeef"
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first request: %d %s", rec.Code, rec.Body.String())
+	}
+	first := rec.Body.Bytes()
+	if len(first) == 0 {
+		t.Fatal("empty thumb")
+	}
+
+	// The source is gone; a revisit must still serve the cached thumb.
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cached request after source removal: %d", rec.Code)
+	}
+	if !bytes.Equal(first, rec.Body.Bytes()) {
+		t.Fatal("cached thumb differs from the first render")
+	}
+}
+
+// writeTestJPEG writes a real decodable JPEG of the given size.
+func writeTestJPEG(t *testing.T, path string, w, h int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i * 31)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -28,7 +28,7 @@
 
   let { group, index, focused, selected, width, height, x, y, onfocus, onopen }: Props = $props();
 
-  let url = $derived(previewURL(group));
+  let url = $derived(previewURL(group, "grid"));
   let verdict = $derived(verdictOf(group));
   let stars = $derived(Math.max(0, group.rating));
   let warnings = $derived(group.warnings ?? []);
