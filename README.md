@@ -57,6 +57,11 @@ macOS first (signed, notarised DMG), Windows and Linux as supported secondaries.
 
 Project board: [github.com/users/tomaszcichy9825/projects/5](https://github.com/users/tomaszcichy9825/projects/5/views/1)
 
+## Support
+
+culler is free and MIT-licensed, with no paywalled features. If it saves you time on the
+review after a shoot, you can [sponsor its development](https://github.com/sponsors/tomaszcichy9825).
+
 ## Licence
 
 [MIT](LICENSE)
