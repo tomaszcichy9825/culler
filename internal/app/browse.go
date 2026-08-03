@@ -51,7 +51,10 @@ func (s *LibraryService) PickFolder() (string, error) {
 }
 
 // ListDirs returns dir's visible subdirectories, sorted by name, for lazy
-// expansion of the sidebar tree.
+// expansion of the sidebar tree. On network volumes the has-children probe is
+// skipped — it costs one directory read per child, which over SMB turns a
+// single click into minutes and starves every other call. Those entries
+// report HasDirs true and the truth arrives when the node is expanded.
 func (s *LibraryService) ListDirs(dir string) ([]DirEntryDTO, error) {
 	resolved, err := expandPath(dir)
 	if err != nil {
@@ -61,13 +64,18 @@ func (s *LibraryService) ListDirs(dir string) ([]DirEntryDTO, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list %s: %w", resolved, err)
 	}
+	probe := !platform.IsNetwork(resolved)
 	out := make([]DirEntryDTO, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		p := filepath.Join(resolved, e.Name())
-		out = append(out, DirEntryDTO{Name: e.Name(), Path: p, HasDirs: hasVisibleSubdir(p)})
+		hasDirs := true
+		if probe {
+			hasDirs = hasVisibleSubdir(p)
+		}
+		out = append(out, DirEntryDTO{Name: e.Name(), Path: p, HasDirs: hasDirs})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)

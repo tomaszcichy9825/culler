@@ -179,6 +179,14 @@
         }}
         ondblclick={() => void toggleNode(row.path)}
       >
+        <svg class="folder" viewBox="0 0 14 12" aria-hidden="true">
+          <path
+            d="M1 2.5 Q1 1.5 2 1.5 L5.2 1.5 L6.4 3 L12 3 Q13 3 13 4 L13 9.5 Q13 10.5 12 10.5 L2 10.5 Q1 10.5 1 9.5 Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.1"
+          />
+        </svg>
         <span class="label">{row.name}</span>
       </button>
 
@@ -245,17 +253,36 @@
 
   .twisty {
     flex: 0 0 auto;
-    width: 14px;
+    width: 16px;
     height: 22px;
     display: grid;
     place-items: center;
-    color: var(--text-dim);
-    font-size: 9px;
+    color: var(--text-muted);
+    font-size: 10px;
     line-height: 1;
+    border-radius: 3px;
+  }
+
+  .twisty:hover {
+    color: var(--text);
+    background: var(--bg-field);
   }
 
   .twisty.hidden {
     visibility: hidden;
+  }
+
+  .folder {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 12px;
+    margin-right: 5px;
+    color: var(--text-dim);
+  }
+
+  .row.active .folder,
+  .row:hover .folder {
+    color: var(--text-muted);
   }
 
   .name {
