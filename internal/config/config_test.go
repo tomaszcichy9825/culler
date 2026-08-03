@@ -66,7 +66,7 @@ func TestDefaultKeymapCoversEveryAction(t *testing.T) {
 		"focus-right":      "ArrowRight",
 		"focus-up":         "ArrowUp",
 		"focus-down":       "ArrowDown",
-		"toggle-loupe":     "Tab",
+		"cycle-layout":     "Tab",
 		"toggle-select":    "space",
 		"select-all":       "mod+a",
 		"escape":           "Escape",
