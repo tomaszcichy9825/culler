@@ -142,6 +142,19 @@ export async function toggleNode(dir: string) {
  * the user has already bound to something else keeps its configured meaning.
  */
 const FRONTEND_BINDINGS: Record<string, string[]> = {
+  // Modes come first deliberately. Off macOS "ctrl+n" and "mod+n" are the same
+  // chord, and where the two collide the mode is the one that should answer —
+  // panes keep their shift+mod alternative for exactly that case.
+  "mode-cull": ["ctrl+1"],
+  "mode-exif": ["ctrl+2"],
+  "mode-map": ["ctrl+3"],
+  "mode-library": ["ctrl+4"],
+  "pane-left": ["mod+1", "shift+mod+1"],
+  "pane-centre": ["mod+2", "shift+mod+2"],
+  "pane-right": ["mod+3", "shift+mod+3"],
+  "layout-1": ["alt+1"],
+  "layout-2": ["alt+2"],
+  "layout-3": ["alt+3"],
   "toggle-sidebar": ["s"],
   "focus-path": ["o"],
   "focus-tree": ["t"],

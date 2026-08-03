@@ -2,6 +2,9 @@
   // Composition plus the one keyboard listener in the app. Every binding is
   // resolved from the config keymap, so nothing here decides which key does
   // what — only what each action means.
+  //
+  // The shell is the same on every screen: a title bar, three panes and a
+  // status bar. A mode is a set of pane bodies, nothing more.
 
   import { tick } from "svelte";
   import ApplyBar from "./components/ApplyBar.svelte";
@@ -9,8 +12,9 @@
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
   import Loader from "./components/Loader.svelte";
   import Loupe from "./components/Loupe.svelte";
-  import NetworkChip from "./components/NetworkChip.svelte";
   import Sidebar from "./components/Sidebar.svelte";
+  import StatusBar from "./components/StatusBar.svelte";
+  import TitleBar from "./components/TitleBar.svelte";
   import Toast from "./components/Toast.svelte";
   import {
     cancelApply,
@@ -26,7 +30,9 @@
     watchScanProgress,
   } from "./lib/actions";
   import { flush, setDecision } from "./lib/decisions";
-  import { buildLookup, eventSignature, isMac, ownsKeys } from "./lib/keymap";
+  import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
+  import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
+  import type { Pane } from "./lib/shell.svelte";
   import { app, loupe, picker, tree } from "./lib/state.svelte";
   import type { Decision } from "./lib/state.svelte";
 
@@ -50,6 +56,25 @@
     "clear-decision": "none",
   };
 
+  const modeActions: Record<string, number> = {
+    "mode-cull": 0,
+    "mode-exif": 1,
+    "mode-map": 2,
+    "mode-library": 3,
+  };
+
+  const paneActions: Record<string, Pane> = {
+    "pane-left": "left",
+    "pane-centre": "centre",
+    "pane-right": "right",
+  };
+
+  const layoutActions: Record<string, number> = {
+    "layout-1": 0,
+    "layout-2": 1,
+    "layout-3": 2,
+  };
+
   let path = $state(lastFolder());
   let lookup = $derived(buildLookup(app.keymap));
 
@@ -70,6 +95,28 @@
     app.setFocus(app.focusIndex + dx + dy * rowStep);
   }
 
+  /**
+   * CULL's first two sub-layouts are the grid and one frame at a time, which
+   * the app already has as its two views — so choosing a layout and toggling
+   * the loupe have to agree, or the segmented control starts lying.
+   */
+  function chooseLayout(index: number) {
+    if (!shell.setLayout(index)) return;
+    if (shell.mode !== "cull") return;
+    if (index === LOUPE_FIRST && app.groups.length > 0) {
+      app.view = "loupe";
+      return;
+    }
+    app.view = "grid";
+    app.resetZoom();
+  }
+
+  function toggleLoupe() {
+    app.view = app.view === "grid" ? "loupe" : "grid";
+    if (app.view === "grid") app.resetZoom();
+    if (shell.mode === "cull") shell.setLayout(app.view === "loupe" ? LOUPE_FIRST : CONTACT_SHEET);
+  }
+
   function escape() {
     if (app.plan) {
       cancelApply();
@@ -85,8 +132,10 @@
         return;
       }
       app.view = "grid";
+      if (shell.mode === "cull") shell.setLayout(CONTACT_SHEET);
       return;
     }
+    if (shell.releasePane()) return;
     app.clearSelection();
   }
 
@@ -128,8 +177,7 @@
         moveFocus(0, 1);
         break;
       case "toggle-loupe":
-        app.view = app.view === "grid" ? "loupe" : "grid";
-        if (app.view === "grid") app.resetZoom();
+        toggleLoupe();
         break;
       case "zoom":
         if (app.view !== "loupe") {
@@ -176,6 +224,12 @@
       default:
         if (action in decisionActions) {
           setDecision(decisionActions[action]);
+        } else if (action in modeActions) {
+          shell.setModeByIndex(modeActions[action]);
+        } else if (action in paneActions) {
+          shell.focusPane(paneActions[action]);
+        } else if (action in layoutActions) {
+          chooseLayout(layoutActions[action]);
         } else if (action in laterActions) {
           app.notify(laterActions[action]);
         }
@@ -199,50 +253,101 @@
     if (app.overlay && action !== "keymap-overlay" && action !== "escape") return;
     run(action);
   }
+
+  function dimmed(pane: Pane): boolean {
+    return shell.focusedPane !== null && shell.focusedPane !== pane;
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} onblur={() => void flush()} onbeforeunload={() => void flush()} />
 
-<div class="app" class:mac={isMac}>
-  <header>
-    <span class="brand">culler</span>
-    {#if app.folder}
-      <button class="where" onclick={() => void copyPath()} title="{app.folder.dir}&#10;Click to copy this path">
-        {app.folder.dir}
-      </button>
-      {#if app.folder.network}<NetworkChip />{/if}
-    {/if}
-    {#if app.busy}<span class="working">working…</span>{/if}
-  </header>
+{#snippet focusHead(pane: Pane)}
+  <div class="focus-head">
+    <span class="fdot" aria-hidden="true"></span>
+    <span class="fname">{shell.spec.panes[pane]} · focused</span>
+    <span class="fesc">esc → grid</span>
+  </div>
+{/snippet}
+
+{#snippet ghost(title: string, line: string, key: string, hint: string)}
+  <div class="ghost">
+    <p class="gtitle">{title}</p>
+    <p class="gline">{line}</p>
+    <p class="ghint"><span class="gkey">{key}</span> {hint}</p>
+  </div>
+{/snippet}
+
+<div class="app" data-mode={shell.mode} data-layout={shell.layout}>
+  <TitleBar onlayout={chooseLayout} oncommand={() => run("command-palette")} onpath={() => void copyPath()} />
 
   {#if app.error !== ""}
     <div class="error" role="alert" title={app.error}>{app.error}</div>
   {/if}
 
   <div class="body">
-    <Sidebar bind:path />
+    <section
+      class="pane left"
+      class:collapsed={!app.sidebar}
+      class:focused={shell.focusedPane === "left"}
+      class:dim={dimmed("left")}
+    >
+      {#if shell.focusedPane === "left"}{@render focusHead("left")}{/if}
+      <div class="pane-body">
+        {#if shell.mode === "cull"}
+          <Sidebar bind:path />
+        {:else}
+          {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
+        {/if}
+      </div>
+    </section>
 
-    <main>
-      {#if app.scanning !== null}
-        <Loader />
-      {:else if app.folder === null}
-        <div class="empty">
-          <p>Type a folder in the sidebar and press ↩.</p>
-          <p class="hint">Absolute paths and ~ both work. Press ? for the keys.</p>
-        </div>
-      {:else if app.groups.length === 0}
-        <div class="empty">
-          <p class="where" title={app.folder.dir}>No photos in {app.folder.dir}</p>
-        </div>
-      {:else if app.view === "loupe"}
-        <Loupe />
-      {:else}
-        <Grid />
-      {/if}
-    </main>
+    <section class="pane centre" class:focused={shell.focusedPane === "centre"} class:dim={dimmed("centre")}>
+      {#if shell.focusedPane === "centre"}{@render focusHead("centre")}{/if}
+      <div class="pane-body">
+        {#if shell.mode !== "cull"}
+          {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
+        {:else if app.scanning !== null}
+          <Loader />
+        {:else if app.folder === null}
+          <div class="empty">
+            <p>Type a folder in the sidebar and press ↩.</p>
+            <p class="hint">Absolute paths and ~ both work. Press ? for the keys.</p>
+          </div>
+        {:else if app.groups.length === 0}
+          <div class="empty">
+            <p class="where" title={app.folder.dir}>No photos in {app.folder.dir}</p>
+          </div>
+        {:else if shell.layout === 2}
+          {@render ghost("TABLE", "the table layout comes later", "⌥1", "contact sheet")}
+        {:else if app.view === "loupe"}
+          <Loupe />
+        {:else}
+          <Grid />
+        {/if}
+      </div>
+    </section>
+
+    <section class="pane right" class:focused={shell.focusedPane === "right"} class:dim={dimmed("right")}>
+      {#if shell.focusedPane === "right"}{@render focusHead("right")}{/if}
+      <div class="pane-body">
+        {#if app.focused}
+          <div class="inspector">
+            <p class="iname">{app.focused.stem}</p>
+            <p class="icount">{app.focusIndex + 1} of {app.groups.length}</p>
+          </div>
+        {:else}
+          <div class="ghost">
+            <p class="gline">no frame selected</p>
+            <p class="gline">the inspector fills in</p>
+            <p class="gline">once you pick one</p>
+          </div>
+        {/if}
+      </div>
+    </section>
   </div>
 
   <ApplyBar />
+  <StatusBar />
 </div>
 
 {#if app.overlay}
@@ -256,79 +361,17 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    background: var(--bg-window);
     --wails-draggable: no-drag;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-chrome);
-    flex: 0 0 auto;
-    min-width: 0;
-    /* The title bar is hidden inset, so the header doubles as the drag region. */
-    --wails-draggable: drag;
-  }
-
-  /* Clear of the macOS traffic lights, which sit over the top-left corner. */
-  .app.mac header {
-    padding-left: 78px;
-  }
-
-  .brand {
-    flex: 0 0 auto;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--text-faint);
-    text-transform: uppercase;
-  }
-
-  .where {
-    flex: 1;
-    min-width: 0;
-    font: inherit;
-    font-size: 12px;
-    color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    /* Button semantics without button chrome: it reads as the path it is. */
-    padding: 2px 5px;
-    margin-left: -5px;
-    border: none;
-    border-radius: 4px;
-    background: none;
-    text-align: left;
-    cursor: pointer;
-    --wails-draggable: no-drag;
-  }
-
-  .where:hover {
-    background: var(--bg-raised);
-    color: var(--text);
-  }
-
-  .where:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-
-  .working {
-    flex: 0 0 auto;
-    font-size: 12px;
-    color: var(--text-faint);
   }
 
   .error {
     flex: 0 0 auto;
     padding: 6px 14px;
-    background: var(--error-bg);
-    border-bottom: 1px solid var(--error-border);
-    color: var(--error-text);
-    font-size: 12px;
+    background: var(--cut-wash-14);
+    border-bottom: 1px solid var(--cut);
+    color: var(--cut);
+    font-size: 11px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -340,13 +383,150 @@
     display: flex;
   }
 
-  main {
-    flex: 1;
-    /* Lets the grid shrink with the sidebar rather than pushing it off screen. */
-    min-width: 0;
-    min-height: 0;
+  .pane {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    /* The panes are separated by one rule each, not two. */
+    border: 0 solid var(--border);
+    border-right-width: 1px;
+  }
+
+  .pane.left {
+    flex: 0 0 auto;
+    width: 208px;
+    background: var(--bg-pane);
+  }
+
+  .pane.left.collapsed {
+    width: 30px;
+  }
+
+  .pane.centre {
+    flex: 1;
+    background: var(--bg-window);
+  }
+
+  .pane.right {
+    flex: 0 0 auto;
+    width: 296px;
+    background: var(--bg-pane);
+    border-right-width: 0;
+    border-left-width: 1px;
+  }
+
+  .pane-body {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Focus at pane scale is the one place the shell shows it: the surface
+     lifts, the border warms, and a strip says which pane has the keyboard. */
+  .pane.focused {
+    background: var(--bg-raised);
+    border-color: var(--border-pane-focus);
+    box-shadow: var(--focus-inset-2);
+  }
+
+  .pane.dim {
+    opacity: 0.72;
+  }
+
+  .focus-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    background: var(--accent-wash-14);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .fdot {
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .fname {
+    flex: 1;
+    min-width: 0;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fesc {
+    flex: 0 0 auto;
+    color: var(--text-on-focus-hint);
+  }
+
+  .ghost {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 0 16px;
+    text-align: center;
+    color: var(--text-ghost);
+    font-size: 11px;
+    line-height: 1.7;
+  }
+
+  .ghost p {
+    margin: 0;
+    max-width: 100%;
+  }
+
+  .gtitle {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .ghint {
+    margin-top: 10px;
+    font-size: 10px;
+  }
+
+  .gkey {
+    color: var(--text-dim);
+  }
+
+  .inspector {
+    flex: 0 0 auto;
+    padding: 12px 14px;
+    min-width: 0;
+  }
+
+  .iname {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-hi);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .icount {
+    margin: 4px 0 0;
+    font-size: 10.5px;
+    color: var(--text-muted);
   }
 
   .empty {
@@ -359,7 +539,7 @@
     padding: 0 20px;
     min-width: 0;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .empty p {
@@ -368,7 +548,14 @@
   }
 
   .empty .hint {
-    color: var(--text-faint);
-    font-size: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .empty .where {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

@@ -157,20 +157,20 @@
   }
 
   .tile.selected {
-    background: var(--selected-bg);
-    border-color: var(--selected-border);
+    background: var(--bg-row-active);
+    border-color: var(--border-selected);
   }
 
   .tile.focused {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--focus-ring);
+    box-shadow: var(--focus-ring);
   }
 
   .thumb {
     position: relative;
     display: grid;
     place-items: center;
-    background: var(--bg-sunken);
+    background: var(--bg-app);
     overflow: hidden;
   }
 
@@ -183,7 +183,7 @@
 
   .missing {
     font-size: 11px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     padding: 0 8px;
     max-width: 100%;
     overflow: hidden;
@@ -204,7 +204,7 @@
     font-size: 11px;
     font-weight: 700;
     line-height: 1;
-    color: var(--on-decision);
+    color: var(--on-accent);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -215,13 +215,13 @@
     left: 4px;
     /* Inverted rather than a fixed grey, so it reads on either theme. */
     background: var(--text-muted);
-    color: var(--bg);
+    color: var(--bg-app);
   }
 
   .warn {
     top: 4px;
     left: 25px;
-    background: var(--warn);
+    background: var(--amber);
   }
 
   .decision {
@@ -230,16 +230,16 @@
   }
 
   .decision.keep_all {
-    background: var(--keep-all);
+    background: var(--keep);
   }
   .decision.drop_raw {
-    background: var(--drop-raw);
+    background: var(--amber);
   }
   .decision.drop_jpeg {
-    background: var(--drop-jpeg);
+    background: var(--accent);
   }
   .decision.drop_all {
-    background: var(--drop-all);
+    background: var(--cut);
   }
 
   .label {

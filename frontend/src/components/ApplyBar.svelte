@@ -6,7 +6,6 @@
   import { cancelApply, confirmApply } from "../lib/actions";
   import { decisionBadge, decisionLabel, formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
-  import NetworkChip from "./NetworkChip.svelte";
 
   const order = ["keep_all", "drop_raw", "drop_jpeg", "drop_all"];
 
@@ -33,13 +32,10 @@
     {/each}
     <span class="muted">↩ to apply</span>
   {/if}
+  <!-- The volume, the selection, the busy flag and the key hints all live in
+       the title bar and the status bar now; this strip is only the pending
+       decisions and the way to apply them. -->
   <span class="spacer"></span>
-  {#if app.folder?.network}<NetworkChip />{/if}
-  {#if app.selection.size > 0}
-    <span class="muted">{app.selection.size} selected</span>
-  {/if}
-  {#if app.busy}<span class="muted">working…</span>{/if}
-  <span class="muted">? for keys</span>
 </div>
 
 {#if app.plan}
@@ -102,7 +98,7 @@
   .muted {
     flex: 0 1 auto;
     min-width: 0;
-    color: var(--text-faint);
+    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -117,7 +113,7 @@
     min-width: 0;
     padding: 2px 7px;
     border-radius: 4px;
-    color: var(--on-decision);
+    color: var(--on-accent);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -125,16 +121,16 @@
   }
 
   .chip.keep_all {
-    background: var(--keep-all);
+    background: var(--keep);
   }
   .chip.drop_raw {
-    background: var(--drop-raw);
+    background: var(--amber);
   }
   .chip.drop_jpeg {
-    background: var(--drop-jpeg);
+    background: var(--accent);
   }
   .chip.drop_all {
-    background: var(--drop-all);
+    background: var(--cut);
   }
 
   .scrim {
@@ -143,16 +139,16 @@
     z-index: 30;
     display: grid;
     place-items: center;
-    background: var(--scrim);
+    background: var(--scrim-plan);
   }
 
   .panel {
     width: min(440px, 86vw);
     padding: 18px 20px;
     border-radius: 10px;
-    background: var(--bg-panel);
+    background: var(--bg-chrome);
     border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-panel);
+    box-shadow: var(--shadow-dialog);
   }
 
   h2 {
@@ -226,7 +222,7 @@
   .primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: var(--accent-text);
+    color: var(--on-accent);
     font-weight: 600;
   }
 

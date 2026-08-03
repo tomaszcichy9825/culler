@@ -108,7 +108,7 @@
     z-index: 35;
     display: grid;
     place-items: center;
-    background: var(--scrim);
+    background: var(--scrim-keymap);
   }
 
   .panel {
@@ -117,9 +117,9 @@
     overflow-y: auto;
     padding: 18px 20px;
     border-radius: 10px;
-    background: var(--bg-panel);
+    background: var(--bg-chrome);
     border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-panel);
+    box-shadow: var(--shadow-dialog);
   }
 
   h2 {
@@ -170,13 +170,13 @@
   .tag {
     margin-left: 6px;
     font-size: 10px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     white-space: nowrap;
   }
 
   .foot {
     margin: 14px 0 0;
     font-size: 11px;
-    color: var(--text-faint);
+    color: var(--text-dim);
   }
 </style>

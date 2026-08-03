@@ -13,15 +13,16 @@
 </span>
 
 <style>
+  /* The title-bar status chip: a dot in the text's own hue on a wash of it. */
   .chip {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 1px 6px;
+    gap: 6px;
+    padding: 3px 8px;
     border-radius: 4px;
-    background: var(--warn-bg);
-    color: var(--warn);
+    background: var(--amber-wash-16);
+    color: var(--amber);
     font-size: 10.5px;
     font-weight: 600;
     letter-spacing: 0.02em;

@@ -25,9 +25,9 @@
     white-space: nowrap;
     padding: 8px 14px;
     border-radius: 8px;
-    background: var(--bg-panel);
+    background: var(--bg-chrome);
     border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-toast);
+    box-shadow: var(--shadow-float);
     color: var(--text);
     font-size: 12.5px;
     pointer-events: none;
@@ -35,8 +35,8 @@
   }
 
   .toast.error {
-    border-color: var(--error-border);
-    color: var(--error-text);
+    border-color: var(--cut);
+    color: var(--cut);
   }
 
   @keyframes rise {

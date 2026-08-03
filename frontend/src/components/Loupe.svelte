@@ -136,7 +136,7 @@
     display: grid;
     place-items: center;
     overflow: hidden;
-    background: var(--bg-sunken);
+    background: var(--bg-app);
   }
 
   .stage.zoomed {
@@ -156,7 +156,7 @@
   }
 
   .missing {
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-size: 13px;
     max-width: 90%;
     overflow: hidden;
@@ -194,7 +194,7 @@
   .hint {
     flex: 0 1 auto;
     min-width: 0;
-    color: var(--text-faint);
+    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -206,32 +206,32 @@
     max-width: 40%;
     padding: 2px 7px;
     border-radius: 4px;
-    background: var(--bg-chip);
+    background: var(--bg-field);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .chip.warn {
-    background: var(--warn-bg);
-    color: var(--warn);
+    background: var(--amber-wash-16);
+    color: var(--amber);
   }
 
   .chip.decision {
-    color: var(--on-decision);
+    color: var(--on-accent);
     font-weight: 600;
   }
 
   .chip.keep_all {
-    background: var(--keep-all);
+    background: var(--keep);
   }
   .chip.drop_raw {
-    background: var(--drop-raw);
+    background: var(--amber);
   }
   .chip.drop_jpeg {
-    background: var(--drop-jpeg);
+    background: var(--accent);
   }
   .chip.drop_all {
-    background: var(--drop-all);
+    background: var(--cut);
   }
 </style>

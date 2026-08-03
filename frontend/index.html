@@ -1,8 +1,30 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <script>
+      // Resolve the theme before the first paint, so the window never flashes
+      // the wrong one. Colour scheme is system, dark or light; system follows
+      // the OS for as long as it is the choice.
+      (function () {
+        var STORE = "culler.theme";
+        var media = window.matchMedia("(prefers-color-scheme: light)");
+        function apply() {
+          var want;
+          try {
+            want = localStorage.getItem(STORE) || "system";
+          } catch (e) {
+            want = "system";
+          }
+          var theme = want === "system" ? (media.matches ? "light" : "dark") : want;
+          document.documentElement.setAttribute("data-theme", theme);
+        }
+        media.addEventListener("change", apply);
+        window.addEventListener("storage", apply);
+        apply();
+      })();
+    </script>
     <link rel="stylesheet" href="/style.css" />
     <title>culler</title>
   </head>

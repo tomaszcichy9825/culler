@@ -71,7 +71,7 @@
     padding: 5px 9px;
     border-radius: 6px;
     border: 1px solid var(--border-strong);
-    background: var(--bg);
+    background: var(--bg-app);
     color: var(--text);
     outline: none;
     text-overflow: ellipsis;
@@ -84,7 +84,7 @@
   }
 
   input::placeholder {
-    color: var(--text-faint);
+    color: var(--text-dim);
   }
 
   button {
@@ -94,7 +94,7 @@
     padding: 5px 11px;
     border-radius: 6px;
     border: 1px solid var(--border-strong);
-    background: var(--bg-chip);
+    background: var(--bg-field);
     color: var(--text);
     cursor: pointer;
     white-space: nowrap;

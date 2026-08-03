@@ -1,99 +1,275 @@
-/* Design tokens and the base page.
+/* Design tokens, the bundled faces, and the base page.
    Loaded before the app so the first paint is already the right theme, and so
    every component styles from variables rather than literal colours.
-   Dark is the default; the light block below swaps the same names. */
+
+   Dark is the default and holds the full set; the light block swaps values for
+   the same names. Themes only swap token values — no layout, size or weight
+   changes between them, so a screenshot of one maps onto the other. */
+
+/* ---- faces ----
+   Bundled under fonts/, never fetched: the app makes no network calls of its
+   own, and a CDN face would leave the UI unstyled on an offline machine.
+   See fonts/README.md for sources, versions and licences. */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Public Sans is drawn exactly once, on the cold-start headline. */
+@font-face {
+  font-family: "Public Sans";
+  src: url("/fonts/PublicSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* ---- type ---- */
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: "Public Sans", system-ui, sans-serif;
 
-  /* Surfaces, in the order they stack: page, chrome, tile, panel. */
-  --bg: #0b0c11;
-  --bg-chrome: #0d0f15;
-  --bg-sunken: #08090d;
-  --bg-tile: #14161d;
-  --bg-panel: #12141b;
-  --bg-chip: #191c25;
-  --bg-raised: #1c1f29;
+  /* ---- surfaces ---- */
+  --bg-app: #0e1013; /* deepest: image stage, loupe backdrop, window body behind panes */
+  --bg-window: #14161a; /* window frame + centre pane background */
+  --bg-chrome: #171a1f; /* title bar, status bar, side panes, dialogs */
+  --bg-pane: #171a1f; /* side pane body */
+  --bg-raised: #1a1e24; /* dialog footers, spec-card label column, focused sidebar */
+  --bg-tile: #1a1d23; /* grid tile body */
+  --bg-thumb: #0e1013; /* empty thumbnail well */
+  --bg-field: #1d2127; /* inputs, segmented-control shell, secondary buttons, chips */
+  --bg-field-alt: #1c2027; /* inset value boxes */
+  --bg-kbd: #262b34; /* keycap in the title-bar search hint */
+  --bg-track: #20242b; /* progress + meter track */
+  --bg-row-active: #1e242c; /* focused table/tree row */
+  --bg-row-zebra: #16191e; /* odd table row */
 
-  --border: #1c1f29;
-  --border-strong: #262a36;
+  /* ---- borders ---- */
+  --border: #23272f; /* the default 1px rule between every region */
+  --border-hair: #1b1e24; /* row separators inside lists and tables */
+  --border-faint: #1f232a; /* section underline inside palettes and shoot headers */
+  --border-strong: #2b313b; /* controls, chips, buttons, badges */
+  --border-window: #262a32; /* the window's own outer border */
+  --border-dialog: #2f3742; /* dialog and map-pin border */
 
-  --text: #e8eaf0;
-  --text-muted: #a9b0c0;
-  --text-faint: #5b6070;
+  /* ---- text, five tiers ---- */
+  --text-hi: #eef1f6; /* selected/active row, dialog subject, wordmark */
+  --text: #d7dae0; /* default body */
+  --text-2: #c3c8d1; /* table cells, tile filename, keycap glyph */
+  --text-3: #a9b0bd; /* prose paragraphs inside spec cards */
+  --text-muted: #8b919e; /* labels, secondary values */
+  --text-dim: #5a606d; /* hints, paths, inactive status text */
+  --text-faint: #4d535f; /* uppercase section labels */
+  --text-ghost: #3f4550; /* placeholder prose, empty-state text, dead legend swatch */
+  --text-dead: #3a404b; /* path separators, absent-file glyph */
 
-  --accent: #7aa2f7;
-  --accent-text: #0b0c11;
-  --focus-ring: rgba(122, 162, 247, 0.45);
+  /* ---- accents ----
+     Two hues, never interchangeable: brand marks the product, accent marks
+     interaction. Focus is never brand. */
+  --brand: #56b6c2; /* mark, wordmark, brand titles */
+  --brand-hi: #7fd1db; /* link hover only */
+  --brand-dark: #0e8792; /* the mark's solid square on light backgrounds */
+  --mark-stroke: #3a4550; /* the mark's outlined square */
+  --wordmark: #eef1f6;
+  --accent: #61afef; /* focus, selection, active mode/layout/nav */
+  --on-accent: #0e1013; /* text on any filled accent or status colour */
 
-  --selected-bg: #1c2740;
-  --selected-border: #2f4a7a;
+  /* ---- verdict + status ---- */
+  --keep: #98c379;
+  --keep-text: #98c379;
+  --cut: #e06c75;
+  --cut-text: #e06c75;
+  --undecided: #3a404b; /* the undecided legend swatch */
+  --amber: #d19a66; /* warnings: read-only card, indexing, without-GPS, geotag mode */
+  --gold: #e5c07b; /* pending counts, dirty-field marks, star ratings, mixed values */
+  --violet: #c678dd; /* search field keys, smart collections, GPX tracks */
+  --neutral-bar: #3d4650; /* losing metric bar in compare, low-density heat bar */
 
-  /* One colour per decision, reused by the tile badge, the loupe chip and the
-     apply bar, so a decision reads the same everywhere. */
-  --keep-all: #6fcf7f;
-  --drop-raw: #e0af68;
-  --drop-jpeg: #7aa2f7;
-  --drop-all: #f77a7a;
-  --on-decision: #0b0c11;
+  /* ---- accent washes ---- */
+  --accent-wash-10: rgba(97, 175, 239, 0.1); /* focused editor pane, recording box */
+  --accent-wash-14: rgba(97, 175, 239, 0.14); /* focused-pane header strip */
+  --accent-wash-16: rgba(97, 175, 239, 0.16); /* mode chip in status bar, active nav row */
+  --accent-wash-18: rgba(97, 175, 239, 0.18); /* MOVE badge, selection pill */
+  --keep-wash: rgba(152, 195, 121, 0.1);
+  --keep-wash-10: rgba(152, 195, 121, 0.1);
+  --keep-wash-12: rgba(152, 195, 121, 0.12);
+  --keep-wash-16: rgba(152, 195, 121, 0.16);
+  --keep-wash-20: rgba(152, 195, 121, 0.2); /* R/J badge, file kept */
+  --cut-wash: rgba(224, 108, 117, 0.09);
+  --cut-wash-09: rgba(224, 108, 117, 0.09);
+  --cut-wash-14: rgba(224, 108, 117, 0.14);
+  --cut-wash-16: rgba(224, 108, 117, 0.16);
+  --cut-wash-22: rgba(224, 108, 117, 0.22); /* R/J badge, file cut */
+  --amber-wash-14: rgba(209, 154, 102, 0.14);
+  --amber-wash-16: rgba(209, 154, 102, 0.16);
+  --amber-wash-18: rgba(209, 154, 102, 0.18);
+  --gold-wash-07: rgba(229, 192, 123, 0.07); /* dirty form row */
+  --gold-wash-16: rgba(229, 192, 123, 0.16);
+  --violet-wash-16: rgba(198, 120, 221, 0.16);
+  --absent-wash: rgba(120, 130, 145, 0.14); /* R/J badge, file not present */
 
-  --warn: #e0af68;
-  --warn-bg: rgba(224, 175, 104, 0.18);
+  /* ---- focus + selection ---- */
+  --focus-ring: 0 0 0 2px rgba(97, 175, 239, 0.4); /* focused tile / filmstrip frame */
+  --focus-ring-soft: 0 0 0 2px rgba(97, 175, 239, 0.35); /* focused map pin */
+  --focus-inset: inset 0 0 0 1px rgba(97, 175, 239, 0.3); /* focused pane */
+  --focus-inset-2: inset 0 0 0 1px rgba(97, 175, 239, 0.35); /* focused sidebar */
+  --focus-edge: inset 2px 0 0 #61afef; /* focused table row */
+  --border-focus: #61afef;
+  --border-selected: #2d4360; /* selected-but-not-focused tile */
+  --border-pane-focus: #2f5a7a; /* focused pane's outer border */
+  --text-on-focus-hint: #5a7fa0; /* the "esc → grid" hint inside a focused-pane header */
 
-  --error-bg: rgba(122, 58, 58, 0.28);
-  --error-border: #7a3a3a;
-  --error-text: #ffbcbc;
-
-  --scrim: rgba(6, 7, 15, 0.72);
-  --shadow-panel: 0 24px 60px rgba(0, 0, 0, 0.55);
-  --shadow-toast: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* ---- scrims + shadows ---- */
+  --scrim-palette: rgba(9, 10, 12, 0.68);
+  --scrim-plan: rgba(9, 10, 12, 0.72);
+  --scrim-keymap: rgba(9, 10, 12, 0.8);
+  --scrim-loupe: rgba(9, 10, 12, 0.82);
+  --glass: rgba(14, 16, 19, 0.86); /* floating chips over an image or map */
+  --shadow-window: 0 30px 80px rgba(0, 0, 0, 0.5);
+  --shadow-dialog: 0 24px 70px rgba(0, 0, 0, 0.6);
+  --shadow-palette: 0 30px 90px rgba(0, 0, 0, 0.66);
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.55); /* compare crop inset */
+  --shadow-pin: 0 4px 14px rgba(0, 0, 0, 0.5);
+  --shadow-icon: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f4f5f8;
-    --bg-chrome: #eaecf1;
-    --bg-sunken: #e2e4ea;
-    --bg-tile: #ffffff;
-    --bg-panel: #ffffff;
-    --bg-chip: #e6e8ee;
-    --bg-raised: #dfe2e9;
+/* Light is paper, not a washed-out dark theme.
+   The theme resolves to an explicit data-theme on <html> — the inline script in
+   index.html reads the system preference before first paint and keeps watching
+   it, so the values below live in one place rather than being repeated under a
+   prefers-color-scheme query as well. */
+:root[data-theme="light"] {
+  color-scheme: light;
 
-    --border: #d8dbe3;
-    --border-strong: #c3c8d4;
+  --bg-app: #ffffff;
+  --bg-window: #ffffff;
+  --bg-chrome: #f2f4f7;
+  --bg-pane: #f7f8fa;
+  --bg-raised: #eceef2;
+  --bg-tile: #f7f8fa;
+  --bg-thumb: #e7eaf0;
+  --bg-field: #ffffff;
+  --bg-field-alt: #e7eaf0;
+  --bg-kbd: #eceef2;
+  --bg-track: #e7eaf0;
+  --bg-row-active: #e8eefa;
+  --bg-row-zebra: #fafbfc;
 
-    --text: #14161b;
-    --text-muted: #565d6d;
-    --text-faint: #858c9c;
+  --border: #dfe2e8;
+  --border-hair: #e7eaee;
+  --border-faint: #e3e6ec;
+  --border-strong: #d6dae2;
+  --border-window: #cbd0d9;
+  --border-dialog: #cbd0d9;
 
-    --accent: #2f6fe0;
-    --accent-text: #ffffff;
-    --focus-ring: rgba(47, 111, 224, 0.35);
+  --text-hi: #1b1e25;
+  --text: #1b1e25;
+  --text-2: #2f3541;
+  --text-3: #454c5a;
+  --text-muted: #5a616f;
+  --text-dim: #8e95a3;
+  --text-faint: #8e95a3;
+  --text-ghost: #a2a9b6;
+  --text-dead: #adb3bf;
 
-    --selected-bg: #dce8ff;
-    --selected-border: #9dbcf5;
+  --brand: #0e8792;
+  --brand-hi: #0b6a73;
+  --brand-dark: #0e8792;
+  --mark-stroke: #b6bdc9;
+  --wordmark: #12151b;
+  /* No light screen draws focus, selection or an active mode, so the accent is
+     the one hue the design did not supply. #61afef fails contrast on white;
+     this is the blue the app already shipped. */
+  --accent: #2f6fe0;
+  --on-accent: #ffffff;
 
-    --keep-all: #2f9e4f;
-    --drop-raw: #b07c12;
-    --drop-jpeg: #2f6fe0;
-    --drop-all: #d24747;
-    --on-decision: #ffffff;
+  --keep: #45903a;
+  --keep-text: #3d7f33;
+  --cut: #cc4550;
+  --cut-text: #c03b46;
+  --undecided: #cbd0d9;
+  --amber: #a05a12;
+  --gold: #a8781c;
+  --violet: #8d3fb0;
+  --neutral-bar: #cbd0d9;
 
-    --warn: #9a6a0c;
-    --warn-bg: rgba(176, 124, 18, 0.16);
+  --accent-wash-10: rgba(47, 111, 224, 0.1);
+  --accent-wash-14: rgba(47, 111, 224, 0.14);
+  --accent-wash-16: rgba(47, 111, 224, 0.16);
+  --accent-wash-18: rgba(47, 111, 224, 0.18);
+  --keep-wash: rgba(69, 144, 58, 0.1);
+  --keep-wash-10: rgba(69, 144, 58, 0.1);
+  --keep-wash-12: rgba(69, 144, 58, 0.12);
+  --keep-wash-16: rgba(69, 144, 58, 0.16);
+  --keep-wash-20: rgba(69, 144, 58, 0.2);
+  --cut-wash: rgba(204, 69, 80, 0.09);
+  --cut-wash-09: rgba(204, 69, 80, 0.09);
+  --cut-wash-14: rgba(204, 69, 80, 0.14);
+  --cut-wash-16: rgba(204, 69, 80, 0.16);
+  --cut-wash-22: rgba(204, 69, 80, 0.22);
+  --amber-wash-14: rgba(160, 90, 18, 0.14);
+  --amber-wash-16: rgba(160, 90, 18, 0.16);
+  --amber-wash-18: rgba(160, 90, 18, 0.18);
+  --gold-wash-07: rgba(168, 120, 28, 0.07);
+  --gold-wash-16: rgba(168, 120, 28, 0.16);
+  --violet-wash-16: rgba(141, 63, 176, 0.16);
+  --absent-wash: rgba(120, 130, 145, 0.14);
 
-    --error-bg: rgba(210, 71, 71, 0.12);
-    --error-border: #d24747;
-    --error-text: #97231f;
+  --focus-ring: 0 0 0 2px rgba(47, 111, 224, 0.4);
+  --focus-ring-soft: 0 0 0 2px rgba(47, 111, 224, 0.35);
+  --focus-inset: inset 0 0 0 1px rgba(47, 111, 224, 0.3);
+  --focus-inset-2: inset 0 0 0 1px rgba(47, 111, 224, 0.35);
+  --focus-edge: inset 2px 0 0 #2f6fe0;
+  --border-focus: #2f6fe0;
+  --border-selected: #9dbcf5;
+  --border-pane-focus: #7fa6ea;
+  --text-on-focus-hint: #4a72b8;
 
-    --scrim: rgba(20, 22, 27, 0.42);
-    --shadow-panel: 0 24px 60px rgba(20, 22, 27, 0.22);
-    --shadow-toast: 0 12px 32px rgba(20, 22, 27, 0.2);
-  }
+  --scrim-palette: rgba(20, 26, 40, 0.38);
+  --scrim-plan: rgba(20, 26, 40, 0.42);
+  --scrim-keymap: rgba(20, 26, 40, 0.5);
+  /* The loupe stage stays dark whatever the theme — it is where the photograph
+     is judged, and paper around a photograph shifts how it reads. */
+  --scrim-loupe: rgba(9, 10, 12, 0.82);
+  --glass: rgba(255, 255, 255, 0.86);
+  --shadow-window: 0 30px 80px rgba(20, 26, 40, 0.28);
+  --shadow-dialog: 0 24px 70px rgba(20, 26, 40, 0.22);
+  --shadow-palette: 0 30px 90px rgba(20, 26, 40, 0.26);
+  --shadow-float: 0 8px 24px rgba(20, 26, 40, 0.2);
+  --shadow-pin: 0 4px 14px rgba(20, 26, 40, 0.18);
+  --shadow-icon: 0 12px 30px rgba(20, 26, 40, 0.2);
 }
 
 * {
@@ -104,9 +280,10 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  background: var(--bg-app);
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 body {
@@ -118,4 +295,18 @@ body {
 /* The mount node must not introduce a box of its own between body and .app. */
 #app {
   display: contents;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }

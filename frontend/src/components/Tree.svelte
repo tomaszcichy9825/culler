@@ -230,8 +230,8 @@
   }
 
   .row.active {
-    background: var(--selected-bg);
-    box-shadow: inset 0 0 0 1px var(--selected-border);
+    background: var(--bg-row-active);
+    box-shadow: inset 0 0 0 1px var(--border-selected);
   }
 
   button {
@@ -249,7 +249,7 @@
     height: 22px;
     display: grid;
     place-items: center;
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-size: 9px;
     line-height: 1;
   }
@@ -291,7 +291,7 @@
     display: grid;
     place-items: center;
     border-radius: 4px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-size: 13px;
     line-height: 1;
     opacity: 0;
@@ -303,13 +303,13 @@
   }
 
   .remove:hover {
-    background: var(--bg-chip);
+    background: var(--bg-field);
     color: var(--text);
   }
 
   .empty {
     margin: 6px 8px;
     font-size: 11.5px;
-    color: var(--text-faint);
+    color: var(--text-dim);
   }
 </style>

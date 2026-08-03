@@ -85,7 +85,7 @@
     width: min(260px, 60%);
     height: 4px;
     border-radius: 2px;
-    background: var(--bg-raised);
+    background: var(--bg-track);
     overflow: hidden;
   }
 
@@ -99,7 +99,7 @@
   .count {
     margin: 0;
     font-size: 12px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-variant-numeric: tabular-nums;
   }
 
@@ -120,6 +120,6 @@
 
   .slow {
     font-size: 12px;
-    color: var(--text-faint);
+    color: var(--text-dim);
   }
 </style>

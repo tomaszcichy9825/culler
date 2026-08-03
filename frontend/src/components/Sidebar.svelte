@@ -52,23 +52,19 @@
 {/if}
 
 <style>
+  /* Width, background and the rule to its right belong to the pane that holds
+     this — the rail has to be able to take on the focused-pane treatment. */
   .sidebar,
   .rail {
-    flex: 0 0 auto;
+    flex: 1;
+    width: 100%;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--bg-chrome);
-    border-right: 1px solid var(--border);
     overflow: hidden;
   }
 
-  .sidebar {
-    width: 232px;
-  }
-
   .rail {
-    width: 30px;
     align-items: center;
     padding-top: 8px;
   }
@@ -89,7 +85,7 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--text-faint);
+    color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -102,7 +98,7 @@
     padding: 3px 8px;
     border-radius: 5px;
     border: 1px solid var(--border-strong);
-    background: var(--bg-chip);
+    background: var(--bg-field);
     color: var(--text);
     cursor: pointer;
     white-space: nowrap;
@@ -122,7 +118,7 @@
     border: none;
     background: none;
     border-radius: 4px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
@@ -167,7 +163,7 @@
   .count {
     flex: 0 0 auto;
     font-size: 10.5px;
-    color: var(--text-faint);
+    color: var(--text-dim);
     white-space: nowrap;
   }
 </style>
