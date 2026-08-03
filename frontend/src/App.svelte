@@ -26,9 +26,13 @@
   import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
   import { runAction, openFolder as openFolderAction } from "./lib/actions";
-  import { ExifService, LibraryIndexService } from "./lib/bindings";
+  import { ExifService, ImportService, LibraryIndexService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
+  import ImportCentre from "./components/import/ImportCentre.svelte";
+  import ImportLeft from "./components/import/ImportLeft.svelte";
+  import ImportRight from "./components/import/ImportRight.svelte";
+  import { connectImport, onOpenFolder as onImportOpen, watchImportProgress } from "./lib/import.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -169,6 +173,18 @@
     // folder: the grid has to be the folder's again before it loads.
     library.closeSearch();
     void openFolderAction(dir, focusHash);
+  });
+  connectImport({
+    DetectCards: async () => ((await ImportService.DetectCards()) ?? []) as never,
+    CardSummary: async (path) => (await ImportService.CardSummary(path)) as never,
+    ImportPlan: async (dir) => (await ImportService.ImportPlan(dir)) as never,
+    Execute: async (dir, backupDest) => (await ImportService.Execute(dir, backupDest)) as never,
+  });
+  void watchImportProgress();
+  onImportOpen((dir) => {
+    shell.setMode("cull");
+    library.closeSearch();
+    void openFolderAction(dir);
   });
 
   // The catalogue is wired by here, so the startup sequence can hand it the
@@ -455,6 +471,8 @@
           <Sidebar bind:path />
         {:else if shell.mode === "exif"}
           <FramesRail />
+        {:else if shell.mode === "import"}
+          <ImportLeft />
         {:else}
           {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -467,7 +485,13 @@
         {#if shell.mode === "exif"}
           <EditorPane />
         {:else if shell.mode === "import"}
-          {@render ghost(shell.spec.label, "import lands next wave", "⌃1", "back to cull")}
+          <ImportCentre
+            layout={shell.layout}
+            onreview={(dir) => {
+              shell.setMode("cull");
+              void openFolderAction(dir);
+            }}
+          />
         {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
         {:else if app.scanning !== null}
@@ -503,6 +527,8 @@
           <Inspector />
         {:else if shell.mode === "exif"}
           <TargetsPane />
+        {:else if shell.mode === "import"}
+          <ImportRight />
         {:else}
           {@render ghost(shell.spec.panes.right, "this pane comes later", "⌃1", "back to cull")}
         {/if}
