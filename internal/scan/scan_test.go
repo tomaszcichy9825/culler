@@ -246,3 +246,24 @@ func TestGrouping(t *testing.T) {
 		}
 	})
 }
+
+func TestHiddenFilesAreIgnored(t *testing.T) {
+	// macOS writes AppleDouble companions (._NAME.RAF) onto SMB and exFAT
+	// volumes; they carry real image extensions but are not images.
+	dir := t.TempDir()
+	touch(t, dir, "DSCF1234.RAF")
+	touch(t, dir, "._DSCF1234.RAF")
+	touch(t, dir, ".DS_Store")
+	touch(t, dir, ".hidden.jpg")
+
+	groups, err := ScanDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("hidden files must not become frames: got %d groups", len(groups))
+	}
+	if groups[0].Stem != "DSCF1234" {
+		t.Fatalf("wrong group survived: %q", groups[0].Stem)
+	}
+}

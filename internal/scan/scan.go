@@ -146,6 +146,12 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 			continue
 		}
 		name := e.Name()
+		// Hidden files are never frames. macOS writes AppleDouble companions
+		// (._NAME.RAF) onto SMB and exFAT volumes that carry real image
+		// extensions but hold resource-fork metadata.
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		class, prio := cfg.class(ext)
 		if class == "" {
