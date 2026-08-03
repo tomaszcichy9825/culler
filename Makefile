@@ -9,7 +9,7 @@ WAILS3 := $(shell command -v wails3 2>/dev/null || echo $(GOBIN)/wails3)
 # children still need GOBIN on PATH.
 export PATH := $(PATH):$(GOBIN)
 
-.PHONY: all build dev run test test-race fuzz vet fmt check clean package release tools help
+.PHONY: all build dev run test test-race fuzz vet fmt check clean package release tools icons help
 
 all: build
 
@@ -45,6 +45,9 @@ fmt: ## gofmt all Go code
 
 check: vet test-race ## what CI runs: vet + race tests + frontend check
 	cd frontend && npm run check
+
+icons: ## rebuild the app icons from assets/brand
+	./scripts/icons.sh
 
 package: ## production package for this platform (unsigned)
 	"$(WAILS3)" package

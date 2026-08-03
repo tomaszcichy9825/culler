@@ -1,0 +1,20 @@
+<!-- macOS app icon. Container 132px, radius 30 (22.4%), 1px #2b313b hairline,
+     plate linear-gradient(160deg,#1e232b,#12151a). Mark box 70 centred,
+     squares 48, stroke 3 #4a5560. The spec's drop shadow is a presentation
+     treatment for the spec sheet only: macOS composites its own shadow, so
+     baking one in would double it.
+     Gradient endpoints are the CSS 160deg gradient line in bounding-box units:
+     direction (sin160, -cos160) = (0.342, 0.940), line length 1.282. -->
+<svg viewBox="0 0 132 132" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="plate" x1="0.281" y1="-0.102" x2="0.719" y2="1.102">
+      <stop offset="0" stop-color="#1e232b"/>
+      <stop offset="1" stop-color="#12151a"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="131" height="131" rx="29.5"
+        fill="url(#plate)" stroke="#2b313b" stroke-width="1"/>
+  <rect x="54.5" y="32.5" width="45" height="45" rx="5"
+        fill="none" stroke="#4a5560" stroke-width="3"/>
+  <rect x="31"   y="53"   width="48" height="48" rx="5" fill="#56b6c2"/>
+</svg>

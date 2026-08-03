@@ -1,0 +1,9 @@
+<!-- 16px app icon. Per the spec's 16px caveat the outlined frame loses its inner
+     hole at this size, so the back frame ships as a solid 40%-opacity block
+     rather than a stroke. Plate is flat #12151a, radius 4. Mark box 11,
+     squares 7; square corner radius rounds up to 1 to stay legible. -->
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="16" height="16" rx="4" fill="#12151a"/>
+  <rect x="6.5" y="2.5" width="7" height="7" rx="1" fill="#4a5560" fill-opacity="0.4"/>
+  <rect x="2.5" y="6.5" width="7" height="7" rx="1" fill="#56b6c2"/>
+</svg>

@@ -1,0 +1,8 @@
+<!-- Windows app icon. Container 132px, radius 2, full bleed on #12151a.
+     Mark box 82 centred, squares 56, stroke 3.5 #4a5560. -->
+<svg viewBox="0 0 132 132" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="132" height="132" rx="2" fill="#12151a"/>
+  <rect x="52.75" y="26.75" width="52.5" height="52.5" rx="6"
+        fill="none" stroke="#4a5560" stroke-width="3.5"/>
+  <rect x="25"    y="51"    width="56"   height="56"   rx="6" fill="#56b6c2"/>
+</svg>

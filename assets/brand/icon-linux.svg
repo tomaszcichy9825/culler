@@ -1,0 +1,9 @@
+<!-- Linux app icon. Container 132px, radius 50% (circle-safe) on #12151a.
+     Mark box 64 centred, squares 44, stroke 3 #4a5560. The 16% inset leaves an
+     89.8px safe area; the 64px mark box sits well inside it. -->
+<svg viewBox="0 0 132 132" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="66" cy="66" r="66" fill="#12151a"/>
+  <rect x="55.5" y="35.5" width="41" height="41" rx="4"
+        fill="none" stroke="#4a5560" stroke-width="3"/>
+  <rect x="34"   y="54"   width="44" height="44" rx="4" fill="#56b6c2"/>
+</svg>

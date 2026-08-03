@@ -1,0 +1,14 @@
+<!-- 64px step of the macOS ramp: radius 15, mark 34, squares 23, stroke 2. -->
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="plate" x1="0.281" y1="-0.102" x2="0.719" y2="1.102">
+      <stop offset="0" stop-color="#1e232b"/>
+      <stop offset="1" stop-color="#12151a"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="14.5"
+        fill="url(#plate)" stroke="#2b313b" stroke-width="1"/>
+  <rect x="27" y="16" width="21" height="21" rx="2"
+        fill="none" stroke="#4a5560" stroke-width="2"/>
+  <rect x="15" y="26" width="23" height="23" rx="2" fill="#56b6c2"/>
+</svg>

@@ -1,0 +1,7 @@
+<!-- Monochrome mark for use on light surfaces: menu bars, tray, print.
+     Both squares solid; the back square's 52x52 footprint is the outlined
+     square's outer edge (mark.svg insets its rect by half the 3px stroke). -->
+<svg viewBox="0 0 76 76" xmlns="http://www.w3.org/2000/svg">
+  <rect x="24" y="0"  width="52" height="52" rx="5" fill="#12151b"/>
+  <rect x="0"  y="24" width="52" height="52" rx="5" fill="#12151b"/>
+</svg>
