@@ -91,7 +91,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
       { id: "mode-cull", label: "CULL mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+1"] },
       { id: "mode-exif", label: "EXIF mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+2"] },
       { id: "mode-map", label: "MAP mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+3"] },
-      { id: "mode-library", label: "LIBRARY mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+4"] },
+      { id: "mode-import", label: "IMPORT mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+4"] },
     ],
   },
   {
@@ -117,6 +117,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
       { id: "keymap-overlay", label: "the keys overlay", note: "", scope: "global", source: "config", chords: ["?"] },
       { id: "open-settings", label: "settings", note: "this screen", scope: "global", source: "shell", chords: ["mod+,"] },
       { id: "command-palette", label: "command palette", note: "comes in v0.2", scope: "global", source: "config", chords: ["mod+k"] },
+      { id: "search", label: "search the catalogue", note: "results replace the grid", scope: "global", source: "config", chords: ["/"] },
       { id: "copy-palette", label: "copy destinations", note: "comes in v0.2", scope: "global", source: "config", chords: ["c"] },
       { id: "move-palette", label: "move destinations", note: "comes in v0.2", scope: "global", source: "config", chords: ["m"] },
       { id: "filter-palette", label: "filters", note: "comes in v0.2", scope: "global", source: "config", chords: ["f"] },

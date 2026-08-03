@@ -1,11 +1,18 @@
-// LIBRARY mode's state: the roots the catalogue covers, the search over them,
-// the sessions they group into and what they are holding on disk.
+// The catalogue's state: the roots it covers, the search over them, the
+// sessions they group into and what they are holding on disk.
 //
-// The backend is injected rather than imported. LIBRARY talks to a service the
-// shell registers, and this module is written so that the components can be
-// mounted in the harness, or against a stub, without a running Wails app. Call
-// `connectCatalog` once at startup with the generated binding, and
-// `watchCatalogProgress` once to feed the indexing chip.
+// The catalogue is no longer a room of its own. Its tree is CULL's sidebar,
+// its search is the bar `/` opens over the grid, and its sessions are a group
+// under Sources — so this module is the one place that knows what is indexed,
+// and three parts of one screen read it.
+//
+// The backend is injected rather than imported. The catalogue talks to a
+// service the shell registers, and this module is written so that the
+// components can be mounted in the harness, or against a stub, without a
+// running Wails app. Call `connectCatalog` once at startup with the generated
+// binding, and `watchCatalogProgress` once to feed the indexing chip.
+
+import type { GroupDTO } from "./bindings";
 
 /** One folder the catalogue covers. Mirrors the backend's RootDTO. */
 export interface CatalogRoot {
@@ -175,6 +182,37 @@ export interface CatalogSource {
   TreeChildren?(dir: string): Promise<CatalogTreeNode[]>;
 }
 
+/**
+ * frameToGroup is a catalogued frame as the grid reads one. The two carry the
+ * same paths under the same names deliberately, so a result renders through
+ * exactly the tile, the loupe and the table an open folder does, and the grid
+ * needs no idea that it is showing an index rather than a directory.
+ *
+ * What the index does not record comes back empty rather than invented: a
+ * search result has no sidecar count, no warnings and no destination, and its
+ * mask is left unset, which everything that reads one takes as both halves.
+ */
+export function frameToGroup(frame: CatalogFrame): GroupDTO {
+  return {
+    dir: frame.dir,
+    stem: frame.stem,
+    kind: frame.kind,
+    hasRaw: frame.hasRaw,
+    hasJpeg: frame.hasJpeg,
+    rawPath: frame.rawPath,
+    jpegPath: frame.jpegPath,
+    sidecars: 0,
+    shot: frame.shot,
+    warnings: [],
+    verdict: frame.verdict,
+    mask: "",
+    rating: frame.rating,
+    hash: frame.hash,
+    destination: "",
+    decision: "",
+  };
+}
+
 export const NO_FACETS: CatalogFacets = {
   kind: "",
   verdict: "",
@@ -202,7 +240,7 @@ export function connectCatalog(backend: CatalogSource) {
 }
 
 /**
- * OpenFolderHandler is how LIBRARY hands a folder to CULL.
+ * OpenFolderHandler is how the catalogue hands a folder to the grid.
  *
  * `dir` is the folder to load. `focusHash` names one frame in it and is what a
  * search result passes, so that opening a tile lands on the frame the user was
@@ -218,7 +256,7 @@ let openFolderHandler: OpenFolderHandler | null = null;
 /**
  * onOpenFolder registers what happens when a result is opened. The shell hands
  * over its own openFolder action; this module does not reach into it, so that
- * LIBRARY has no opinion about how CULL loads a folder.
+ * the catalogue has no opinion about how the grid loads a folder.
  */
 export function onOpenFolder(handler: OpenFolderHandler) {
   openFolderHandler = handler;
@@ -226,6 +264,21 @@ export function onOpenFolder(handler: OpenFolderHandler) {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** trimTrailing drops trailing separators so paths compare consistently. */
+function trimTrailing(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, "") : path;
+}
+
+/**
+ * covers reports whether root contains dir. The comparison is on whole path
+ * segments, so /Volumes/CardTwo is not treated as living inside /Volumes/Card.
+ */
+export function covers(root: string, dir: string): boolean {
+  const r = trimTrailing(root);
+  const d = trimTrailing(dir);
+  return d === r || d.startsWith(r === "/" ? "/" : `${r}/`);
 }
 
 class LibraryState {
@@ -261,6 +314,15 @@ class LibraryState {
   selectedSession = $state<string | null>(null);
 
   storage = $state<CatalogStorage | null>(null);
+  /** Whether the storage view is up as a full pane over the shell. */
+  storageOpen = $state(false);
+
+  /**
+   * Whether the search bar is up. While it is, the grid is showing index
+   * results rather than the open folder's frames, and Esc puts the folder
+   * back — nothing about the folder itself has changed underneath.
+   */
+  searchOpen = $state(false);
 
   /** Which result has the keyboard, as an index into `results`. */
   focusIndex = $state(0);
@@ -295,6 +357,43 @@ class LibraryState {
   setQuery(value: string) {
     this.query = value;
     this.scheduleSearch();
+  }
+
+  /**
+   * openSearch puts the bar up over the grid. It starts empty rather than on
+   * the last query: the first keystroke would otherwise edit the tail of
+   * something the user cannot see the start of.
+   */
+  openSearch() {
+    this.searchOpen = true;
+    this.query = "";
+    this.results = [];
+    this.total = 0;
+    this.searched = false;
+    this.focusIndex = 0;
+  }
+
+  /** closeSearch drops the results and lets the open folder back onto the grid. */
+  closeSearch() {
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    // Retire the ticket so a search still in flight cannot land results onto
+    // a grid that has gone back to showing a folder.
+    this.#ticket++;
+    this.searchOpen = false;
+    this.query = "";
+    this.results = [];
+    this.total = 0;
+    this.searched = false;
+    this.loading = false;
+    this.focusIndex = 0;
+  }
+
+  toggleSearch() {
+    if (this.searchOpen) this.closeSearch();
+    else this.openSearch();
   }
 
   /** setFacet flips one chip. Passing the value it already holds clears it. */
@@ -394,6 +493,64 @@ class LibraryState {
    */
   openDir(dir: string) {
     if (dir !== "") openFolderHandler?.(dir);
+  }
+
+  /**
+   * openAt is the handoff from a search result once it is on the grid, where
+   * it is a frame like any other and no longer a CatalogFrame. A frame whose
+   * primary file could not be hashed opens its folder and nothing more.
+   */
+  openAt(dir: string, hash: string) {
+    if (dir === "") return;
+    openFolderHandler?.(dir, hash === "" ? undefined : hash);
+  }
+
+  /** Whether some root already covers dir, so opening it adds nothing. */
+  covered(dir: string): boolean {
+    const path = trimTrailing(dir.trim());
+    return path !== "" && this.roots.some((root) => covers(root.path, path));
+  }
+
+  /**
+   * registerIfNew brings a folder the user opened into the catalogue, unless a
+   * root already covers it. Opening a folder is not asking to index the world,
+   * so this is deliberately quiet: no reindex is kicked off and a failure is
+   * swallowed rather than raised over a folder that opened perfectly well.
+   */
+  async registerIfNew(dir: string) {
+    const path = trimTrailing(dir.trim());
+    if (source === null || path === "" || this.covered(path)) return;
+    try {
+      this.roots = await source.RegisterRoot(path);
+      // A new root can absorb ones already registered, so the top of the tree
+      // can have changed shape before a single frame has been indexed.
+      this.treeChildren = {};
+      await this.loadTree();
+    } catch {
+      // The folder is open either way; a catalogue that did not take it is
+      // worth neither an error banner nor a second attempt.
+    }
+  }
+
+  /**
+   * adopt registers folders the sidebar used to keep for itself, which is how
+   * roots saved before the catalogue became the tree's source survive the
+   * change. Ones a root already covers are skipped, so it is safe to call with
+   * whatever was in storage.
+   */
+  async adopt(paths: string[]) {
+    if (source === null) return;
+    if (this.roots.length === 0) await this.loadRoots();
+    for (const path of paths) {
+      if (this.covered(path)) continue;
+      try {
+        this.roots = await source.RegisterRoot(trimTrailing(path.trim()));
+      } catch (error) {
+        this.error = message(error);
+      }
+    }
+    this.treeChildren = {};
+    await this.loadTree();
   }
 
   selectSession(id: string) {
@@ -541,8 +698,22 @@ class LibraryState {
     }
   }
 
+  #sessionsAsked = false;
+
+  /**
+   * ensureSessions fills the Sessions group the first time it is drawn, on the
+   * same terms as ensureTree: the sidebar populates itself, and asking again
+   * is loadSessions' business.
+   */
+  async ensureSessions() {
+    if (this.#sessionsAsked) return;
+    this.#sessionsAsked = true;
+    await this.loadSessions();
+  }
+
   async loadSessions() {
     if (source === null) return;
+    this.#sessionsAsked = true;
     try {
       this.sessions = await source.Sessions(this.sessionGapHours);
       if (this.session === null) this.selectedSession = this.sessions[0]?.id ?? null;
@@ -661,6 +832,19 @@ export function formatDate(shot: string): string {
 export function formatClock(shot: string): string {
   const m = STAMP.exec(shot);
   return m === null ? "" : `${m[4]}:${m[5]}`;
+}
+
+/**
+ * sessionLabel names a shoot the way the sidebar lists it: the day it was shot
+ * on, and the day it ran into as well when it crossed midnight. A session the
+ * backend gave no usable timestamps for falls back to its folder, which is at
+ * least something the user can recognise.
+ */
+export function sessionLabel(session: CatalogSession): string {
+  const from = formatDate(session.start);
+  const to = formatDate(session.end);
+  if (from === "") return basename(session.dir) || "session";
+  return from === to || to === "" ? from : `${from} → ${to}`;
 }
 
 /** The last part of a path, which is what the user calls a folder. */

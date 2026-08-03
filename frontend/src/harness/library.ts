@@ -1,10 +1,13 @@
-// A headless bench for LIBRARY's tree and its one-keystroke open.
+// A headless bench for the catalogue where it now lives: CULL's sidebar tree,
+// the search bar `/` opens over the grid, and the Sessions group under it.
 //
 // Not part of the application: nothing in src/main.ts reaches this, so it adds
-// nothing to the bundle. It exists because the tree's keyboard and the open
-// contract have to be verifiable without a catalogue, a backend or a person to
-// look at it — in particular that ⏎ on a search result carries the frame's
-// hash across, and ⏎ on a tree node or a session row does not.
+// nothing to the bundle. It exists because the tree's keyboard, the
+// register-on-open contract and the search round trip all have to be
+// verifiable without a catalogue, a backend or a person to look at it — in
+// particular that ⏎ on a search result carries the frame's hash across, that
+// ⏎ on a tree node or a session row does not, and that Esc puts the open
+// folder back on the grid exactly as it was.
 //
 // Run it with the dev server up, against whichever port it reports:
 //   npx vite --port 9346
@@ -17,21 +20,28 @@
 // the tally so a check can read one line.
 
 import { flushSync, mount } from "svelte";
-import { ownsKeys } from "../lib/keymap";
-import LibraryTree from "../components/library/LibraryTree.svelte";
-import SearchResults from "../components/library/SearchResults.svelte";
-import SessionsTable from "../components/library/SessionsTable.svelte";
+import SearchBar from "../components/library/SearchBar.svelte";
+import Sessions from "../components/library/Sessions.svelte";
+import Tree from "../components/Tree.svelte";
+import { ACTIONS, showSearchResults } from "../lib/actions";
+import type { FolderDTO, GroupDTO } from "../lib/bindings";
 import {
   connectCatalog,
+  frameToGroup,
   library,
   onOpenFolder,
+  sessionLabel,
   UNDECIDED_UNKNOWN,
   type CatalogFacets,
   type CatalogFrame,
+  type CatalogRoot,
   type CatalogSession,
   type CatalogSource,
   type CatalogTreeNode,
 } from "../lib/library.svelte";
+import { visibleGroups } from "../lib/palette.svelte";
+import { MODES, shell } from "../lib/shell.svelte";
+import { app } from "../lib/state.svelte";
 
 interface Result {
   name: string;
@@ -68,6 +78,8 @@ function text(el: Element | null): string {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
+/** Long enough for the query field's debounce to have fired and answered. */
+const settleSearch = () => new Promise((r) => setTimeout(r, 200));
 
 // ---- the stub catalogue ------------------------------------------------------
 
@@ -97,6 +109,19 @@ const TREE: Record<string, CatalogTreeNode[]> = {
   [`${ROOT}/2026-05`]: [node(`${ROOT}/2026-05/100_FUJI`, { frames: 18, direct: 18, undecided: 4 })],
 };
 
+function root(path: string): CatalogRoot {
+  return {
+    path,
+    volume: "/Volumes/Archive",
+    added: "2026-05-01T09:00:00Z",
+    lastIndexed: "2026-05-01T09:30:00Z",
+    frames: 38,
+    rawBytes: 3000,
+    jpegBytes: 900,
+    bytes: 3900,
+  };
+}
+
 function frame(n: number, over: Partial<CatalogFrame> = {}): CatalogFrame {
   const stem = `DSCF${String(1000 + n)}`;
   return {
@@ -123,22 +148,6 @@ const FRAMES: CatalogFrame[] = Array.from({ length: 9 }, (_, i) => frame(i));
 const SESSIONS: CatalogSession[] = [
   {
     id: "1",
-    start: "2026-05-01T09:00:00Z",
-    end: "2026-05-01T12:00:00Z",
-    spanMinutes: 180,
-    frames: 20,
-    kept: 12,
-    cut: 3,
-    undecided: 5,
-    rawBytes: 2000,
-    jpegBytes: 800,
-    bytes: 2800,
-    source: "2026-05",
-    dir: `${ROOT}/2026-05`,
-    dirs: 1,
-  },
-  {
-    id: "2",
     start: "2026-06-01T14:00:00Z",
     end: "2026-06-01T15:00:00Z",
     spanMinutes: 60,
@@ -153,28 +162,62 @@ const SESSIONS: CatalogSession[] = [
     dir: `${ROOT}/2026-06`,
     dirs: 1,
   },
+  {
+    id: "2",
+    start: "2026-05-01T09:00:00Z",
+    end: "2026-05-02T02:00:00Z",
+    spanMinutes: 1020,
+    frames: 20,
+    kept: 12,
+    cut: 3,
+    undecided: 5,
+    rawBytes: 2000,
+    jpegBytes: 800,
+    bytes: 2800,
+    source: "2026-05",
+    dir: `${ROOT}/2026-05`,
+    dirs: 1,
+  },
 ];
 
 /** How many times each tree node was asked for its children. */
 const fetched: Record<string, number> = {};
+/** Every path the catalogue was asked to watch, in order. */
+const registered: string[] = [];
+/** Every path the catalogue was asked to forget. */
+const removed: string[] = [];
+/** What Roots() answers. Registering appends to it, as the backend would. */
+let watched: CatalogRoot[] = [];
 
 const source: CatalogSource = {
-  Roots: async () => [],
-  RegisterRoot: async () => [],
-  RemoveRoot: async () => [],
+  Roots: async () => watched,
+  RegisterRoot: async (dir: string) => {
+    registered.push(dir);
+    watched = [...watched.filter((r) => !r.path.startsWith(`${dir}/`) && r.path !== dir), root(dir)];
+    return watched;
+  },
+  RemoveRoot: async (dir: string) => {
+    removed.push(dir);
+    watched = watched.filter((r) => r.path !== dir);
+    return watched;
+  },
   Reindex: async () => {},
-  Search: async (_q: string, _f: CatalogFacets, limit: number, offset: number) => ({
-    frames: FRAMES.slice(offset, limit > 0 ? offset + limit : undefined),
-    total: FRAMES.length,
-    offset,
-    elapsed: 1,
-  }),
+  Search: async (query: string, _f: CatalogFacets, limit: number, offset: number) => {
+    const hits = query === "" ? FRAMES : FRAMES.filter((f) => f.stem.includes(query));
+    return {
+      frames: hits.slice(offset, limit > 0 ? offset + limit : undefined),
+      total: hits.length,
+      offset,
+      elapsed: 1,
+    };
+  },
   Counts: async () => ({ total: FRAMES.length, kinds: [], verdicts: [], ratings: [] }),
   Sessions: async () => SESSIONS,
   Storage: async () => ({ frames: 0, rawBytes: 0, jpegBytes: 0, bytes: 0, roots: [], volumes: [] }),
-  TreeRoots: async () => [
-    node(ROOT, { frames: 38, direct: 0, undecided: UNDECIDED_UNKNOWN, hasDirs: true, isRoot: true }),
-  ],
+  TreeRoots: async () =>
+    watched.map((r) =>
+      node(r.path, { frames: 38, direct: 0, undecided: UNDECIDED_UNKNOWN, hasDirs: true, isRoot: true }),
+    ),
   TreeChildren: async (dir: string) => {
     fetched[dir] = (fetched[dir] ?? 0) + 1;
     return TREE[dir] ?? [];
@@ -184,237 +227,316 @@ const source: CatalogSource = {
 /** Every open the components asked for, in order. */
 const opened: { dir: string; hash?: string }[] = [];
 
-// ---- the tree ----------------------------------------------------------------
+/** A folder standing in for the one CULL has open behind the search. */
+function folder(dir: string, stems: string[]): FolderDTO {
+  const groups: GroupDTO[] = stems.map((stem) => ({
+    dir,
+    stem,
+    kind: "jpeg-only",
+    hasRaw: false,
+    hasJpeg: true,
+    rawPath: "",
+    jpegPath: `${dir}/${stem}.JPG`,
+    sidecars: 0,
+    shot: "2026-04-01T10:00:00Z",
+    warnings: [],
+    verdict: "",
+    mask: "",
+    rating: 0,
+    hash: `open-${stem}`,
+    destination: "",
+    decision: "",
+  }));
+  return { dir, network: false, groups } as FolderDTO;
+}
+
+// ---- the sidebar tree --------------------------------------------------------
 
 async function tree() {
   const host = stage(240, 420);
-  mount(LibraryTree, { target: host });
+  mount(Tree, { target: host });
+  await library.loadRoots();
   await library.loadTree();
   flushSync();
 
   const el = host.querySelector<HTMLElement>(".tree")!;
   const rows = () => [...host.querySelectorAll<HTMLElement>(".name")];
 
-  eq("tree · the roots are the top level", rows().length, 1);
+  eq("tree · the catalogue's roots are the top level", rows().length, 1);
   eq("tree · a root is named by its folder", text(rows()[0].querySelector(".label")), "Archive");
   eq("tree · the count badge is what is under it", text(rows()[0].querySelector(".count")), "38");
   check(
-    "tree · an uncounted folder draws no undecided badge",
+    "tree · a root with an uncounted undecided draws no badge",
     rows()[0].querySelector(".undecided") === null,
-    "a badge was drawn for a count that is unknown",
+    "a folder that was not counted must not claim it is all judged",
   );
-  check(
-    "tree · the pane keeps its keys to itself",
-    el.dataset.keys === "local",
-    `data-keys is ${String(el.dataset.keys)}`,
-  );
-  eq("tree · the container is a tree", el.getAttribute("role"), "tree");
-  eq("tree · rows are tree items", host.querySelector(".row")?.getAttribute("role"), "treeitem");
+  check("tree · the tree runs its own keyboard", el.dataset.keys === "local", "data-keys must stay local");
 
-  // Right expands, and does it through the backend exactly once.
-  press(el, "ArrowRight");
-  await settle();
+  // Expanding
+  await library.expandNode(ROOT);
   flushSync();
-  eq("tree · right expands the root", rows().length, 3);
-  eq("tree · and asked the catalogue for its children", fetched[ROOT], 1);
-  eq("tree · children are indented one level", rows()[1].closest(".row")?.getAttribute("aria-level"), "2");
-  eq("tree · a child's count badge", text(rows()[1].querySelector(".count")), "30");
-  eq("tree · a child's undecided badge", text(rows()[1].querySelector(".undecided")), "7");
-  check(
-    "tree · a folder with nothing left to judge has no badge",
-    rows()[2].querySelector(".undecided") === null,
-    "a zero was drawn as a badge",
-  );
+  eq("tree · expanding a root shows its children", rows().length, 3);
+  eq("tree · a child carries its own count", text(rows()[1].querySelector(".count")), "30");
+  eq("tree · a child carries what is left to judge", text(rows()[1].querySelector(".undecided")), "7");
+  const rowOf = (i: number) => rows()[i].closest<HTMLElement>(".row")!;
+  eq("tree · children are indented one level", rowOf(1).style.paddingLeft, "19px");
+  eq("tree · children are fetched once", fetched[ROOT], 1);
 
-  // Down walks the flattened list; right on an expanded node steps into it.
+  await library.expandNode(ROOT);
+  flushSync();
+  eq("tree · expanding an open node fetches nothing again", fetched[ROOT], 1);
+
+  // The keyboard
+  library.focusNode(0);
+  rows()[0].focus();
   press(el, "ArrowDown");
-  eq("tree · down moves to the first child", library.treeIndex, 1);
+  eq("tree · down moves one row", library.treeIndex, 1);
+  press(el, "j");
+  eq("tree · j moves down as well", library.treeIndex, 2);
+  press(el, "k");
+  eq("tree · k moves back up", library.treeIndex, 1);
+
   press(el, "ArrowRight");
   await settle();
   flushSync();
-  eq("tree · right expands the child too", rows().length, 4);
-  eq("tree · the grandchild is at level 3", rows()[2].closest(".row")?.getAttribute("aria-level"), "3");
-
-  press(el, "ArrowRight");
-  eq("tree · right again steps into the expanded node", library.treeIndex, 2);
+  eq("tree · right opens a closed node", library.expanded.has(`${ROOT}/2026-05`), true);
   press(el, "ArrowLeft");
-  eq("tree · left from a leaf goes to its parent", library.treeIndex, 1);
+  eq("tree · left closes an open one", library.expanded.has(`${ROOT}/2026-05`), false);
   press(el, "ArrowLeft");
-  flushSync();
-  eq("tree · left again collapses it", rows().length, 3);
+  eq("tree · left again walks to the parent", library.treeIndex, 0);
 
   press(el, "End");
-  eq("tree · End goes to the last row", library.treeIndex, 2);
+  eq("tree · End goes to the last row", library.treeIndex, rows().length - 1);
   press(el, "Home");
   eq("tree · Home goes back to the first", library.treeIndex, 0);
 
-  // Re-expanding does not go back to the backend: the children are held.
-  press(el, "ArrowDown");
-  press(el, "ArrowRight");
-  await settle();
-  flushSync();
-  eq("tree · a second expansion is served from what was already fetched", fetched[`${ROOT}/2026-05`], 1);
-
-  // The contract: ⏎ opens the folder, and names no frame.
+  // Opening
   opened.length = 0;
-  press(el, "Enter");
-  eq("tree · ⏎ opens one folder", opened.length, 1);
-  eq("tree · ⏎ opens the focused row's folder", opened[0]?.dir, `${ROOT}/2026-05`);
-  eq("tree · a folder open names no frame", opened[0]?.hash, undefined);
-
-  // A double click is the same thing for the mouse.
-  opened.length = 0;
-  rows()[0].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-  flushSync();
-  eq("tree · a double click opens it too", opened[0]?.dir, ROOT);
-
-  // The focused row has to be visible as such whether or not the pane holds
-  // the keyboard, or ⏎ acts on a row the user cannot see.
   library.focusNode(1);
-  flushSync();
-  check(
-    "tree · the focused row is marked",
-    rows()[1].className.includes("focused"),
-    rows()[1].className,
-  );
-  eq("tree · and is the only one in the tab order", rows()[1].tabIndex, 0);
-  eq("tree · the others are not", rows()[0].tabIndex, -1);
-
-  // The mode keymap listens on the window and binds these arrows to the grid.
-  // What keeps it out is the guard it consults, so that is what is asserted —
-  // and the tree stops the browser scrolling the pane on top of it.
-  check(
-    "tree · the global keymap stays out of the tree",
-    ownsKeys(rows()[1]),
-    "the keymap would have acted on a key meant for the tree",
-  );
-  check(
-    "tree · and out of the twisty too",
-    ownsKeys(host.querySelector<HTMLElement>(".twisty")!),
-    "a key on the twisty would reach the keymap",
-  );
-  check(
-    "tree · but not out of the page around it",
-    !ownsKeys(document.body),
-    "the keymap is being kept out of the whole page",
-  );
-  check("tree · the tree consumes the arrows it acts on", press(el, "ArrowDown").defaultPrevented);
-
-  host.remove();
-}
-
-// ---- the search results ------------------------------------------------------
-
-async function searchResults() {
-  const host = stage(760, 520);
-  mount(SearchResults, { target: host });
-  await library.search();
-  flushSync();
-
-  const el = host.querySelector<HTMLElement>(".results")!;
-  eq("results · the grid keeps its keys to itself", el.dataset.keys, "local");
-  eq("results · every result is loaded", library.results.length, FRAMES.length);
-  check(
-    "results · the global keymap stays out of the grid",
-    ownsKeys(host.querySelector<HTMLElement>(".tile")!),
-    "the keymap would have acted on a key meant for the grid",
-  );
-
-  library.focus(0);
-  flushSync();
-  const tile = (i: number) => host.querySelector<HTMLElement>(`[data-row="${i}"]`);
-  check("results · the focused tile is marked", tile(0)?.className.includes("focused") === true, "");
-  eq("results · and is the only one in the tab order", tile(0)?.tabIndex, 0);
-
-  press(el, "ArrowRight");
-  eq("results · right steps one tile", library.focusIndex, 1);
-  press(el, "ArrowLeft");
-  eq("results · left steps back", library.focusIndex, 0);
-
-  // A row is however many tiles the width fits, so the assertion is that down
-  // moves by a whole row rather than by a tile.
-  press(el, "ArrowDown");
-  check(
-    "results · down steps a whole row",
-    library.focusIndex > 1,
-    `moved to ${library.focusIndex}, which is a tile rather than a row`,
-  );
-  press(el, "End");
-  eq("results · End goes to the last result", library.focusIndex, FRAMES.length - 1);
-  press(el, "Home");
-  eq("results · Home goes back to the first", library.focusIndex, 0);
-
-  // The contract: ⏎ opens the folder AND names the frame, so cull lands on the
-  // photograph the user was looking at rather than at the top of the folder.
-  opened.length = 0;
-  library.focus(4);
-  flushSync();
   press(el, "Enter");
-  eq("results · ⏎ opens one folder", opened.length, 1);
-  eq("results · ⏎ opens the focused frame's folder", opened[0]?.dir, FRAMES[4].dir);
-  eq("results · and names the frame itself", opened[0]?.hash, FRAMES[4].hash);
+  eq("tree · return opens the folder", opened[0]?.dir, `${ROOT}/2026-05`);
+  eq("tree · a folder names no frame", opened[0]?.hash, undefined);
 
   opened.length = 0;
-  tile(4)?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  rows()[2].click();
   flushSync();
-  eq("results · a double click opens the same frame", opened[0]?.hash, FRAMES[4].hash);
+  eq("tree · a click opens it too", opened[0]?.dir, `${ROOT}/2026-06`);
+
+  // Removing
+  removed.length = 0;
+  library.focusNode(0);
+  press(el, "Delete");
+  await settle();
+  eq("tree · delete on a root stops watching it", removed[0], ROOT);
+
+  library.focusNode(1);
+  press(el, "Delete");
+  await settle();
+  eq("tree · delete on a child is not a removal", removed.length, 1);
+
+  // Put the root back for the rest of the bench.
+  await source.RegisterRoot(ROOT);
+  registered.length = 0;
+  await library.loadRoots();
+  await library.loadTree();
+  flushSync();
 
   host.remove();
 }
 
-// ---- the sessions table ------------------------------------------------------
+// ---- joining the catalogue ---------------------------------------------------
+
+async function registerOnOpen() {
+  registered.length = 0;
+
+  await library.registerIfNew(`${ROOT}/2026-05/100_FUJI`);
+  eq("open · a folder a root already covers registers nothing", registered.length, 0);
+
+  await library.registerIfNew("/Volumes/CardTwo/DCIM");
+  eq("open · a folder outside every root joins the catalogue", registered[0], "/Volumes/CardTwo/DCIM");
+
+  await library.registerIfNew("/Volumes/CardTwo/DCIM/");
+  eq("open · a trailing separator is the same folder", registered.length, 1);
+
+  // The segment comparison: a sibling with a shared prefix is not covered.
+  await library.registerIfNew("/Volumes/CardTwoExtra");
+  eq("open · a shared prefix is not the same volume", registered.length, 2);
+
+  // Migration: what a previous version kept in local storage is handed over,
+  // and only the parts of it the catalogue does not already hold.
+  registered.length = 0;
+  await library.adopt([`${ROOT}/2026-06`, "/Users/t/Pictures"]);
+  eq("migrate · a saved root already covered is skipped", registered.includes(`${ROOT}/2026-06`), false);
+  eq("migrate · a saved root the catalogue lacks is registered", registered.includes("/Users/t/Pictures"), true);
+}
+
+// ---- search over the grid ----------------------------------------------------
+
+async function search() {
+  const host = stage(760, 40);
+  opened.length = 0;
+
+  // The folder standing behind the search, as CULL would have it open.
+  app.setFolder(folder("/Users/t/Pictures/2026-04", ["IMG_0001", "IMG_0002"]));
+  const behind = app.allGroups.length;
+
+  library.openSearch();
+  mount(SearchBar, { target: host });
+  flushSync();
+
+  const field = host.querySelector<HTMLInputElement>(".field")!;
+  eq("search · the bar opens empty", field.value, "");
+  check(
+    "search · the banner says how to get back",
+    text(host.querySelector(".banner")).includes("esc returns"),
+    "the grid is showing the index, and has to say so",
+  );
+
+  // Typing runs the query and the results reach the grid as frames.
+  field.value = "DSCF100";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  await settleSearch();
+  flushSync();
+  eq("search · the query reaches the index", library.total, 9);
+
+  showSearchResults(library.searchOpen, library.results);
+  app.groups = visibleGroups();
+  flushSync();
+  eq("search · the results are what the grid holds", app.groups.length, 9);
+  eq("search · a result keeps its own folder", app.groups[0].dir, `${ROOT}/2026-05`);
+  eq("search · a result keeps its identity", app.groups[0].hash, "hash-DSCF1000");
+  eq("search · a result maps onto a frame", frameToGroup(FRAMES[0]).jpegPath, FRAMES[0].jpegPath);
+  eq("search · the banner counts what the index answered", text(host.querySelector(".found")), "9 in the index");
+
+  // The cursor walks the results from the field, and return opens one.
+  press(field, "ArrowDown");
+  eq("search · down walks the results", app.focusIndex, 1);
+  press(field, "ArrowUp");
+  eq("search · up walks back", app.focusIndex, 0);
+
+  app.setFocus(2);
+  press(field, "Enter");
+  eq("search · return opens the result's folder", opened[0]?.dir, `${ROOT}/2026-05`);
+  eq("search · and lands on the frame itself", opened[0]?.hash, "hash-DSCF1002");
+
+  // Opening a result leaves the search, which is what puts the folder back.
+  showSearchResults(library.searchOpen, library.results);
+  app.groups = visibleGroups();
+  flushSync();
+  eq("search · opening a result closes the search", library.searchOpen, false);
+  eq("search · the open folder is back on the grid", app.groups.length, behind);
+  eq("search · and it is the folder, not the index", app.groups[0].hash, "open-IMG_0001");
+
+  // Esc is the other way out, from the bar itself.
+  library.openSearch();
+  showSearchResults(library.searchOpen, library.results);
+  flushSync();
+  field.value = "DSCF";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  await settleSearch();
+  showSearchResults(library.searchOpen, library.results);
+  app.groups = visibleGroups();
+  flushSync();
+  eq("search · a second search fills the grid again", app.groups.length, 9);
+
+  const escape = press(field, "Escape");
+  showSearchResults(library.searchOpen, library.results);
+  app.groups = visibleGroups();
+  flushSync();
+  eq("search · esc is consumed by the bar", escape.defaultPrevented, true);
+  eq("search · esc closes the search", library.searchOpen, false);
+  eq("search · esc restores the open folder", app.groups.length, behind);
+  eq("search · the query does not survive the close", library.query, "");
+
+  host.remove();
+}
+
+// ---- the sessions group ------------------------------------------------------
 
 async function sessions() {
-  const host = stage(900, 300);
-  mount(SessionsTable, { target: host });
+  const host = stage(240, 200);
+  mount(Sessions, { target: host });
   await library.loadSessions();
   flushSync();
 
-  const rows = [...host.querySelectorAll<HTMLElement>(".row")];
-  eq("sessions · one row per shoot", rows.length, SESSIONS.length);
-  eq(
-    "sessions · the table keeps its keys to itself",
-    host.querySelector<HTMLElement>(".body")?.dataset.keys,
-    "local",
-  );
-  check(
-    "sessions · the global keymap stays out of the table",
-    ownsKeys(rows[0]),
-    "the keymap would have acted on a key meant for the table",
-  );
-  eq("sessions · the selected row is in the tab order", rows[0].tabIndex, 0);
-  eq("sessions · the others are not", rows[1].tabIndex, -1);
+  const el = host.querySelector<HTMLElement>(".sessions")!;
+  const rows = () => [...host.querySelectorAll<HTMLElement>(".row")];
 
-  press(rows[0], "ArrowDown");
-  eq("sessions · down moves to the next shoot", library.sessionIndex, 1);
-  eq("sessions · and selects it", library.selectedSession, SESSIONS[1].id);
-  press(rows[0], "ArrowUp");
-  eq("sessions · up moves back", library.sessionIndex, 0);
+  eq("sessions · every shoot has a row", rows().length, SESSIONS.length);
+  eq("sessions · the newest is first", text(rows()[0].querySelector(".label")), "2026-06-01");
+  eq("sessions · a shoot is named by its day", sessionLabel(SESSIONS[0]), "2026-06-01");
+  eq("sessions · one that ran past midnight names both", sessionLabel(SESSIONS[1]), "2026-05-01 → 2026-05-02");
+  eq("sessions · a row carries its frame count", text(rows()[0].querySelector(".count")), "8");
+  eq("sessions · and how long it ran", text(rows()[0].querySelector(".span")), "1h");
+  check("sessions · the group runs its own keyboard", el.dataset.keys === "local", "data-keys must stay local");
 
-  // The contract: a session row opens its folder and names no frame.
+  library.focusSession(0);
+  rows()[0].focus();
+  press(el, "ArrowDown");
+  eq("sessions · down moves one row", library.sessionIndex, 1);
+  press(el, "k");
+  eq("sessions · k moves back up", library.sessionIndex, 0);
+
   opened.length = 0;
-  press(rows[0], "Enter");
-  eq("sessions · ⏎ opens one folder", opened.length, 1);
-  eq("sessions · ⏎ opens the session's folder", opened[0]?.dir, SESSIONS[0].dir);
+  press(el, "Enter");
+  eq("sessions · return opens the session's folder", opened[0]?.dir, SESSIONS[0].dir);
   eq("sessions · a session names no frame", opened[0]?.hash, undefined);
 
   opened.length = 0;
-  rows[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  rows()[1].click();
   flushSync();
-  eq("sessions · a double click opens that row's folder", opened[0]?.dir, SESSIONS[1].dir);
+  eq("sessions · a click opens that row's folder", opened[0]?.dir, SESSIONS[1].dir);
 
   host.remove();
+}
+
+// ---- what became of LIBRARY --------------------------------------------------
+
+function modes() {
+  eq("modes · there are still four", MODES.length, 4);
+  const ids = MODES.map((m) => m.id as string);
+  check("modes · LIBRARY has left the mode bar", !ids.includes("library"), `still there: ${ids.join(" · ")}`);
+  eq("modes · the fourth slot is IMPORT", MODES[3].id, "import");
+  eq("modes · and it is labelled so", MODES[3].label, "IMPORT");
+  eq("modes · IMPORT has three sub-layouts", MODES[3].layouts.join(" · "), "review · route · verify");
+
+  shell.setModeByIndex(3);
+  eq("modes · ⌃4 lands on IMPORT", shell.mode, "import");
+  eq("modes · which is where the ghost is drawn", shell.spec.label, "IMPORT");
+  shell.setModeByIndex(0);
+  eq("modes · ⌃1 comes back to CULL", shell.mode, "cull");
+
+  const actions = new Set(ACTIONS.map((a) => a.id));
+  check("actions · search is an action of its own", actions.has("search"), "the / binding needs a registry row");
+  check("actions · storage is reachable from the palette", actions.has("storage"), "its IMPORT home is not built");
+  check("actions · the mode action is IMPORT's", actions.has("mode-import"), "mode-library must be gone");
+
+  library.storageOpen = false;
+  ACTIONS.find((a) => a.id === "storage")!.run();
+  eq("actions · running it opens the storage view", library.storageOpen, true);
+  library.storageOpen = false;
+
+  ACTIONS.find((a) => a.id === "search")!.run();
+  eq("actions · running search opens the bar", library.searchOpen, true);
+  ACTIONS.find((a) => a.id === "search")!.run();
+  eq("actions · running it again closes it", library.searchOpen, false);
 }
 
 // ---- run ---------------------------------------------------------------------
 
 async function run() {
   connectCatalog(source);
-  onOpenFolder((dir: string, hash?: string) => opened.push({ dir, hash }));
+  onOpenFolder((dir: string, hash?: string) => {
+    opened.push({ dir, hash });
+    library.closeSearch();
+  });
+  watched = [root(ROOT)];
 
   await tree();
-  await searchResults();
+  await registerOnOpen();
+  await search();
   await sessions();
+  modes();
 
   const failed = results.filter((r) => !r.pass);
   document.getElementById("results")!.textContent = JSON.stringify(

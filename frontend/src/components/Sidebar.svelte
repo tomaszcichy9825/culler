@@ -1,11 +1,19 @@
 <script lang="ts">
-  // The left rail: the folder tree, an Add button that opens the native
-  // chooser, and the typed-path box that has to stay for network volumes and
-  // anything the chooser will not reach.
+  // The left rail: the catalogue's folder tree, an Add button that opens the
+  // native chooser, the typed-path box that has to stay for network volumes
+  // and anything the chooser will not reach, and the shoots the catalogue has
+  // grouped those folders into.
+  //
+  // Sources and Sessions are two views of one index rather than two lists: a
+  // folder opened from anywhere joins the catalogue, so it appears in the tree
+  // with its counts and its frames fall into a session, without the user
+  // having registered anything.
 
   import { pickRoot } from "../lib/actions";
+  import { formatCount, library } from "../lib/library.svelte";
   import { app } from "../lib/state.svelte";
   import FolderPicker from "./FolderPicker.svelte";
+  import Sessions from "./library/Sessions.svelte";
   import Tree from "./Tree.svelte";
 
   let { path = $bindable("") }: { path?: string } = $props();
@@ -18,12 +26,15 @@
 
 {#if app.sidebar}
   <aside class="sidebar">
-    <!-- Sources is the only group with anything real behind it. Collections
-         and Filters are drawn in the design but have no data model yet, and a
-         labelled group of invented rows would be worse than no group. -->
     <div class="head">
       <span class="title">Sources</span>
       <span class="hair"></span>
+      {#if library.indexing !== null}
+        <span class="indexing" title={library.indexing.dir}>
+          <span class="dot" aria-hidden="true"></span>
+          {formatCount(library.indexing.frames)}
+        </span>
+      {/if}
       <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar"> + add </button>
       <button class="icon" onclick={() => (app.sidebar = false)} title="Collapse sidebar" aria-label="Collapse sidebar">
         ‹
@@ -37,6 +48,14 @@
     </div>
 
     <Tree />
+
+    <div class="head sessions-head">
+      <span class="title">Sessions</span>
+      <span class="hair"></span>
+      <span class="hint">{formatCount(library.sessions.length)}</span>
+    </div>
+
+    <Sessions />
 
     {#if app.folder}
       <div class="foot">
@@ -94,6 +113,39 @@
     min-width: 0;
     height: 1px;
     background: var(--border);
+  }
+
+  /* Sessions is a second group in the same rail, so it gets a rule above it
+     and a tighter top than the one at the head of the pane. */
+  .sessions-head {
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .hint {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--text-dim);
+  }
+
+  .indexing {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0;
+    color: var(--accent);
+  }
+
+  .indexing .dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
   }
 
   .add {

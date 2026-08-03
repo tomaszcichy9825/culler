@@ -14,6 +14,8 @@ import { Clipboard, Events } from "@wailsio/runtime";
 import { ApplyService, ConfigService, LibraryService } from "./bindings";
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
 import { exifState } from "./exif.svelte";
+import { frameToGroup, library } from "./library.svelte";
+import type { CatalogFrame } from "./library.svelte";
 import { palette } from "./palette.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
@@ -24,7 +26,10 @@ import type { Half } from "./verdict";
 
 /** Where the last opened folder is remembered, so a relaunch lands back in it. */
 const LAST_FOLDER = "culler.lastFolder";
-/** The tree's top-level folders, restored on launch. */
+/**
+ * Where the tree's folders used to live. The catalogue holds them now; this is
+ * read once, handed over, and cleared — see migrateRoots.
+ */
 const ROOTS = "culler.roots";
 
 export function lastFolder(): string {
@@ -35,23 +40,32 @@ export function lastFolder(): string {
   }
 }
 
-/** loadRoots restores the tree's top-level folders from the last session. */
-export function loadRoots() {
+/**
+ * migrateRoots hands the folders a previous version kept in local storage to
+ * the catalogue, once, and forgets them. From then on the catalogue is the
+ * only place the sidebar's folders live: a root registered on one launch is
+ * still there on the next without the frontend remembering anything.
+ *
+ * A migration that cannot write to storage still registers the roots. The
+ * worst case is doing it again next launch, and registering a root the
+ * catalogue already covers is a no-op.
+ */
+export async function migrateRoots() {
+  let saved: string[] = [];
   try {
     const raw = localStorage.getItem(ROOTS);
     const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-    app.roots = Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+    saved = Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
   } catch {
-    app.roots = [];
+    saved = [];
   }
-  for (const root of app.roots) void markNetwork(root);
-}
 
-function saveRoots() {
+  await library.loadRoots();
+  if (saved.length > 0) await library.adopt(saved);
   try {
-    localStorage.setItem(ROOTS, JSON.stringify(app.roots));
+    localStorage.removeItem(ROOTS);
   } catch {
-    // A webview with storage disabled still culls fine; it just forgets.
+    // A webview with storage disabled still culls fine; it just repeats this.
   }
 }
 
@@ -59,48 +73,18 @@ function rememberFolder(dir: string) {
   try {
     localStorage.setItem(LAST_FOLDER, dir);
   } catch {
-    // See saveRoots.
+    // See migrateRoots.
   }
-}
-
-/** trimTrailing drops trailing separators so paths compare consistently. */
-function trimTrailing(p: string): string {
-  return p.length > 1 ? p.replace(/\/+$/, "") : p;
 }
 
 /**
- * under reports whether child sits inside parent. The comparison is on whole
- * path segments, so /Volumes/CardTwo is not treated as living inside
- * /Volumes/Card.
+ * addRoot brings a folder into the catalogue so the sidebar can get back to
+ * it. Opening a folder does this on its own, so this is the announcement of an
+ * intent rather than the only route in: a folder already covered by a root is
+ * a no-op, and nothing is indexed until a pass is asked for.
  */
-export function under(child: string, parent: string): boolean {
-  const c = trimTrailing(child);
-  const p = trimTrailing(parent);
-  return c === p || c.startsWith(p === "/" ? "/" : `${p}/`);
-}
-
-/** addRoot adds dir as a top-level folder unless a root already covers it. */
-export function addRoot(dir: string): boolean {
-  const path = trimTrailing(dir);
-  if (path === "" || app.roots.some((r) => under(path, r))) return false;
-  // A new root that contains existing ones replaces them, so the tree does
-  // not show the same folder at two levels.
-  app.roots = [...app.roots.filter((r) => !under(r, path)), path];
-  saveRoots();
-  void markNetwork(path);
-  return true;
-}
-
-export function removeRoot(dir: string) {
-  app.roots = app.roots.filter((r) => r !== dir);
-  // Drop everything cached beneath it: keeping it would quietly go stale.
-  const expanded = new Set([...app.expanded].filter((p) => !under(p, dir)));
-  app.expanded = expanded;
-  for (const path of Object.keys(app.children)) {
-    if (under(path, dir)) delete app.children[path];
-  }
-  delete app.network[dir];
-  saveRoots();
+export function addRoot(dir: string) {
+  void library.registerIfNew(dir);
 }
 
 /** pickRoot opens the native chooser and adds what comes back. */
@@ -108,46 +92,13 @@ export async function pickRoot() {
   try {
     const chosen = await LibraryService.PickFolder();
     if (chosen === "") return;
-    addRoot(chosen);
+    // addRoot registers and indexes: a folder the user deliberately added is
+    // one they want counted, which is not true of one they merely opened.
+    await library.addRoot(chosen);
     await openFolder(chosen);
   } catch (err) {
     app.notify(`could not open the folder chooser: ${message(err)}`, "error");
   }
-}
-
-/** listChildren fills a node's subdirectories, once. */
-export async function listChildren(dir: string) {
-  if (dir in app.children || app.loading.has(dir)) return;
-  app.loading = new Set(app.loading).add(dir);
-  try {
-    app.children[dir] = (await LibraryService.ListDirs(dir)) ?? [];
-  } catch (err) {
-    // An unreadable folder is a leaf rather than a failure: the tree carries
-    // on and the user still sees why.
-    app.children[dir] = [];
-    app.notify(`could not list ${dir}: ${message(err)}`, "error");
-  } finally {
-    const loading = new Set(app.loading);
-    loading.delete(dir);
-    app.loading = loading;
-  }
-}
-
-export async function expandNode(dir: string) {
-  if (app.expanded.has(dir)) return;
-  app.expanded = new Set(app.expanded).add(dir);
-  await listChildren(dir);
-}
-
-export function collapseNode(dir: string) {
-  const expanded = new Set(app.expanded);
-  expanded.delete(dir);
-  app.expanded = expanded;
-}
-
-export async function toggleNode(dir: string) {
-  if (app.expanded.has(dir)) collapseNode(dir);
-  else await expandNode(dir);
 }
 
 /**
@@ -162,7 +113,7 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
   "mode-cull": ["ctrl+1"],
   "mode-exif": ["ctrl+2"],
   "mode-map": ["ctrl+3"],
-  "mode-library": ["ctrl+4"],
+  "mode-import": ["ctrl+4"],
   "pane-left": ["mod+1", "shift+mod+1"],
   "pane-centre": ["mod+2", "shift+mod+2"],
   "pane-right": ["mod+3", "shift+mod+3"],
@@ -275,13 +226,19 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
 
 export async function openFolder(dir: string, focusHash?: string) {
   await scan(dir, { remember: true, announce: true });
-  // A caller that names a frame — the library jumping into cull — gets it
-  // focused. A stale arrival (the user switched folders mid-flight) simply
+  // A caller that names a frame — a search result jumping into the grid — gets
+  // it focused. A stale arrival (the user switched folders mid-flight) simply
   // misses the find and changes nothing.
   if (focusHash !== undefined) {
     const i = app.groups.findIndex((g) => g.hash === focusHash);
     if (i >= 0) app.setFocus(i);
   }
+  // A folder the user has opened is one the sidebar should be able to show
+  // them again, so it joins the catalogue unless a root already covers it.
+  // Quiet and cheap: it registers the root and redraws the top of the tree,
+  // and leaves indexing to the pass the user asks for.
+  const opened = app.folder?.dir;
+  if (opened !== undefined && opened !== "") void library.registerIfNew(opened);
 }
 
 /**
@@ -425,6 +382,33 @@ export async function copyPath() {
   }
 }
 
+/**
+ * Whether the previous call to showSearchResults had the search up, so that
+ * closing it restores the folder exactly once rather than on every pass.
+ */
+let searchWasOpen = false;
+
+/**
+ * showSearchResults puts what the index answered onto the grid, and takes it
+ * off again when the search closes.
+ *
+ * Results arrive as app.allGroups, which is where a folder's frames arrive, so
+ * the filter, focus movement, the loupe and the table work on them without
+ * knowing they came from the catalogue rather than a directory. Closing the
+ * search hands the open folder back untouched: searching never loaded, left or
+ * changed a folder, so there is nothing to restore but the list.
+ */
+export function showSearchResults(open: boolean, results: CatalogFrame[]) {
+  if (open) {
+    app.allGroups = results.map(frameToGroup);
+    app.focusIndex = Math.max(0, Math.min(app.focusIndex, results.length - 1));
+  } else if (searchWasOpen) {
+    app.allGroups = app.folder?.groups ?? [];
+    app.focusIndex = 0;
+  }
+  searchWasOpen = open;
+}
+
 /* ---- the shell's own actions ---- */
 
 /** How far one arrow press pans the zoomed loupe, in image pixels. */
@@ -475,6 +459,10 @@ function escape() {
     palette.close();
     return;
   }
+  if (library.storageOpen) {
+    library.storageOpen = false;
+    return;
+  }
   if (app.plan) {
     cancelApply();
     return;
@@ -490,6 +478,12 @@ function escape() {
     }
     app.view = "grid";
     if (shell.mode === "cull") shell.setLayout(CONTACT_SHEET);
+    return;
+  }
+  // Search comes after the loupe: a result opened full-frame gives the loupe
+  // back first, and the second Esc gives the folder back.
+  if (library.searchOpen) {
+    library.closeSearch();
     return;
   }
   if (shell.releasePane()) return;
@@ -511,7 +505,7 @@ async function focusPath() {
 
 async function focusTree() {
   await revealSidebar();
-  if (app.roots.length === 0) {
+  if (library.treeRoots.length === 0) {
     app.notify("no folders yet — add one to start the tree");
     picker.focus();
     return;
@@ -791,6 +785,22 @@ export const ACTIONS: Action[] = [
     icon: "›",
     note: "everything, searchable",
     run: () => palette.toggle("command"),
+  },
+  {
+    id: "search",
+    label: "search the catalogue",
+    group: APP,
+    icon: "⌕",
+    note: "the index, on the grid — esc puts the folder back",
+    run: () => library.toggleSearch(),
+  },
+  {
+    id: "storage",
+    label: "storage",
+    group: APP,
+    icon: "▦",
+    note: "what every volume is holding",
+    run: () => (library.storageOpen = true),
   },
   {
     id: "filter-palette",

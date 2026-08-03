@@ -18,9 +18,8 @@
   import FramesRail from "./components/exif/FramesRail.svelte";
   import TargetsPane from "./components/exif/TargetsPane.svelte";
   import WritePlanDialog from "./components/exif/WritePlanDialog.svelte";
-  import LibraryCentre from "./components/library/LibraryCentre.svelte";
-  import LibraryLeft from "./components/library/LibraryLeft.svelte";
-  import LibraryRight from "./components/library/LibraryRight.svelte";
+  import SearchBar from "./components/library/SearchBar.svelte";
+  import StorageView from "./components/library/StorageView.svelte";
   import LoupeFirst from "./components/LoupeFirst.svelte";
   import LoupeOverlay from "./components/LoupeOverlay.svelte";
   import Palettes from "./components/Palettes.svelte";
@@ -30,7 +29,7 @@
   import { ExifService, LibraryIndexService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
-  import { connectCatalog, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
+  import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
   import { groupKey } from "./lib/state.svelte";
@@ -44,10 +43,12 @@
     copyPath,
     lastFolder,
     loadSettings,
-    loadRoots,
+    markNetwork,
+    migrateRoots,
     openFolder,
     pickRoot,
     requestApply,
+    showSearchResults,
     undo,
     watchScanProgress,
   } from "./lib/actions";
@@ -89,7 +90,7 @@
     "mode-cull": 0,
     "mode-exif": 1,
     "mode-map": 2,
-    "mode-library": 3,
+    "mode-import": 3,
   };
 
   const paneActions: Record<string, Pane> = {
@@ -106,14 +107,6 @@
 
   let path = $state(lastFolder());
   let lookup = $derived(buildLookup(app.keymap));
-
-  void (async () => {
-    loadRoots();
-    watchScanProgress();
-    await loadSettings();
-    if (path !== "") await openFolder(path);
-    if (app.folder) path = app.folder.dir;
-  })();
 
   function moveFocus(dx: number, dy: number) {
     if (app.view === "loupe" && app.zoom) {
@@ -166,11 +159,45 @@
     Counts: (q, f) => LibraryIndexService.Counts(q, f as never) as never,
     Sessions: async (gap) => ((await LibraryIndexService.Sessions(gap)) ?? []) as never,
     Storage: () => LibraryIndexService.Storage() as never,
+    TreeRoots: async () => ((await LibraryIndexService.TreeRoots()) ?? []) as never,
+    TreeChildren: async (dir) => ((await LibraryIndexService.TreeChildren(dir)) ?? []) as never,
   });
   void watchCatalogProgress();
   onOpenFolder((dir, focusHash) => {
     shell.setMode("cull");
+    // Opening a result is leaving the search, not searching from inside a
+    // folder: the grid has to be the folder's again before it loads.
+    library.closeSearch();
     void openFolderAction(dir, focusHash);
+  });
+
+  // The catalogue is wired by here, so the startup sequence can hand it the
+  // roots a previous version kept for itself before asking for a folder.
+  void (async () => {
+    watchScanProgress();
+    await Promise.all([loadSettings(), migrateRoots()]);
+    if (path !== "") await openFolder(path);
+    if (app.folder) path = app.folder.dir;
+  })();
+
+  // The network badge is a property of a root, and the roots are the
+  // catalogue's, so the lookup follows the catalogue rather than a list the
+  // sidebar keeps. markNetwork answers once per path and caches.
+  $effect(() => {
+    const roots = library.roots.map((r) => r.path);
+    untrack(() => {
+      app.roots = roots;
+      for (const root of roots) void markNetwork(root);
+    });
+  });
+
+  // Search results reach the grid the way a folder's frames do, and the filter
+  // effect below turns them into what is on screen. The swap itself lives in
+  // actions.ts so that it is the same code the bench drives.
+  $effect(() => {
+    const open = library.searchOpen;
+    const results = library.results;
+    untrack(() => showSearchResults(open, results));
   });
 
   // The filter narrows what the whole app sees: the grid, focus movement,
@@ -197,6 +224,10 @@
       settings.open = false;
       return;
     }
+    if (library.storageOpen) {
+      library.storageOpen = false;
+      return;
+    }
     if (app.compare !== null) {
       app.compare = null;
       return;
@@ -218,6 +249,12 @@
       if (shell.mode === "cull") shell.setLayout(CONTACT_SHEET);
       return;
     }
+    // Search comes after the loupe: a result opened full-frame gives the loupe
+    // back first, and the second Esc gives the folder back.
+    if (library.searchOpen) {
+      library.closeSearch();
+      return;
+    }
     if (shell.releasePane()) return;
     app.clearSelection();
   }
@@ -237,12 +274,26 @@
 
   async function focusTree() {
     await revealSidebar();
-    if (app.roots.length === 0) {
+    if (library.treeRoots.length === 0) {
       app.notify("no folders yet — add one to start the tree");
       picker.focus();
       return;
     }
     tree.focus();
+  }
+
+  /**
+   * While the search is up the grid is holding index results, and ⏎ on one
+   * means "take me to it" rather than "apply what I have decided" — there is
+   * nothing to apply to a folder that is not open.
+   */
+  function openFocusedResult() {
+    const focused = app.groups[app.focusIndex];
+    if (focused === undefined) {
+      app.notify("nothing to open");
+      return;
+    }
+    library.openAt(focused.dir, focused.hash);
   }
 
   function run(action: string) {
@@ -292,7 +343,8 @@
         escape();
         break;
       case "apply":
-        if (app.plan) void confirmApply();
+        if (library.searchOpen) openFocusedResult();
+        else if (app.plan) void confirmApply();
         else void requestApply();
         break;
       case "undo":
@@ -382,6 +434,10 @@
 <div class="app" data-mode={shell.mode} data-layout={shell.layout}>
   <TitleBar onlayout={chooseLayout} oncommand={() => run("command-palette")} onpath={() => void copyPath()} />
 
+  {#if library.searchOpen}
+    <SearchBar />
+  {/if}
+
   {#if app.error !== ""}
     <div class="error" role="alert" title={app.error}>{app.error}</div>
   {/if}
@@ -399,8 +455,6 @@
           <Sidebar bind:path />
         {:else if shell.mode === "exif"}
           <FramesRail />
-        {:else if shell.mode === "library"}
-          <LibraryLeft />
         {:else}
           {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -412,8 +466,8 @@
       <div class="pane-body">
         {#if shell.mode === "exif"}
           <EditorPane />
-        {:else if shell.mode === "library"}
-          <LibraryCentre layout={shell.layout} />
+        {:else if shell.mode === "import"}
+          {@render ghost(shell.spec.label, "import lands next wave", "⌃1", "back to cull")}
         {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
         {:else if app.scanning !== null}
@@ -449,8 +503,6 @@
           <Inspector />
         {:else if shell.mode === "exif"}
           <TargetsPane />
-        {:else if shell.mode === "library"}
-          <LibraryRight layout={shell.layout} />
         {:else}
           {@render ghost(shell.spec.panes.right, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -473,6 +525,10 @@
 
   {#if settings.open}
     <SettingsView />
+  {/if}
+
+  {#if library.storageOpen}
+    <StorageView />
   {/if}
 
   <Palettes />
@@ -655,11 +711,6 @@
   .empty p {
     margin: 0;
     max-width: 100%;
-  }
-
-  .empty .hint {
-    color: var(--text-dim);
-    font-size: 11px;
   }
 
   .empty .where {

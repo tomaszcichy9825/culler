@@ -7,7 +7,7 @@
 // lives apart: the folder, the selection and the pending decisions survive a
 // mode switch untouched.
 
-export type Mode = "cull" | "exif" | "map" | "library";
+export type Mode = "cull" | "exif" | "map" | "import";
 export type Pane = "left" | "centre" | "right";
 
 export interface ModeSpec {
@@ -24,6 +24,11 @@ export interface ModeSpec {
  * Always four, always in this order. The EXIF sub-layout labels are the names
  * of the two screens that exist for that mode; the authored labels for its
  * segmented control did not survive the design export.
+ *
+ * The fourth slot was LIBRARY until the catalogue stopped being a room of its
+ * own: the tree, the search and the sessions are all in CULL now, and the slot
+ * belongs to the flow that puts photographs into the library rather than the
+ * one that looks around it.
  */
 export const MODES: ModeSpec[] = [
   {
@@ -45,10 +50,10 @@ export const MODES: ModeSpec[] = [
     panes: { left: "PLACES", centre: "MAP", right: "INSPECTOR" },
   },
   {
-    id: "library",
-    label: "LIBRARY",
-    layouts: ["search", "sessions", "storage"],
-    panes: { left: "TREE", centre: "RESULTS", right: "FACETS" },
+    id: "import",
+    label: "IMPORT",
+    layouts: ["review", "route", "verify"],
+    panes: { left: "CARDS", centre: "IMPORT", right: "ROUTING" },
   },
 ];
 
@@ -69,7 +74,7 @@ class ShellState {
    * The chosen sub-layout of every mode, not just the current one: switching
    * away and back returns to the layout that mode was left in.
    */
-  layouts = $state<Record<Mode, number>>({ cull: 0, exif: 0, map: 0, library: 0 });
+  layouts = $state<Record<Mode, number>>({ cull: 0, exif: 0, map: 0, import: 0 });
 
   /** The pane holding the keyboard, or null when the grid has it. */
   focusedPane = $state<Pane | null>(null);
