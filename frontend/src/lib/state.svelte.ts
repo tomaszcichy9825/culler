@@ -1,14 +1,15 @@
 // The whole UI reads from one store. It holds the opened folder, where focus
 // and selection are, and the transient chrome (toast, plan panel, overlay).
 //
-// Decisions live on the group objects themselves rather than in a parallel
-// map: the backend already returns the recorded decision with every frame, so
-// a group's own `decision` field is the single source of truth for what is
-// pending. Persisting it is a separate concern — see decisions.ts.
+// Verdicts live on the group objects themselves rather than in a parallel map:
+// the backend already returns the recorded verdict, mask and rating with every
+// frame, so a group's own fields are the single source of truth for what is
+// pending. Persisting them is a separate concern — see decisions.ts.
 
 import type { DirEntryDTO, FolderDTO, GroupDTO, PlanDTO } from "./bindings";
+import { verdictOf } from "./verdict";
+import type { CutScope, Mask } from "./verdict";
 
-export type Decision = "none" | "keep_all" | "drop_raw" | "drop_jpeg" | "drop_all";
 export type View = "grid" | "loupe";
 export type Tone = "info" | "error";
 
@@ -26,6 +27,11 @@ const TOAST_MS = 2200;
  * backend's own default so the two never disagree in practice.
  */
 export const DEFAULT_SLOW_SCAN_SECONDS = 10;
+
+/** How many tiles a row of the contact sheet holds, and its limits. */
+export const DEFAULT_COLUMNS = 5;
+const MIN_COLUMNS = 2;
+const MAX_COLUMNS = 12;
 
 /**
  * groupKey identifies a frame for selection and for Svelte's keyed each.
@@ -50,10 +56,25 @@ class CullerState {
   panY = $state(0);
 
   /**
-   * Columns the grid is currently laid out in. The grid owns the measurement;
-   * the key layer needs it so vertical focus moves by a row.
+   * Columns the grid is currently laid out in. The grid owns it; the key layer
+   * needs it so vertical focus moves by a row.
    */
-  cols = $state(1);
+  cols = $state(DEFAULT_COLUMNS);
+
+  /**
+   * Columns the contact sheet is asked for, which is what the − and + keycaps
+   * in the pane header change. Tiles divide the width between them, so asking
+   * for fewer columns is how the sheet asks for bigger tiles.
+   */
+  gridColumns = $state(DEFAULT_COLUMNS);
+
+  /**
+   * Culling semantics, read from the config at startup: the mask a fresh keep
+   * starts with, and how far a cut reaches. Both change what the tile badges
+   * mean, so the UI has to hold them rather than assume the defaults.
+   */
+  defaultKeepMask = $state<Mask>("rj");
+  cutRemoves = $state<CutScope>("both");
 
   /** Set while a backend call is in flight, so the chrome can say so. */
   busy = $state(false);
@@ -126,15 +147,29 @@ class CullerState {
     return f ? [f] : [];
   }
 
+  /** Every frame carrying a verdict, which is what an apply would act on. */
   get pending(): GroupDTO[] {
-    return this.groups.filter((g) => g.decision !== "" && g.decision !== "none");
+    return this.groups.filter((g) => verdictOf(g) !== "");
   }
 
-  /** pendingCounts is decision -> frame count, for the summary bar. */
-  get pendingCounts(): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const g of this.pending) counts[g.decision] = (counts[g.decision] ?? 0) + 1;
+  /** The three numbers the contact sheet's verdict legend shows. */
+  get verdictCounts(): { keep: number; cut: number; undecided: number } {
+    const counts = { keep: 0, cut: 0, undecided: 0 };
+    for (const g of this.groups) {
+      const v = verdictOf(g);
+      if (v === "keep") counts.keep++;
+      else if (v === "cut") counts.cut++;
+      else counts.undecided++;
+    }
     return counts;
+  }
+
+  /**
+   * nudgeColumns resizes the tiles. It clamps rather than wrapping, so holding
+   * − at the widest tile does nothing instead of jumping to the narrowest.
+   */
+  nudgeColumns(delta: number) {
+    this.gridColumns = Math.max(MIN_COLUMNS, Math.min(MAX_COLUMNS, this.gridColumns + delta));
   }
 
   setFolder(folder: FolderDTO) {

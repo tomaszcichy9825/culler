@@ -114,6 +114,18 @@ class ShellState {
     return true;
   }
 
+  /**
+   * nextLayout is where Tab lands: the mode's next sub-layout, wrapping round.
+   * It reads the active mode's own list rather than knowing about CULL, so a
+   * mode gaining sub-layouts inherits the key with nothing else to change. A
+   * mode with one layout has nowhere to go and says so.
+   */
+  nextLayout(): number | null {
+    const count = this.spec.layouts.length;
+    if (count < 2) return null;
+    return (this.layout + 1) % count;
+  }
+
   focusPane(pane: Pane) {
     this.focusedPane = this.focusedPane === pane ? null : pane;
   }

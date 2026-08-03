@@ -163,9 +163,10 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
 };
 
 /**
- * loadSettings reads the configuration the UI depends on — the key bindings
- * and the slow-scan threshold — in a single call. Failure is survivable: the
- * stock bindings and default threshold apply and the user is told.
+ * loadSettings reads the configuration the UI depends on — the key bindings,
+ * the slow-scan threshold and the culling semantics — in a single call.
+ * Failure is survivable: the stock bindings and defaults apply and the user is
+ * told.
  */
 export async function loadSettings() {
   const keymap: Record<string, string[]> = {};
@@ -179,6 +180,13 @@ export async function loadSettings() {
     // payload that never came from a valid config.
     const configured = cfg.behaviour?.slowScanHintSeconds;
     if (typeof configured === "number" && configured >= 1) slowScanSeconds = configured;
+
+    // These two decide what a verdict means, so the badges are wrong without
+    // them. An unrecognised value keeps the default rather than being trusted.
+    const mask = cfg.behaviour?.defaultKeepMask;
+    if (mask === "rj" || mask === "r" || mask === "j") app.defaultKeepMask = mask;
+    const cut = cfg.behaviour?.cutRemoves;
+    if (cut === "both" || cut === "masked") app.cutRemoves = cut;
   } catch (err) {
     app.notify(`could not read settings: ${message(err)}`, "error");
   }

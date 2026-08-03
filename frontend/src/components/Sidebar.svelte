@@ -18,11 +18,13 @@
 
 {#if app.sidebar}
   <aside class="sidebar">
+    <!-- Sources is the only group with anything real behind it. Collections
+         and Filters are drawn in the design but have no data model yet, and a
+         labelled group of invented rows would be worse than no group. -->
     <div class="head">
-      <span class="title">Folders</span>
-      <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar">
-        + Add
-      </button>
+      <span class="title">Sources</span>
+      <span class="hair"></span>
+      <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar"> + add </button>
       <button class="icon" onclick={() => (app.sidebar = false)} title="Collapse sidebar" aria-label="Collapse sidebar">
         ‹
       </button>
@@ -72,40 +74,44 @@
   .head {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 8px 8px 6px 12px;
+    gap: 8px;
+    padding: 10px 8px 7px 12px;
     min-width: 0;
     flex: 0 0 auto;
   }
 
   .title {
+    flex: 0 0 auto;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+
+  .hair {
     flex: 1;
     min-width: 0;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    height: 1px;
+    background: var(--border);
   }
 
   .add {
     flex: 0 0 auto;
     font: inherit;
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 5px;
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border-radius: 4px;
     border: 1px solid var(--border-strong);
     background: var(--bg-field);
-    color: var(--text);
+    color: var(--text-muted);
     cursor: pointer;
     white-space: nowrap;
   }
 
   .add:hover {
     border-color: var(--accent);
+    color: var(--text-hi);
   }
 
   .icon {

@@ -1,20 +1,26 @@
 <script lang="ts">
+  // The contact sheet: a pane header, then the frames.
+  //
   // Hand-rolled virtualisation: the canvas is sized to the full grid so the
   // scrollbar is honest, but only the rows within view plus a screen of
   // overscan are rendered, each one positioned absolutely. A card of 2,000
   // frames therefore costs the same number of DOM nodes as a folder of 30.
+  //
+  // Columns are chosen rather than measured — the design fixes five, and the
+  // − and + keycaps change that number — so the tiles divide whatever width
+  // the pane has between them.
 
   import { app, groupKey } from "../lib/state.svelte";
-  import { decisionBadge, kindBadge, previewURL } from "../lib/preview";
-  import { queuedImage } from "../lib/imageQueue";
+  import Tile from "./Tile.svelte";
 
-  /** Target tile width; the real width divides the container evenly. */
-  const TILE_W = 200;
-  const IMG_H = 150;
-  const LABEL_H = 30;
   const GAP = 10;
-  const TILE_H = IMG_H + LABEL_H;
-  const ROW_H = TILE_H + GAP;
+  const PADDING = 12;
+  /** The stem row beneath every thumbnail. */
+  const FOOTER_H = 22;
+  /** The tile's own 1px border, top and bottom. */
+  const BORDER = 2;
+  /** The thumbnail's aspect ratio, as a height multiplier. */
+  const THUMB_RATIO = 2 / 3;
 
   let scroller = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLDivElement | null>(null);
@@ -22,15 +28,21 @@
   let viewportHeight = $state(0);
   let scrollTop = $state(0);
 
-  let cols = $derived(Math.max(1, Math.floor((canvasWidth + GAP) / (TILE_W + GAP))));
-  let colWidth = $derived((canvasWidth - GAP * (cols - 1)) / cols);
+  let cols = $derived(app.gridColumns);
+  let colWidth = $derived(Math.max(1, (canvasWidth - GAP * (cols - 1)) / cols));
+  // The height is computed rather than left to the aspect ratio alone: the row
+  // maths and the DOM have to agree exactly, or the scrollbar starts lying.
+  let tileHeight = $derived(Math.round((colWidth - BORDER) * THUMB_RATIO) + FOOTER_H + BORDER);
+  let rowHeight = $derived(tileHeight + GAP);
   let rows = $derived(Math.ceil(app.groups.length / cols));
-  let screenRows = $derived(Math.max(1, Math.ceil(viewportHeight / ROW_H)));
+  let screenRows = $derived(Math.max(1, Math.ceil(viewportHeight / rowHeight)));
+  /** The last row carries no trailing gap, so the canvas does not claim one. */
+  let canvasHeight = $derived(rows === 0 ? 0 : rows * rowHeight - GAP);
 
   let visible = $derived.by(() => {
     if (canvasWidth === 0) return [];
     const overscan = Math.ceil(screenRows / 2);
-    const first = Math.max(0, Math.floor(scrollTop / ROW_H) - overscan);
+    const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
     const last = Math.min(rows, first + screenRows + overscan * 2 + 1);
     const out: { index: number; key: string; x: number; y: number }[] = [];
     for (let i = first * cols; i < Math.min(app.groups.length, last * cols); i++) {
@@ -38,11 +50,13 @@
         index: i,
         key: groupKey(app.groups[i]),
         x: (i % cols) * (colWidth + GAP),
-        y: Math.floor(i / cols) * ROW_H,
+        y: Math.floor(i / cols) * rowHeight,
       });
     }
     return out;
   });
+
+  let counts = $derived(app.verdictCounts);
 
   $effect(() => {
     app.cols = cols;
@@ -55,14 +69,41 @@
   $effect(() => {
     const index = app.focusIndex;
     const columns = cols;
+    const step = rowHeight;
     const el = scroller;
     if (!el || !canvas || app.groups.length === 0) return;
-    const top = canvas.offsetTop + Math.floor(index / columns) * ROW_H;
-    const bottom = top + TILE_H;
+    const top = canvas.offsetTop + Math.floor(index / columns) * step;
+    const bottom = top + tileHeight;
     if (top < el.scrollTop) el.scrollTop = Math.max(0, top - GAP);
     else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom + GAP - el.clientHeight;
   });
+
+  function open(index: number) {
+    app.setFocus(index);
+    app.view = "loupe";
+  }
 </script>
+
+<header class="sheet-head">
+  <!-- The scan returns frames in stem order and nothing yet re-sorts them, so
+       this says what the sheet is actually showing rather than what it will
+       show once there is a sort control. -->
+  <span class="key">sorted by</span><span class="value">name ↑</span>
+  <span class="rule"></span>
+  <span class="key">verdicts</span>
+  <span class="legend"><span class="swatch keep"></span><span class="value">{counts.keep} keep</span></span>
+  <span class="legend"><span class="swatch cut"></span><span class="value">{counts.cut} cut</span></span>
+  <span class="legend">
+    <span class="swatch undecided"></span><span class="value">{counts.undecided} undecided</span>
+  </span>
+  <span class="spacer"></span>
+  <span class="rule"></span>
+  <span class="sizer">
+    <button type="button" class="cap" onclick={() => app.nudgeColumns(1)} title="Smaller tiles">−</button>
+    <button type="button" class="cap" onclick={() => app.nudgeColumns(-1)} title="Bigger tiles">+</button>
+    <span>tile size</span>
+  </span>
+</header>
 
 <div
   class="scroller"
@@ -74,58 +115,115 @@
     class="canvas"
     bind:this={canvas}
     bind:clientWidth={canvasWidth}
-    style:height="{rows * ROW_H}px"
+    style:height="{canvasHeight}px"
     role="listbox"
     aria-label="Frames"
     aria-multiselectable="true"
   >
     {#each visible as tile (tile.key)}
-      {@const g = app.groups[tile.index]}
-      {@const url = previewURL(g)}
-      <button
-        type="button"
-        class="tile"
-        class:focused={tile.index === app.focusIndex}
-        class:selected={app.isSelected(g)}
-        style:width="{colWidth}px"
-        style:height="{TILE_H}px"
-        style:transform="translate({tile.x}px, {tile.y}px)"
-        role="option"
-        tabindex="-1"
-        aria-selected={app.isSelected(g)}
-        onclick={() => app.setFocus(tile.index)}
-        ondblclick={() => {
-          app.setFocus(tile.index);
-          app.view = "loupe";
-        }}
-      >
-        <div class="thumb" style:height="{IMG_H}px">
-          {#if url !== ""}
-            <img use:queuedImage={url} alt={g.stem} decoding="async" />
-          {:else}
-            <span class="missing">no preview</span>
-          {/if}
-          <span class="badge kind">{kindBadge(g.kind)}</span>
-          {#if g.decision !== "" && g.decision !== "none"}
-            <span class="badge decision {g.decision}">{decisionBadge(g.decision)}</span>
-          {/if}
-          {#if (g.warnings ?? []).length > 0}
-            <span class="badge warn" title={(g.warnings ?? []).join("; ")}>!</span>
-          {/if}
-        </div>
-        <div class="label" style:height="{LABEL_H}px" title={g.stem}><span>{g.stem}</span></div>
-      </button>
+      <Tile
+        group={app.groups[tile.index]}
+        index={tile.index}
+        focused={tile.index === app.focusIndex}
+        selected={app.isSelected(app.groups[tile.index])}
+        width={colWidth}
+        height={tileHeight}
+        x={tile.x}
+        y={tile.y}
+        onfocus={(i) => app.setFocus(i)}
+        onopen={open}
+      />
     {/each}
   </div>
 </div>
 
 <style>
+  .sheet-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 32px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .key {
+    color: var(--text-muted);
+  }
+
+  .value {
+    color: var(--text);
+  }
+
+  .rule {
+    color: var(--border-strong);
+  }
+
+  .rule::before {
+    content: "|";
+  }
+
+  .legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .swatch {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+  }
+
+  .swatch.keep {
+    background: var(--keep);
+  }
+
+  .swatch.cut {
+    background: var(--cut);
+  }
+
+  .swatch.undecided {
+    background: var(--undecided);
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  .sizer {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .cap {
+    padding: 1px 5px;
+    border: none;
+    border-radius: 3px;
+    background: var(--bg-kbd);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+  }
+
+  .cap:hover {
+    color: var(--text-hi);
+  }
+
   .scroller {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 10px 14px 14px;
+    padding: 12px;
     /* Makes the scroller the canvas's offset parent, so the scroll-into-view
        maths measures the padding rather than the whole page above it. */
     position: relative;
@@ -134,129 +232,5 @@
   .canvas {
     position: relative;
     width: 100%;
-  }
-
-  .tile {
-    position: absolute;
-    top: 0;
-    left: 0;
-    display: flex;
-    flex-direction: column;
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--bg-tile);
-    border: 1px solid transparent;
-    cursor: pointer;
-    padding: 0;
-    margin: 0;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    appearance: none;
-    outline: none;
-  }
-
-  .tile.selected {
-    background: var(--bg-row-active);
-    border-color: var(--border-selected);
-  }
-
-  .tile.focused {
-    border-color: var(--accent);
-    box-shadow: var(--focus-ring);
-  }
-
-  .thumb {
-    position: relative;
-    display: grid;
-    place-items: center;
-    background: var(--bg-app);
-    overflow: hidden;
-  }
-
-  .thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-  }
-
-  .missing {
-    font-size: 11px;
-    color: var(--text-dim);
-    padding: 0 8px;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .badge {
-    position: absolute;
-    display: inline-grid;
-    place-items: center;
-    min-width: 17px;
-    /* A badge never grows past its corner of the tile, whatever it holds. */
-    max-width: calc(50% - 8px);
-    height: 17px;
-    padding: 0 4px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    color: var(--on-accent);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .kind {
-    top: 4px;
-    left: 4px;
-    /* Inverted rather than a fixed grey, so it reads on either theme. */
-    background: var(--text-muted);
-    color: var(--bg-app);
-  }
-
-  .warn {
-    top: 4px;
-    left: 25px;
-    background: var(--amber);
-  }
-
-  .decision {
-    top: 4px;
-    right: 4px;
-  }
-
-  .decision.keep_all {
-    background: var(--keep);
-  }
-  .decision.drop_raw {
-    background: var(--amber);
-  }
-  .decision.drop_jpeg {
-    background: var(--accent);
-  }
-  .decision.drop_all {
-    background: var(--cut);
-  }
-
-  .label {
-    display: flex;
-    align-items: center;
-    padding: 0 7px;
-    min-width: 0;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
-  /* The ellipsis has to live on the text's own box: a flex container will not
-     truncate an anonymous text item. */
-  .label span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 </style>

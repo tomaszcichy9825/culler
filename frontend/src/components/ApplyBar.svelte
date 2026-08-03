@@ -4,13 +4,18 @@
   // routes Enter and Esc to it while it is up, so nothing is ever trapped.
 
   import { cancelApply, confirmApply } from "../lib/actions";
-  import { decisionBadge, decisionLabel, formatBytes } from "../lib/preview";
+  import { formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
+  import { PLAN_ORDER, PLAN_TERMS } from "../lib/verdict";
 
-  const order = ["keep_all", "drop_raw", "drop_jpeg", "drop_all"];
-
-  let counts = $derived(app.pendingCounts);
+  let counts = $derived(app.verdictCounts);
   let total = $derived(app.pending.length);
+
+  /**
+   * The plan's own counts still arrive keyed in the pre-verdict vocabulary, so
+   * the dialog names them rather than showing the keys.
+   */
+  let planCounts = $derived(app.plan?.counts ?? {});
 
   /** verbCounts is how many files each verb touches, from the planned actions. */
   let verbCounts = $derived.by(() => {
@@ -22,14 +27,15 @@
 
 <div class="bar">
   {#if total === 0}
-    <span class="muted">no pending decisions</span>
+    <span class="muted">nothing judged yet</span>
   {:else}
     <span class="count">{total} pending</span>
-    {#each order as decision}
-      {#if counts[decision]}
-        <span class="chip {decision}">{decisionBadge(decision)} {decisionLabel(decision)} · {counts[decision]}</span>
-      {/if}
-    {/each}
+    {#if counts.keep > 0}
+      <span class="chip keep">k keep · {counts.keep}</span>
+    {/if}
+    {#if counts.cut > 0}
+      <span class="chip cut">x cut · {counts.cut}</span>
+    {/if}
     <span class="muted">↩ to apply</span>
   {/if}
   <!-- The volume, the selection, the busy flag and the key hints all live in
@@ -45,11 +51,11 @@
       <p class="description">{app.plan.description}</p>
 
       <dl>
-        {#each order as decision}
-          {#if counts[decision]}
+        {#each PLAN_ORDER as key (key)}
+          {#if planCounts[key]}
             <div class="row">
-              <dt>{decisionLabel(decision)}</dt>
-              <dd>{counts[decision]} frames</dd>
+              <dt>{PLAN_TERMS[key]}</dt>
+              <dd>{planCounts[key]} frames</dd>
             </div>
           {/if}
         {/each}
@@ -120,16 +126,11 @@
     white-space: nowrap;
   }
 
-  .chip.keep_all {
+  .chip.keep {
     background: var(--keep);
   }
-  .chip.drop_raw {
-    background: var(--amber);
-  }
-  .chip.drop_jpeg {
-    background: var(--accent);
-  }
-  .chip.drop_all {
+
+  .chip.cut {
     background: var(--cut);
   }
 

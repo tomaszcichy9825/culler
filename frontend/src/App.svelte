@@ -9,9 +9,13 @@
   import { tick } from "svelte";
   import ApplyBar from "./components/ApplyBar.svelte";
   import Grid from "./components/Grid.svelte";
+  import Inspector from "./components/Inspector.svelte";
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
   import Loader from "./components/Loader.svelte";
-  import Loupe from "./components/Loupe.svelte";
+  import LoupeFirst from "./components/LoupeFirst.svelte";
+  import LoupeOverlay from "./components/LoupeOverlay.svelte";
+  import TableView from "./components/TableView.svelte";
+  import { groupKey } from "./lib/state.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import TitleBar from "./components/TitleBar.svelte";
@@ -29,12 +33,13 @@
     undo,
     watchScanProgress,
   } from "./lib/actions";
-  import { flush, setDecision } from "./lib/decisions";
+  import { flush, setRating, setVerdict, toggleMask } from "./lib/decisions";
   import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
   import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
   import type { Pane } from "./lib/shell.svelte";
   import { app, loupe, picker, tree } from "./lib/state.svelte";
-  import type { Decision } from "./lib/state.svelte";
+  import { MAX_RATING } from "./lib/verdict";
+  import type { Half } from "./lib/verdict";
 
   /** How far one arrow press pans the zoomed loupe, in image pixels. */
   const PAN_STEP = 120;
@@ -48,13 +53,19 @@
     redo: "nothing to redo",
   };
 
-  const decisionActions: Record<string, Decision> = {
-    "keep-all": "keep_all",
-    "drop-raw": "drop_raw",
-    "drop-jpeg": "drop_jpeg",
-    "drop-both": "drop_all",
-    "clear-decision": "none",
+  const verdictActions: Record<string, "keep" | "cut"> = {
+    "verdict-keep": "keep",
+    "verdict-cut": "cut",
   };
+
+  const maskActions: Record<string, Half> = {
+    "mask-toggle-raw": "r",
+    "mask-toggle-jpeg": "j",
+  };
+
+  /** rate-1 through rate-5, plus rate-clear at zero. */
+  const ratingActions: Record<string, number> = { "rate-clear": 0 };
+  for (let n = 1; n <= MAX_RATING; n++) ratingActions[`rate-${n}`] = n;
 
   const modeActions: Record<string, number> = {
     "mode-cull": 0,
@@ -97,8 +108,8 @@
 
   /**
    * CULL's first two sub-layouts are the grid and one frame at a time, which
-   * the app already has as its two views — so choosing a layout and toggling
-   * the loupe have to agree, or the segmented control starts lying.
+   * the app already has as its two views — so choosing a layout and the view
+   * have to agree, or the segmented control starts lying.
    */
   function chooseLayout(index: number) {
     if (!shell.setLayout(index)) return;
@@ -111,10 +122,14 @@
     app.resetZoom();
   }
 
-  function toggleLoupe() {
-    app.view = app.view === "grid" ? "loupe" : "grid";
-    if (app.view === "grid") app.resetZoom();
-    if (shell.mode === "cull") shell.setLayout(app.view === "loupe" ? LOUPE_FIRST : CONTACT_SHEET);
+  /**
+   * Tab walks the current mode's sub-layouts in order, wrapping. The mode
+   * decides how many there are, so nothing here knows that CULL has three.
+   */
+  function cycleLayout() {
+    const next = shell.nextLayout();
+    if (next === null) return;
+    chooseLayout(next);
   }
 
   function escape() {
@@ -176,8 +191,8 @@
       case "focus-down":
         moveFocus(0, 1);
         break;
-      case "toggle-loupe":
-        toggleLoupe();
+      case "cycle-layout":
+        cycleLayout();
         break;
       case "zoom":
         if (app.view !== "loupe") {
@@ -222,8 +237,12 @@
         void pickRoot();
         break;
       default:
-        if (action in decisionActions) {
-          setDecision(decisionActions[action]);
+        if (action in verdictActions) {
+          setVerdict(verdictActions[action]);
+        } else if (action in maskActions) {
+          toggleMask(maskActions[action]);
+        } else if (action in ratingActions) {
+          setRating(ratingActions[action]);
         } else if (action in modeActions) {
           shell.setModeByIndex(modeActions[action]);
         } else if (action in paneActions) {
@@ -317,10 +336,18 @@
           <div class="empty">
             <p class="where" title={app.folder.dir}>No photos in {app.folder.dir}</p>
           </div>
+        {:else if shell.layout === 1}
+          <LoupeFirst />
         {:else if shell.layout === 2}
-          {@render ghost("TABLE", "the table layout comes later", "⌥1", "contact sheet")}
-        {:else if app.view === "loupe"}
-          <Loupe />
+          <TableView
+            groups={app.groups}
+            focusIndex={app.focusIndex}
+            onFocus={(i) => (app.focusIndex = i)}
+            onActivate={() => (app.view = "loupe")}
+            isSelected={(g) => app.selection.has(groupKey(g))}
+            preview={false}
+            cutRemoves={app.cutRemoves}
+          />
         {:else}
           <Grid />
         {/if}
@@ -330,21 +357,18 @@
     <section class="pane right" class:focused={shell.focusedPane === "right"} class:dim={dimmed("right")}>
       {#if shell.focusedPane === "right"}{@render focusHead("right")}{/if}
       <div class="pane-body">
-        {#if app.focused}
-          <div class="inspector">
-            <p class="iname">{app.focused.stem}</p>
-            <p class="icount">{app.focusIndex + 1} of {app.groups.length}</p>
-          </div>
+        {#if shell.mode === "cull"}
+          <Inspector />
         {:else}
-          <div class="ghost">
-            <p class="gline">no frame selected</p>
-            <p class="gline">the inspector fills in</p>
-            <p class="gline">once you pick one</p>
-          </div>
+          {@render ghost(shell.spec.panes.right, "this pane comes later", "⌃1", "back to cull")}
         {/if}
       </div>
     </section>
   </div>
+
+  {#if app.view === "loupe" && shell.mode === "cull" && shell.layout !== 1 && app.folder !== null && app.groups.length > 0}
+    <LoupeOverlay />
+  {/if}
 
   <ApplyBar />
   <StatusBar />
@@ -505,28 +529,6 @@
 
   .gkey {
     color: var(--text-dim);
-  }
-
-  .inspector {
-    flex: 0 0 auto;
-    padding: 12px 14px;
-    min-width: 0;
-  }
-
-  .iname {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-hi);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .icount {
-    margin: 4px 0 0;
-    font-size: 10.5px;
-    color: var(--text-muted);
   }
 
   .empty {

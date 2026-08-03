@@ -16,7 +16,9 @@ export type {
   FolderDTO,
   GroupDTO,
   PlanDTO,
+  RatingItem,
   ResultDTO,
+  VerdictItem,
 } from "../../bindings/github.com/tomaszcichy9825/culler/internal/app/index.js";
 
 export type { Config } from "../../bindings/github.com/tomaszcichy9825/culler/internal/config/index.js";
