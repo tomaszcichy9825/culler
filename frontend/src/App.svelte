@@ -12,14 +12,25 @@
   import Inspector from "./components/Inspector.svelte";
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
   import Loader from "./components/Loader.svelte";
+  import ColdStart from "./components/ColdStart.svelte";
   import CompareView from "./components/CompareView.svelte";
+  import EditorPane from "./components/exif/EditorPane.svelte";
+  import FramesRail from "./components/exif/FramesRail.svelte";
+  import TargetsPane from "./components/exif/TargetsPane.svelte";
+  import WritePlanDialog from "./components/exif/WritePlanDialog.svelte";
+  import LibraryCentre from "./components/library/LibraryCentre.svelte";
+  import LibraryLeft from "./components/library/LibraryLeft.svelte";
+  import LibraryRight from "./components/library/LibraryRight.svelte";
   import LoupeFirst from "./components/LoupeFirst.svelte";
   import LoupeOverlay from "./components/LoupeOverlay.svelte";
   import Palettes from "./components/Palettes.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
-  import { runAction } from "./lib/actions";
+  import { runAction, openFolder as openFolderAction } from "./lib/actions";
+  import { ExifService, LibraryIndexService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
+  import { exifState } from "./lib/exif.svelte";
+  import { connectCatalog, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
   import { groupKey } from "./lib/state.svelte";
@@ -138,6 +149,29 @@
     if (next === null) return;
     chooseLayout(next);
   }
+
+  // Hand the generated services to the stores that were written against
+  // injectable ports, so their components work in the harness and here alike.
+  exifState.usePort({
+    read: async (paths) => ((await ExifService.Read(paths)) ?? {}) as never,
+    plan: async (edits) => (await ExifService.Plan(edits)) as never,
+    apply: async (edits) => (await ExifService.Apply(edits)) as never,
+  });
+  connectCatalog({
+    Roots: async () => ((await LibraryIndexService.Roots()) ?? []) as never,
+    RegisterRoot: async (dir) => ((await LibraryIndexService.RegisterRoot(dir)) ?? []) as never,
+    RemoveRoot: async (dir) => ((await LibraryIndexService.RemoveRoot(dir)) ?? []) as never,
+    Reindex: (dir) => LibraryIndexService.Reindex(dir),
+    Search: (q, f, limit, offset) => LibraryIndexService.Search(q, f as never, limit, offset) as never,
+    Counts: (q, f) => LibraryIndexService.Counts(q, f as never) as never,
+    Sessions: async (gap) => ((await LibraryIndexService.Sessions(gap)) ?? []) as never,
+    Storage: () => LibraryIndexService.Storage() as never,
+  });
+  void watchCatalogProgress();
+  onOpenFolder((dir) => {
+    shell.setMode("cull");
+    void openFolderAction(dir);
+  });
 
   // The filter narrows what the whole app sees: the grid, focus movement,
   // selection targets and the apply flow all read app.groups, so applying it
@@ -363,6 +397,10 @@
       <div class="pane-body">
         {#if shell.mode === "cull"}
           <Sidebar bind:path />
+        {:else if shell.mode === "exif"}
+          <FramesRail />
+        {:else if shell.mode === "library"}
+          <LibraryLeft />
         {:else}
           {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -372,15 +410,16 @@
     <section class="pane centre" class:focused={shell.focusedPane === "centre"} class:dim={dimmed("centre")}>
       {#if shell.focusedPane === "centre"}{@render focusHead("centre")}{/if}
       <div class="pane-body">
-        {#if shell.mode !== "cull"}
+        {#if shell.mode === "exif"}
+          <EditorPane />
+        {:else if shell.mode === "library"}
+          <LibraryCentre layout={shell.layout} />
+        {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
         {:else if app.scanning !== null}
           <Loader />
         {:else if app.folder === null}
-          <div class="empty">
-            <p>Type a folder in the sidebar and press ↩.</p>
-            <p class="hint">Absolute paths and ~ both work. Press ? for the keys.</p>
-          </div>
+          <ColdStart />
         {:else if app.groups.length === 0}
           <div class="empty">
             <p class="where" title={app.folder.dir}>No photos in {app.folder.dir}</p>
@@ -408,6 +447,10 @@
       <div class="pane-body">
         {#if shell.mode === "cull"}
           <Inspector />
+        {:else if shell.mode === "exif"}
+          <TargetsPane />
+        {:else if shell.mode === "library"}
+          <LibraryRight layout={shell.layout} />
         {:else}
           {@render ghost(shell.spec.panes.right, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -433,6 +476,7 @@
   {/if}
 
   <Palettes />
+  <WritePlanDialog />
 
   <ApplyBar />
   <StatusBar />

@@ -5,6 +5,8 @@ export {
   ApplyService,
   ConfigService,
   DecisionService,
+  ExifService,
+  LibraryIndexService,
   LibraryService,
 } from "../../bindings/github.com/tomaszcichy9825/culler/internal/app/index.js";
 

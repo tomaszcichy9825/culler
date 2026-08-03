@@ -13,6 +13,7 @@ import { Clipboard, Events } from "@wailsio/runtime";
 
 import { ApplyService, ConfigService, LibraryService } from "./bindings";
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
+import { exifState } from "./exif.svelte";
 import { palette } from "./palette.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
@@ -801,6 +802,15 @@ export const ACTIONS: Action[] = [
     icon: "⚙",
     note: "behaviours and shortcuts",
     run: () => (settings.open = true),
+  },
+  {
+    id: "write-metadata",
+    label: "write metadata changes",
+    group: FILES,
+    icon: "✎",
+    note: "shows the write plan first",
+    when: () => shell.mode === "exif" && exifState.dirtyFrames.length > 0,
+    run: () => void exifState.requestWrite(),
   },
   {
     id: "enter-compare",

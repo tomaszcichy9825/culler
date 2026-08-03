@@ -144,6 +144,7 @@ func DefaultKeymap() map[string][]string {
 		"keymap-overlay":   {"?"},
 		"open-settings":    {"mod+,"},
 		"enter-compare":    {"shift+c"},
+		"write-metadata":   {"mod+s"},
 	}
 }
 

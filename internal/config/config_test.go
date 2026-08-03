@@ -91,6 +91,7 @@ func TestDefaultKeymapCoversEveryAction(t *testing.T) {
 		"command-palette":  "mod+k",
 		"open-settings":    "mod+,",
 		"enter-compare":    "shift+c",
+		"write-metadata":   "mod+s",
 		"keymap-overlay":   "?",
 	}
 
