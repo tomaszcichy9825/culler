@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>culler — map mode</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<style>
+  html, body { margin:0; background:#0e1013; color:#d7dae0; font-family:"Public Sans",system-ui,sans-serif; }
+  * { box-sizing:border-box; }
+  a { color:#56b6c2; text-decoration:none; }
+  a:hover { color:#7fd1db; }
+  .mono { font-family:"JetBrains Mono",ui-monospace,monospace; }
+  ::-webkit-scrollbar { width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb { background:#2b313b; border-radius:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+
+  #map { width:100%; height:100%; background:#0e1013; }
+  .leaflet-container { background:#0e1013; font-family:"JetBrains Mono",monospace; }
+  .leaflet-tile-pane { filter: invert(1) hue-rotate(185deg) saturate(0.55) brightness(0.82) contrast(1.06); }
+  .leaflet-control-attribution { background:rgba(14,16,19,0.78) !important; color:#5a606d !important; font-size:9.5px !important; border:none !important; }
+  .leaflet-control-attribution a { color:#5a606d !important; }
+  .leaflet-bar { border:1px solid #2b313b !important; }
+  .leaflet-bar a { background:#171a1f !important; color:#8b919e !important; border-bottom-color:#2b313b !important; }
+  .leaflet-bar a:hover { background:#1f242b !important; color:#d7dae0 !important; }
+
+  .pin { display:flex; align-items:center; gap:5px; padding:3px 3px 3px 4px; border-radius:5px;
+         background:rgba(14,16,19,0.9); border:1px solid #2f3742; box-shadow:0 4px 14px rgba(0,0,0,0.5); cursor:pointer; white-space:nowrap; }
+  .pin .sw { width:26px; height:18px; border-radius:2px; }
+  .pin .ct { font-family:"JetBrains Mono",monospace; font-size:10.5px; font-weight:700; color:#c3c8d1; padding-right:3px; }
+  .pin.sel { border-color:#61afef; box-shadow:0 0 0 2px rgba(97,175,239,0.35),0 4px 14px rgba(0,0,0,0.5); }
+  .pin.sel .ct { color:#eef1f6; }
+  .pin.untagged { border-color:#d19a66; border-style:dashed; }
+  .pin.untagged .ct { color:#d19a66; }
+</style>
+</head>
+<body>
+
+<div style="display:grid;place-items:center;padding:40px">
+<div style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px" class="mono">
+    <span style="display:inline-grid;place-items:center;min-width:26px;height:20px;padding:0 7px;border-radius:4px;background:#56b6c2;color:#0e1013;font-size:11px;font-weight:700">4a</span>
+    <span style="font-size:12px;color:#8b919e">Map mode (⌃3) — live map, real tiles. Selection stays in sync with the cull grid.</span>
+  </div>
+
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;background:#14161a;border:1px solid #262a32;border-radius:10px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.5)">
+
+  <div style="flex:0 0 auto;display:flex;align-items:center;gap:14px;height:40px;padding:0 14px 0 78px;background:#171a1f;border-bottom:1px solid #23272f">
+    <div style="display:flex;align-items:center;height:24px;padding:2px;border-radius:6px;background:#1d2127;border:1px solid #2b313b">
+      <div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;background:#61afef;color:#0e1013;font-size:11px;font-weight:700;white-space:nowrap"><span>pins</span><span style="opacity:0.55;font-size:10px">⌥1</span></div>
+      <div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>heat</span><span style="opacity:0.55;font-size:10px">⌥2</span></div>
+      <div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>track</span><span style="opacity:0.55;font-size:10px">⌥3</span></div>
+    </div>
+    <div class="mono" style="display:flex;gap:6px;align-items:center;font-size:12px;color:#8b919e;min-width:0">
+      <span style="color:#5a606d">/Volumes/FUJI_SD/DCIM/</span><span style="color:#d7dae0;font-weight:500">103_FUJI</span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 9px;border-radius:6px;background:#1d2127;border:1px solid #2b313b;font-size:11px;color:#5a606d;white-space:nowrap">
+      <span>search or run a command</span>
+      <span style="display:flex;gap:3px"><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">⌘</span><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">K</span></span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:10px;font-size:11px;white-space:nowrap">
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;background:rgba(209,154,102,0.16);color:#d19a66"><span style="width:5px;height:5px;border-radius:50%;background:#d19a66"></span>11 without GPS</span>
+      <span style="padding:3px 9px;border-radius:4px;background:#98c379;color:#0e1013;font-weight:700">write ⌘S</span>
+    </div>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex">
+
+    <div style="flex:0 0 208px;display:flex;flex-direction:column;background:#171a1f;border-right:1px solid #23272f;overflow:hidden">
+      <div class="mono" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;height:22px;padding:0 10px;font-size:10px;color:#4d535f;white-space:nowrap;border-bottom:1px solid #23272f">
+        <span>PLACES</span><span style="flex:1"></span><span>⌘1</span>
+      </div>
+      <div id="places" style="flex:1;min-height:0;overflow-y:auto;padding:6px 0"></div>
+      <div style="flex:0 0 auto;padding:10px;border-top:1px solid #23272f">
+        <div class="mono" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f;padding-bottom:7px">GPX track</div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;background:#1c2027;border:1px solid #2b313b">
+          <span style="width:14px;height:2px;background:#c678dd;flex:0 0 auto"></span>
+          <span class="mono" style="flex:1;min-width:0;font-size:11px;color:#d7dae0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">walk-2026-07-18.gpx</span>
+        </div>
+        <div class="mono" style="margin-top:6px;font-size:10.5px;color:#5a606d;line-height:1.5">match by timestamp → <span style="color:#98c379">11 frames</span> get a position</div>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;position:relative">
+      <div id="map"></div>
+
+      <div style="position:absolute;top:12px;left:12px;z-index:500;display:flex;flex-direction:column;gap:6px;pointer-events:none">
+        <div class="mono" style="display:inline-flex;align-items:center;gap:9px;padding:5px 10px;border-radius:5px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;font-size:11px;color:#8b919e;white-space:nowrap">
+          <span style="color:#d7dae0;font-weight:600">37</span><span>of 48 frames placed</span><span style="color:#2b313b">|</span><span style="color:#d19a66">11 pending</span>
+        </div>
+        <div class="mono" style="display:inline-flex;align-items:center;gap:9px;padding:5px 10px;border-radius:5px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;font-size:11px;color:#5a606d;white-space:nowrap">
+          drag a frame onto the map to geotag it
+        </div>
+      </div>
+
+      <div class="mono" style="position:absolute;bottom:12px;left:12px;z-index:500;display:flex;gap:6px;font-size:10.5px;color:#8b919e">
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">f fit to pins</span>
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">g geotag selection</span>
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">⇧d strip GPS</span>
+      </div>
+    </div>
+
+    <div style="flex:0 0 296px;display:flex;flex-direction:column;background:#171a1f;border-left:1px solid #23272f;overflow-y:auto">
+      <div style="aspect-ratio:3/2;background:repeating-linear-gradient(58deg,#1c2026 0 8px,#23282f 8px 16px);border-bottom:1px solid #23272f"></div>
+      <div style="padding:10px 12px;border-bottom:1px solid #23272f;display:flex;align-items:baseline;gap:8px">
+        <span class="mono" style="font-size:13px;font-weight:500;color:#d7dae0">DSCF1207</span>
+        <span style="flex:1"></span>
+        <span class="mono" style="font-size:10.5px;color:#8b919e;white-space:nowrap">18 frames here</span>
+      </div>
+      <div style="padding:10px 12px;border-bottom:1px solid #23272f">
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:7px">
+          <span class="mono" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">Position</span>
+          <span style="flex:1;height:1px;background:#23272f"></span>
+          <span class="mono" style="font-size:10px;color:#98c379;white-space:nowrap">from camera</span>
+        </div>
+        <div id="posrows"></div>
+      </div>
+      <div style="padding:10px 12px;border-bottom:1px solid #23272f">
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:7px">
+          <span class="mono" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">Reverse geocode</span>
+          <span style="flex:1;height:1px;background:#23272f"></span>
+        </div>
+        <div id="georows"></div>
+        <div class="mono" style="margin-top:7px;font-size:10.5px;color:#5a606d;line-height:1.5;text-wrap:pretty">written to IPTC City / State / Country on ⌘S</div>
+      </div>
+      <div style="padding:10px 12px">
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:7px">
+          <span class="mono" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">At this pin</span>
+          <span style="flex:1;height:1px;background:#23272f"></span>
+        </div>
+        <div id="pinframes" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex:0 0 78px;display:flex;align-items:center;gap:0;background:#14161a;border-top:1px solid #23272f;overflow:hidden">
+    <div class="mono" style="flex:0 0 auto;height:100%;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:0 12px;border-right:1px solid #23272f;background:#171a1f;white-space:nowrap">
+      <span style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#4d535f">Without GPS</span>
+      <span style="font-size:11px;color:#d19a66">11 frames · drag to place</span>
+    </div>
+    <div id="strip" style="flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:6px;padding:0 12px;overflow-x:auto"></div>
+  </div>
+
+  <div class="mono" style="flex:0 0 auto;display:flex;align-items:stretch;height:30px;background:#171a1f;border-top:1px solid #23272f;font-size:11px">
+    <div style="display:flex;align-items:center;gap:1px;padding-right:10px">
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃1</span><span>CULL</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃2</span><span>EXIF</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;background:#61afef;color:#0e1013;font-weight:700;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃3</span><span>MAP</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃4</span><span>LIBRARY</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;padding:0 4px;color:#5a606d">
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:3px;background:rgba(97,175,239,0.16);color:#61afef;white-space:nowrap">MAP · Rynek Główny</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">g</span> geotag</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">f</span> fit</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">t</span> load GPX</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">⌘S</span> write</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">esc</span> back to grid</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 12px;color:#5a606d;white-space:nowrap">
+      <span style="color:#98c379">37 placed</span><span style="color:#2b313b">|</span><span>zoom <span style="color:#8b919e">15</span></span>
+    </div>
+  </div>
+</div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin-top:30px" class="mono">
+    <span style="display:inline-grid;place-items:center;min-width:26px;height:20px;padding:0 7px;border-radius:4px;background:#56b6c2;color:#0e1013;font-size:11px;font-weight:700">4b</span>
+    <span style="font-size:12px;color:#8b919e">Geotag tool (g) — place 4 untagged frames, either by dropping a pin or by lifting coordinates off another photo.</span>
+  </div>
+
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;background:#14161a;border:1px solid #262a32;border-radius:10px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.5)">
+
+  <div style="flex:0 0 auto;display:flex;align-items:center;gap:14px;height:40px;padding:0 14px 0 78px;background:#171a1f;border-bottom:1px solid #23272f">
+    <div class="mono" style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">
+      <span style="padding:3px 9px;border-radius:4px;background:rgba(209,154,102,0.18);color:#d19a66;font-weight:700">GEOTAG · 4 frames</span>
+      <span style="color:#d7dae0;font-weight:500">103_FUJI</span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 9px;border-radius:6px;background:#1d2127;border:1px solid #2b313b;font-size:11px;color:#5a606d;white-space:nowrap">
+      <span>search or run a command</span>
+      <span style="display:flex;gap:3px"><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">⌘</span><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">K</span></span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:10px;font-size:11px;white-space:nowrap">
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;background:rgba(209,154,102,0.16);color:#d19a66"><span style="width:5px;height:5px;border-radius:50%;background:#d19a66"></span>11 without GPS</span>
+      <span style="padding:3px 9px;border-radius:4px;background:#98c379;color:#0e1013;font-weight:700">write ⌘S</span>
+    </div>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex">
+
+    <div style="flex:0 0 232px;display:flex;flex-direction:column;background:#171a1f;border-right:1px solid #23272f;overflow:hidden">
+      <div class="mono" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;height:24px;padding:0 10px;background:rgba(209,154,102,0.10);font-size:10px;color:#d19a66;white-space:nowrap;border-bottom:1px solid #23272f">
+        <span style="width:5px;height:5px;border-radius:50%;background:#d19a66"></span><span>QUEUE · no position</span><span style="flex:1"></span><span style="color:#8b6a45">4 / 11</span>
+      </div>
+      <div id="queue" style="flex:1;min-height:0;overflow-y:auto;padding:4px 0"></div>
+      <div class="mono" style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid #23272f;font-size:10.5px;color:#5a606d;white-space:nowrap">
+        <span><span style="color:#8b919e">x</span> toggle</span><span><span style="color:#8b919e">⇧a</span> all</span><span><span style="color:#8b919e">⌥t</span> same minute</span>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;position:relative">
+      <div id="map2" style="width:100%;height:100%;background:#0e1013"></div>
+
+      <div style="position:absolute;top:12px;left:56px;z-index:500;display:flex;flex-direction:column;gap:6px;pointer-events:none">
+        <div class="mono" style="display:inline-flex;align-items:center;gap:9px;padding:5px 10px;border-radius:5px;background:rgba(14,16,19,0.86);border:1px solid rgba(209,154,102,0.5);font-size:11px;color:#d19a66;white-space:nowrap">
+          <span style="font-weight:700">click the map</span><span style="color:#8b919e">to place 4 frames · drag the pin to adjust</span>
+        </div>
+      </div>
+
+      <div class="mono" style="position:absolute;bottom:12px;left:12px;z-index:500;display:flex;gap:6px;font-size:10.5px;color:#8b919e">
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">⏎ apply</span>
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">esc cancel</span>
+      </div>
+    </div>
+
+    <div style="flex:0 0 320px;display:flex;flex-direction:column;background:#171a1f;border-left:1px solid #23272f;overflow:hidden">
+      <div style="flex:0 0 auto;display:flex;gap:2px;padding:8px 10px 0">
+        <div class="mono" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:26px;border-radius:5px 5px 0 0;background:#1d2127;border:1px solid #2b313b;border-bottom:none;font-size:11px;color:#8b919e;cursor:pointer;white-space:nowrap"><span>drop pin</span><span style="opacity:0.5;font-size:10px">⌥1</span></div>
+        <div class="mono" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:26px;border-radius:5px 5px 0 0;background:#14161a;border:1px solid #61afef;border-bottom:none;font-size:11px;font-weight:700;color:#61afef;cursor:pointer;white-space:nowrap"><span>from photo</span><span style="opacity:0.6;font-size:10px">⌥2</span></div>
+      </div>
+
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;background:#14161a;border-top:1px solid #61afef;overflow:hidden">
+        <div style="flex:0 0 auto;padding:10px 12px;border-bottom:1px solid #23272f">
+          <div class="mono" style="display:flex;align-items:center;gap:8px;height:26px;padding:0 9px;border-radius:5px;background:#1d2127;border:1px solid #61afef;font-size:11.5px;white-space:nowrap;overflow:hidden">
+            <span style="color:#61afef;flex:0 0 auto">/</span>
+            <span style="color:#d7dae0;flex:0 0 auto">rynek</span>
+            <span style="width:1px;height:12px;background:#61afef;flex:0 0 auto"></span>
+            <span style="flex:1"></span>
+            <span style="color:#8b919e;flex:0 0 auto">6 tagged</span>
+          </div>
+          <div class="mono" style="margin-top:7px;font-size:10.5px;color:#5a606d;line-height:1.5;text-wrap:pretty">pick a photo that already has a position — its coordinates get copied onto the queued frames</div>
+        </div>
+
+        <div style="flex:0 0 auto;display:flex;gap:5px;padding:8px 12px;border-bottom:1px solid #23272f">
+          <span class="mono" style="padding:3px 8px;border-radius:4px;background:rgba(97,175,239,0.18);color:#61afef;font-size:10.5px;white-space:nowrap">nearest in time</span>
+          <span class="mono" style="padding:3px 8px;border-radius:4px;background:#1d2127;border:1px solid #2b313b;color:#8b919e;font-size:10.5px;white-space:nowrap">same shoot</span>
+          <span class="mono" style="padding:3px 8px;border-radius:4px;background:#1d2127;border:1px solid #2b313b;color:#8b919e;font-size:10.5px;white-space:nowrap">all imports</span>
+        </div>
+
+        <div id="donors" style="flex:1;min-height:0;overflow-y:auto"></div>
+
+        <div style="flex:0 0 auto;padding:10px 12px;border-top:1px solid #23272f;background:#171a1f;display:flex;flex-direction:column;gap:8px">
+          <div class="mono" style="display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">
+            <span>Result</span><span style="flex:1;height:1px;background:#23272f"></span><span style="color:#98c379;letter-spacing:0;text-transform:none">copied from DSCF1189</span>
+          </div>
+          <div id="result"></div>
+          <div style="display:flex;align-items:center;gap:9px;padding-top:2px">
+            <span class="mono" style="font-size:10.5px;color:#5a606d;white-space:nowrap">esc cancel</span>
+            <span style="flex:1"></span>
+            <span class="mono" style="padding:6px 13px;border-radius:5px;background:#98c379;color:#0e1013;font-size:11.5px;font-weight:700;white-space:nowrap">apply to 4  ⏎</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex:0 0 78px;display:flex;align-items:center;background:#14161a;border-top:1px solid #23272f;overflow:hidden">
+    <div class="mono" style="flex:0 0 auto;height:100%;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:0 12px;border-right:1px solid #23272f;background:#171a1f;white-space:nowrap">
+      <span style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#4d535f">Without GPS</span>
+      <span style="font-size:11px;color:#d19a66">4 of 11 selected</span>
+    </div>
+    <div id="strip2" style="flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:6px;padding:0 12px;overflow-x:auto"></div>
+  </div>
+
+  <div class="mono" style="flex:0 0 auto;display:flex;align-items:stretch;height:30px;background:#171a1f;border-top:1px solid #23272f;font-size:11px">
+    <div style="display:flex;align-items:center;gap:1px;padding-right:10px">
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃1</span><span>CULL</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃2</span><span>EXIF</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;background:#61afef;color:#0e1013;font-weight:700;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃3</span><span>MAP</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃4</span><span>LIBRARY</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;padding:0 4px;color:#5a606d">
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:3px;background:rgba(209,154,102,0.16);color:#d19a66;white-space:nowrap">GEOTAG · from photo</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">⌥1/⌥2</span> pin / photo</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">↑↓</span> pick donor</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">⏎</span> apply</span>
+      <span style="white-space:nowrap"><span style="color:#8b919e">⌘S</span> write</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 12px;color:#5a606d;white-space:nowrap">
+      <span style="color:#d19a66">4 queued</span><span style="color:#2b313b">|</span><span><span style="color:#8b919e">7</span> left after this</span>
+    </div>
+  </div>
+</div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin-top:30px" class="mono">
+    <span style="display:inline-grid;place-items:center;min-width:26px;height:20px;padding:0 7px;border-radius:4px;background:#56b6c2;color:#0e1013;font-size:11px;font-weight:700">4c</span>
+    <span style="font-size:12px;color:#8b919e">MAP ⌥2 — heat: where you actually shoot, across every import</span>
+  </div>
+
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;background:#14161a;border:1px solid #262a32;border-radius:10px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.5)">
+  <div style="flex:0 0 auto;display:flex;align-items:center;gap:14px;height:40px;padding:0 14px 0 78px;background:#171a1f;border-bottom:1px solid #23272f">
+    <div style="display:flex;align-items:center;height:24px;padding:2px;border-radius:6px;background:#1d2127;border:1px solid #2b313b"><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>pins</span><span style="opacity:0.55;font-size:10px">⌥1</span></div><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;background:#61afef;color:#0e1013;font-weight:700;font-size:11px;white-space:nowrap"><span>heat</span><span style="opacity:0.55;font-size:10px">⌥2</span></div><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>track</span><span style="opacity:0.55;font-size:10px">⌥3</span></div></div>
+    <div class="mono" style="display:flex;gap:6px;align-items:center;font-size:12px;color:#8b919e;min-width:0">
+      <span style="color:#5a606d">/Volumes/FUJI_SD/DCIM/</span><span style="color:#d7dae0;font-weight:500">103_FUJI</span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 9px;border-radius:6px;background:#1d2127;border:1px solid #2b313b;font-size:11px;color:#5a606d;white-space:nowrap">
+      <span>search or run a command</span>
+      <span style="display:flex;gap:3px"><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">⌘</span><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">K</span></span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:14px;font-size:11px;color:#8b919e;white-space:nowrap">
+      <span>37 placed</span><span style="color:#2b313b">|</span><span style="color:#d19a66">11 without GPS</span>
+    </div>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="flex:0 0 208px;display:flex;flex-direction:column;background:#171a1f;border-right:1px solid #23272f;overflow:hidden">
+      <div class="mono" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;height:22px;padding:0 10px;font-size:10px;color:#4d535f;white-space:nowrap;border-bottom:1px solid #23272f">
+        <span>DENSITY</span><span style="flex:1"></span><span>⌘1</span>
+      </div>
+      <div id="heatRail" style="flex:1;min-height:0;overflow-y:auto;padding:6px 0"></div>
+    </div>
+
+    <div style="flex:1;min-width:0;position:relative">
+      <div id="map3" style="width:100%;height:100%;background:#0e1013"></div>
+      <div style="position:absolute;top:12px;left:56px;z-index:500;display:flex;flex-direction:column;gap:6px;pointer-events:none">
+        <div class="mono" style="display:inline-flex;align-items:center;gap:9px;padding:5px 10px;border-radius:5px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;font-size:11px;color:#8b919e;white-space:nowrap"><span style="color:#d7dae0;font-weight:600">41,208</span><span>frames from 42 sessions</span><span style="color:#2b313b">|</span><span>blob size = frames</span></div>
+      </div>
+      <div class="mono" style="position:absolute;bottom:12px;left:12px;z-index:500;display:flex;gap:6px;font-size:10.5px;color:#8b919e">
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">−/+ scale</span><span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">⏎ select frames here</span>
+      </div>
+    </div>
+
+    <div style="flex:0 0 296px;display:flex;flex-direction:column;background:#171a1f;border-left:1px solid #23272f;overflow-y:auto">
+      <div id="heatAside"></div>
+    </div>
+  </div>
+
+  <div class="mono" style="flex:0 0 auto;display:flex;align-items:stretch;height:30px;background:#171a1f;border-top:1px solid #23272f;font-size:11px">
+    <div style="display:flex;align-items:center;gap:1px;padding-right:10px">
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃1</span><span>CULL</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃2</span><span>EXIF</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;background:#61afef;color:#0e1013;font-weight:700;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃3</span><span>MAP</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃4</span><span>LIBRARY</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;padding:0 4px;color:#5a606d">
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:3px;background:rgba(97,175,239,0.16);color:#61afef;white-space:nowrap">HEAT · all imports</span><span style="white-space:nowrap"><span style="color:#8b919e">⏎</span> select frames in view</span><span style="white-space:nowrap"><span style="color:#8b919e">−/+</span> blob scale</span><span style="white-space:nowrap"><span style="color:#8b919e">f</span> fit</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 12px;color:#5a606d;white-space:nowrap">
+      <span>zoom <span style="color:#8b919e">13</span></span><span style="color:#2b313b">|</span><span>4,854 frames in view</span><span style="color:#2b313b">|</span><span>largest <span style="color:#8b919e">1,204</span></span>
+    </div>
+  </div>
+</div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin-top:30px" class="mono">
+    <span style="display:inline-grid;place-items:center;min-width:26px;height:20px;padding:0 7px;border-radius:4px;background:#56b6c2;color:#0e1013;font-size:11px;font-weight:700">4d</span>
+    <span style="font-size:12px;color:#8b919e">MAP ⌥3 — track: the GPX line and where each frame fell on it</span>
+  </div>
+
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;background:#14161a;border:1px solid #262a32;border-radius:10px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.5)">
+  <div style="flex:0 0 auto;display:flex;align-items:center;gap:14px;height:40px;padding:0 14px 0 78px;background:#171a1f;border-bottom:1px solid #23272f">
+    <div style="display:flex;align-items:center;height:24px;padding:2px;border-radius:6px;background:#1d2127;border:1px solid #2b313b"><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>pins</span><span style="opacity:0.55;font-size:10px">⌥1</span></div><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;color:#8b919e;font-size:11px;white-space:nowrap"><span>heat</span><span style="opacity:0.55;font-size:10px">⌥2</span></div><div class="mono" style="display:flex;align-items:center;gap:6px;height:100%;padding:0 9px;border-radius:4px;background:#61afef;color:#0e1013;font-weight:700;font-size:11px;white-space:nowrap"><span>track</span><span style="opacity:0.55;font-size:10px">⌥3</span></div></div>
+    <div class="mono" style="display:flex;gap:6px;align-items:center;font-size:12px;color:#8b919e;min-width:0">
+      <span style="color:#5a606d">/Volumes/FUJI_SD/DCIM/</span><span style="color:#d7dae0;font-weight:500">103_FUJI</span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 9px;border-radius:6px;background:#1d2127;border:1px solid #2b313b;font-size:11px;color:#5a606d;white-space:nowrap">
+      <span>search or run a command</span>
+      <span style="display:flex;gap:3px"><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">⌘</span><span style="padding:1px 4px;border-radius:3px;background:#262b34;color:#8b919e">K</span></span>
+    </div>
+    <span style="flex:1"></span>
+    <div class="mono" style="display:flex;align-items:center;gap:14px;font-size:11px;color:#8b919e;white-space:nowrap">
+      <span>37 placed</span><span style="color:#2b313b">|</span><span style="color:#d19a66">11 without GPS</span>
+    </div>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="flex:0 0 208px;display:flex;flex-direction:column;background:#171a1f;border-right:1px solid #23272f;overflow:hidden">
+      <div class="mono" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;height:22px;padding:0 10px;font-size:10px;color:#4d535f;white-space:nowrap;border-bottom:1px solid #23272f">
+        <span>TRACKS</span><span style="flex:1"></span><span>⌘1</span>
+      </div>
+      <div id="trackRail" style="flex:1;min-height:0;overflow-y:auto;padding:6px 0"></div>
+    </div>
+
+    <div style="flex:1;min-width:0;position:relative">
+      <div id="map4" style="width:100%;height:100%;background:#0e1013"></div>
+      <div style="position:absolute;top:12px;left:56px;z-index:500;display:flex;flex-direction:column;gap:6px;pointer-events:none">
+        <div class="mono" style="display:inline-flex;align-items:center;gap:9px;padding:5px 10px;border-radius:5px;background:rgba(14,16,19,0.86);border:1px solid rgba(198,120,221,0.5);font-size:11px;color:#c678dd;white-space:nowrap"><span style="font-weight:600">walk-2026-07-18.gpx</span><span style="color:#8b919e">2 h 14 m · 6.8 km · 812 points</span></div>
+      </div>
+      <div class="mono" style="position:absolute;bottom:12px;left:12px;z-index:500;display:flex;gap:6px;font-size:10.5px;color:#8b919e">
+        <span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">← → scrub the track</span><span style="padding:4px 8px;border-radius:4px;background:rgba(14,16,19,0.86);border:1px solid #2b313b;white-space:nowrap">t load another</span>
+      </div>
+    </div>
+
+    <div style="flex:0 0 296px;display:flex;flex-direction:column;background:#171a1f;border-left:1px solid #23272f;overflow-y:auto">
+      <div id="trackAside"></div>
+    </div>
+  </div>
+
+  <div class="mono" style="flex:0 0 auto;display:flex;align-items:stretch;height:30px;background:#171a1f;border-top:1px solid #23272f;font-size:11px">
+    <div style="display:flex;align-items:center;gap:1px;padding-right:10px">
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃1</span><span>CULL</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃2</span><span>EXIF</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;background:#61afef;color:#0e1013;font-weight:700;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃3</span><span>MAP</span></div>
+      <div style="display:flex;align-items:center;gap:5px;height:100%;padding:0 10px;color:#8b919e;white-space:nowrap"><span style="opacity:0.55;font-size:10px">⌃4</span><span>LIBRARY</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;padding:0 4px;color:#5a606d">
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:3px;background:rgba(198,120,221,0.16);color:#c678dd;white-space:nowrap">TRACK · 19:42:07</span><span style="white-space:nowrap"><span style="color:#8b919e">←/→</span> scrub</span><span style="white-space:nowrap"><span style="color:#8b919e">g</span> match by time</span><span style="white-space:nowrap"><span style="color:#8b919e">⇧d</span> drop the track</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 12px;color:#5a606d;white-space:nowrap">
+      <span style="color:#98c379">11 frames matched</span><span style="color:#2b313b">|</span><span>offset <span style="color:#8b919e">+00:00</span></span>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+
+<script>
+(function () {
+  var tone = function (i) {
+    var l = 15 + ((i * 41) % 24), a = 24 + ((i * 67) % 120);
+    return 'repeating-linear-gradient(' + a + 'deg, hsl(218 9% ' + l + '%) 0 8px, hsl(218 9% ' + (l + 8) + '%) 8px 16px)';
+  };
+
+  var CLUSTERS = [
+    { name: 'Rynek Główny',      lat: 50.06168, lng: 19.93700, n: 18, sel: true },
+    { name: 'Wawel',             lat: 50.05440, lng: 19.93540, n: 8 },
+    { name: 'Kazimierz · Plac Nowy', lat: 50.05170, lng: 19.94480, n: 5 },
+    { name: 'Most Bernatka',     lat: 50.05010, lng: 19.95020, n: 4 },
+    { name: 'Planty · north',    lat: 50.06520, lng: 19.94120, n: 2 }
+  ];
+
+  var TRACK = [
+    [50.06740,19.94480],[50.06600,19.94190],[50.06430,19.93980],[50.06290,19.93830],
+    [50.06168,19.93700],[50.06120,19.93610],[50.05980,19.93520],[50.05780,19.93480],
+    [50.05620,19.93500],[50.05440,19.93540],[50.05310,19.93760],[50.05230,19.94060],
+    [50.05170,19.94480],[50.05020,19.94800],[50.04820,19.95080]
+  ];
+
+  var map = L.map('map', { zoomControl: false, attributionControl: true }).setView([50.0585, 19.9400], 15);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map);
+
+  L.polyline(TRACK, { color: '#c678dd', weight: 2.5, opacity: 0.85, dashArray: '1 5', lineCap: 'round' }).addTo(map);
+
+  CLUSTERS.forEach(function (c, i) {
+    var el = document.createElement('div');
+    el.className = 'pin' + (c.sel ? ' sel' : '');
+    el.innerHTML = '<span class="sw" style="background:' + tone(i * 3 + 1) + '"></span><span class="ct">' + c.n + '</span>';
+    L.marker([c.lat, c.lng], {
+      zIndexOffset: c.sel ? 1000 : 0,
+      icon: L.divIcon({ className: '', html: el.outerHTML, iconSize: [60, 26], iconAnchor: [30, 13] })
+    }).addTo(map);
+  });
+
+  var untagged = document.createElement('div');
+  untagged.className = 'pin untagged';
+  untagged.innerHTML = '<span class="sw" style="background:' + tone(9) + ';opacity:0.5"></span><span class="ct">11 ?</span>';
+  L.marker([50.0648, 19.9268], {
+    icon: L.divIcon({ className: '', html: untagged.outerHTML, iconSize: [64, 26], iconAnchor: [32, 13] })
+  }).addTo(map);
+
+  var places = document.getElementById('places');
+  places.innerHTML = CLUSTERS.map(function (c) {
+    var on = !!c.sel;
+    return '<div style="display:flex;align-items:center;gap:8px;height:26px;padding:0 12px;background:' +
+      (on ? 'rgba(97,175,239,0.16)' : 'transparent') + ';border-left:2px solid ' + (on ? '#61afef' : 'transparent') + ';cursor:pointer">' +
+      '<span class="mono" style="flex:1;min-width:0;font-size:11.5px;color:' + (on ? '#eef1f6' : '#8b919e') +
+      ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.name + '</span>' +
+      '<span class="mono" style="flex:0 0 auto;font-size:10.5px;color:#8b919e">' + c.n + '</span></div>';
+  }).join('') +
+  '<div style="display:flex;align-items:center;gap:8px;height:26px;padding:0 12px;cursor:pointer">' +
+  '<span class="mono" style="flex:1;min-width:0;font-size:11.5px;color:#d19a66;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">no position</span>' +
+  '<span class="mono" style="flex:0 0 auto;font-size:10.5px;color:#d19a66">11</span></div>';
+
+  var row = function (k, v, fg) {
+    return '<div style="display:flex;align-items:baseline;gap:10px;height:20px">' +
+      '<span class="mono" style="flex:0 0 78px;font-size:11px;color:#5a606d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + k + '</span>' +
+      '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:' + (fg || '#d7dae0') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + v + '</span></div>';
+  };
+  document.getElementById('posrows').innerHTML =
+    row('latitude', '50.06168') + row('longitude', '19.93700') +
+    row('altitude', '219 m') + row('accuracy', '± 8.4 m', '#8b919e') +
+    row('heading', '212° SSW', '#8b919e');
+  document.getElementById('georows').innerHTML =
+    row('place', 'Rynek Główny') + row('city', 'Kraków') +
+    row('region', 'Lesser Poland', '#8b919e') + row('country', 'Poland');
+
+  document.getElementById('pinframes').innerHTML = [0,1,2,3,4,5,6,7].map(function (i) {
+    return '<div style="aspect-ratio:3/2;border-radius:2px;background:' + tone(i + 2) +
+      ';border:1px solid ' + (i === 0 ? '#61afef' : '#23272f') + '"></div>';
+  }).join('');
+
+  document.getElementById('strip').innerHTML = [0,1,2,3,4,5,6,7,8,9,10].map(function (i) {
+    return '<div style="flex:0 0 auto;display:flex;flex-direction:column;gap:3px;cursor:grab">' +
+      '<div style="width:78px;height:52px;border-radius:3px;background:' + tone(i + 11) +
+      ';border:1px dashed #4a4232;box-shadow:inset 0 0 0 1px rgba(209,154,102,0.18)"></div>' +
+      '<span class="mono" style="font-size:9.5px;color:#8b919e;white-space:nowrap">DSCF12' + (30 + i) + '</span></div>';
+  }).join('');
+
+  // ---- 4b geotag tool ----
+  var QUEUE = [
+    { stem: 'DSCF1230', t: '19:51:12', sel: true },
+    { stem: 'DSCF1231', t: '19:51:40', sel: true },
+    { stem: 'DSCF1232', t: '19:52:03', sel: true },
+    { stem: 'DSCF1233', t: '19:52:31', sel: true },
+    { stem: 'DSCF1234', t: '19:58:02' },
+    { stem: 'DSCF1235', t: '20:03:44' },
+    { stem: 'DSCF1236', t: '20:04:19' },
+    { stem: 'DSCF1237', t: '20:11:07' },
+    { stem: 'DSCF1238', t: '20:14:52' },
+    { stem: 'DSCF1239', t: '20:15:30' },
+    { stem: 'DSCF1240', t: '20:22:16' }
+  ];
+
+  var DONORS = [
+    { stem: 'DSCF1189', place: 'Rynek Główny', coords: '50.06168, 19.93700', delta: '−4 min', sel: true, i: 3 },
+    { stem: 'DSCF1192', place: 'Sukiennice', coords: '50.06157, 19.93780', delta: '−2 min', i: 6 },
+    { stem: 'DSCF1201', place: 'Rynek, east', coords: '50.06180, 19.93860', delta: '+7 min', i: 9 },
+    { stem: 'DSCF0918', place: 'Rynek Główny', coords: '50.06160, 19.93690', delta: '3 weeks', i: 12 },
+    { stem: 'DSCF0904', place: 'Mariacki', coords: '50.06195, 19.93940', delta: '3 weeks', i: 15 },
+    { stem: 'DSCF0877', place: 'Rynek, NW', coords: '50.06210, 19.93610', delta: '2 months', i: 18 }
+  ];
+
+  var map2 = L.map('map2', { zoomControl: false, attributionControl: true }).setView([50.0617, 19.9375], 17);
+  L.control.zoom({ position: 'bottomright' }).addTo(map2);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map2);
+
+  // existing tagged pins, dimmed while geotagging
+  [[50.06157,19.93780,6],[50.06180,19.93860,3],[50.06195,19.93940,2]].forEach(function (p, i) {
+    var d = document.createElement('div');
+    d.className = 'pin';
+    d.style.opacity = '0.45';
+    d.innerHTML = '<span class="sw" style="background:' + tone(i * 4 + 5) + '"></span><span class="ct">' + p[2] + '</span>';
+    L.marker([p[0], p[1]], { icon: L.divIcon({ className: '', html: d.outerHTML, iconSize: [60,26], iconAnchor: [30,13] }) }).addTo(map2);
+  });
+
+  // donor pin the coordinates are being lifted from
+  var donorEl = document.createElement('div');
+  donorEl.className = 'pin sel';
+  donorEl.style.borderColor = '#98c379';
+  donorEl.style.boxShadow = '0 0 0 2px rgba(152,195,121,0.35),0 4px 14px rgba(0,0,0,0.5)';
+  donorEl.innerHTML = '<span class="sw" style="background:' + tone(3) + '"></span><span class="ct" style="color:#98c379">DSCF1189</span>';
+  L.marker([50.06168, 19.93700], {
+    zIndexOffset: 900,
+    icon: L.divIcon({ className: '', html: donorEl.outerHTML, iconSize: [104,26], iconAnchor: [52,13] })
+  }).addTo(map2);
+
+  // the 4 queued frames, ghosted at the destination
+  var ghost = document.createElement('div');
+  ghost.className = 'pin untagged';
+  ghost.style.borderStyle = 'solid';
+  ghost.style.borderColor = '#d19a66';
+  ghost.innerHTML = '<span class="sw" style="background:' + tone(21) + '"></span><span class="ct">4 →</span>';
+  L.marker([50.06168, 19.93700], {
+    zIndexOffset: 1200,
+    icon: L.divIcon({ className: '', html: '<div style="transform:translate(30px,-26px)">' + ghost.outerHTML + '</div>', iconSize: [64,26], iconAnchor: [32,13] })
+  }).addTo(map2);
+
+  L.circle([50.06168, 19.93700], { radius: 26, color: '#98c379', weight: 1, opacity: 0.6, fillColor: '#98c379', fillOpacity: 0.10 }).addTo(map2);
+
+  document.getElementById('queue').innerHTML = QUEUE.map(function (q) {
+    return '<div style="display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;background:' +
+      (q.sel ? 'rgba(209,154,102,0.14)' : 'transparent') + ';border-left:2px solid ' + (q.sel ? '#d19a66' : 'transparent') + ';cursor:pointer">' +
+      '<span style="flex:0 0 auto;display:inline-grid;place-items:center;width:13px;height:13px;border-radius:3px;border:1px solid ' +
+      (q.sel ? '#d19a66' : '#3a404b') + ';background:' + (q.sel ? '#d19a66' : 'transparent') +
+      ';color:#0e1013;font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:700">' + (q.sel ? '✓' : '') + '</span>' +
+      '<span style="flex:0 0 auto;width:34px;height:23px;border-radius:2px;background:' + tone(QUEUE.indexOf(q) + 11) + ';opacity:' + (q.sel ? '1' : '0.55') + '"></span>' +
+      '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:' + (q.sel ? '#eef1f6' : '#8b919e') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + q.stem + '</span>' +
+      '<span class="mono" style="flex:0 0 auto;font-size:10px;color:#8b919e;white-space:nowrap">' + q.t + '</span></div>';
+  }).join('');
+
+  document.getElementById('donors').innerHTML = DONORS.map(function (d) {
+    return '<div style="display:flex;align-items:center;gap:9px;padding:7px 12px;background:' +
+      (d.sel ? 'rgba(152,195,121,0.10)' : 'transparent') + ';box-shadow:' + (d.sel ? 'inset 2px 0 0 #98c379' : 'none') +
+      ';border-bottom:1px solid #1b1e24;cursor:pointer">' +
+      '<span style="flex:0 0 auto;width:46px;height:31px;border-radius:2px;background:' + tone(d.i) + ';border:1px solid ' + (d.sel ? '#98c379' : '#23272f') + '"></span>' +
+      '<span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">' +
+        '<span style="display:flex;align-items:baseline;gap:8px">' +
+          '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:' + (d.sel ? '#eef1f6' : '#c3c8d1') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + d.stem + ' · ' + d.place + '</span>' +
+          '<span class="mono" style="flex:0 0 auto;font-size:10px;color:' + (d.sel ? '#98c379' : '#8b919e') + ';white-space:nowrap">' + d.delta + '</span>' +
+        '</span>' +
+        '<span class="mono" style="font-size:10px;color:#8b919e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + d.coords + '</span>' +
+      '</span></div>';
+  }).join('');
+
+  var rrow = function (k, v, fg) {
+    return '<div style="display:flex;align-items:baseline;gap:10px;height:19px">' +
+      '<span class="mono" style="flex:0 0 66px;font-size:10.5px;color:#5a606d;white-space:nowrap">' + k + '</span>' +
+      '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:' + (fg || '#d7dae0') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + v + '</span></div>';
+  };
+  document.getElementById('result').innerHTML =
+    rrow('latitude', '50.06168') + rrow('longitude', '19.93700') +
+    rrow('altitude', '219 m', '#8b919e') + rrow('place', 'Rynek Główny, Kraków') +
+    rrow('applies to', '4 frames · 7 files', '#98c379');
+
+  document.getElementById('strip2').innerHTML = QUEUE.map(function (q, i) {
+    return '<div style="flex:0 0 auto;display:flex;flex-direction:column;gap:3px;cursor:grab">' +
+      '<div style="width:78px;height:52px;border-radius:3px;background:' + tone(i + 11) +
+      ';border:1px ' + (q.sel ? 'solid #d19a66' : 'dashed #4a4232') +
+      ';box-shadow:' + (q.sel ? '0 0 0 2px rgba(209,154,102,0.28)' : 'inset 0 0 0 1px rgba(209,154,102,0.18)') + '"></div>' +
+      '<span class="mono" style="font-size:9.5px;color:' + (q.sel ? '#d19a66' : '#8b919e') + ';white-space:nowrap">' + q.stem + '</span></div>';
+  }).join('');
+
+  // ---- 4c heat ----
+  var HOT = [
+    [50.06168,19.93700,1204,'Rynek Główny'], [50.06157,19.93780,880,'Sukiennice'],
+    [50.05440,19.93540,742,'Wawel'], [50.05170,19.94480,610,'Plac Nowy'],
+    [50.04820,19.95080,318,'Most Bernatka'], [50.06520,19.94120,266,'Planty north'],
+    [50.06740,19.94480,210,'Dworzec'], [50.05310,19.93760,184,'Stradom'],
+    [50.05020,19.94800,150,'Podgórze'], [50.06290,19.93830,120,'Floriańska'],
+    [50.05980,19.93520,96,'Grodzka'], [50.06430,19.94800,74,'Kleparz']
+  ];
+  var map3 = L.map('map3', { zoomControl: false, attributionControl: true }).setView([50.0590, 19.9410], 13);
+  L.control.zoom({ position: 'bottomright' }).addTo(map3);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map3);
+  HOT.forEach(function (h) {
+    var n = h[2];
+    var r = 26 + Math.sqrt(n) * 5.4;
+    [[1.9, 0.07], [1.35, 0.11], [1, 0.20]].forEach(function (ring) {
+      L.circle([h[0], h[1]], { radius: r * ring[0], stroke: false, fillColor: '#e06c75', fillOpacity: ring[1] }).addTo(map3);
+    });
+    L.circle([h[0], h[1]], { radius: r * 0.55, stroke: false, fillColor: '#e5c07b', fillOpacity: 0.42 }).addTo(map3);
+  });
+  document.getElementById('heatRail').innerHTML =
+    HOT.map(function (h, i) {
+      var on = i === 0;
+      return '<div style="display:flex;align-items:center;gap:8px;height:25px;padding:0 12px;background:' +
+        (on ? 'rgba(97,175,239,0.16)' : 'transparent') + ';border-left:2px solid ' + (on ? '#61afef' : 'transparent') + ';cursor:pointer">' +
+        '<span class="mono" style="flex:1;min-width:0;font-size:11.5px;color:' + (on ? '#eef1f6' : '#8b919e') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + h[3] + '</span>' +
+        '<span class="mono" style="flex:0 0 auto;font-size:10.5px;color:#8b919e">' + h[2].toLocaleString() + '</span></div>';
+    }).join('');
+
+  var sect = function (title, body, extra) {
+    return '<div style="padding:11px 12px;border-bottom:1px solid #23272f">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding-bottom:8px">' +
+      '<span class="mono" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">' + title + '</span>' +
+      '<span style="flex:1;height:1px;background:#23272f"></span>' + (extra || '') + '</div>' + body + '</div>';
+  };
+  var kvRow = function (k, v, fg) {
+    return '<div style="display:flex;align-items:baseline;gap:10px;height:21px">' +
+      '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:#8b919e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + k + '</span>' +
+      '<span class="mono" style="flex:0 0 auto;font-size:11px;color:' + (fg || '#d7dae0') + ';white-space:nowrap">' + v + '</span></div>';
+  };
+  var barRow = function (k, v, pct, color) {
+    return '<div style="display:flex;align-items:center;gap:9px;height:23px">' +
+      '<span class="mono" style="flex:0 0 92px;font-size:11px;color:#8b919e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + k + '</span>' +
+      '<span style="flex:1;min-width:0;height:6px;border-radius:3px;background:#20242b;overflow:hidden"><span style="display:block;width:' + pct + '%;height:100%;background:' + color + '"></span></span>' +
+      '<span class="mono" style="flex:0 0 46px;text-align:right;font-size:10.5px;color:#8b919e;white-space:nowrap">' + v + '</span></div>';
+  };
+
+  document.getElementById('heatAside').innerHTML =
+    sect('Rynek Główny', kvRow('frames', '1,204') + kvRow('sessions', '18') + kvRow('first', '2024-05-02') + kvRow('last', '2026-07-18') + kvRow('rated ★★★★+', '212', '#98c379')) +
+    sect('Density', barRow('Rynek', '1.2k', 100, '#e06c75') + barRow('Sukiennice', '880', 73, '#e06c75') + barRow('Wawel', '742', 62, '#d19a66') + barRow('Plac Nowy', '610', 51, '#d19a66') + barRow('Bernatka', '318', 26, '#3d4650')) +
+    sect('Reading it', '<div class="mono" style="font-size:11px;color:#a9b0bd;line-height:1.6">Bigger, warmer blobs hold more frames. Size counts frames, not keepers — switch to <span style="color:#61afef">pins</span> to see verdicts.</div>');
+
+  // ---- 4d track ----
+  var map4 = L.map('map4', { zoomControl: false, attributionControl: true }).setView([50.0578, 19.9430], 14);
+  L.control.zoom({ position: 'bottomright' }).addTo(map4);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map4);
+  L.polyline(TRACK, { color: '#c678dd', weight: 3, opacity: 0.9, lineCap: 'round' }).addTo(map4);
+  // frames that matched the track, as small ticks along it
+  [1,2,3,4,6,7,9,10,11,12,13].forEach(function (i) {
+    L.circleMarker(TRACK[i], { radius: 4, color: '#0e1013', weight: 1.5, fillColor: '#98c379', fillOpacity: 1 }).addTo(map4);
+  });
+  // the scrub head
+  var head = document.createElement('div');
+  head.className = 'pin sel';
+  head.innerHTML = '<span class="sw" style="background:' + tone(4) + '"></span><span class="ct">19:42:07</span>';
+  L.marker(TRACK[4], { zIndexOffset: 1000, icon: L.divIcon({ className: '', html: head.outerHTML, iconSize: [96,26], iconAnchor: [48,13] }) }).addTo(map4);
+  L.circleMarker(TRACK[0], { radius: 5, color: '#c678dd', weight: 2, fillColor: '#0e1013', fillOpacity: 1 }).addTo(map4);
+  L.circleMarker(TRACK[TRACK.length - 1], { radius: 5, color: '#c678dd', weight: 2, fillColor: '#c678dd', fillOpacity: 1 }).addTo(map4);
+
+  document.getElementById('trackRail').innerHTML =
+    '<div class="mono" style="padding:0 12px 6px;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">Loaded</div>' +
+    [['walk-2026-07-18.gpx', '812 pts', true], ['tatry-06-21.gpx', '2,410 pts', false], ['hel-05-02.gpx', '1,180 pts', false]].map(function (t) {
+      return '<div style="display:flex;align-items:flex-start;gap:8px;padding:5px 12px;background:' +
+        (t[2] ? 'rgba(198,120,221,0.14)' : 'transparent') + ';border-left:2px solid ' + (t[2] ? '#c678dd' : 'transparent') + ';cursor:pointer">' +
+        '<span style="flex:0 0 auto;width:12px;height:2px;margin-top:7px;background:' + (t[2] ? '#c678dd' : '#3f4550') + '"></span>' +
+        '<span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px">' +
+          '<span class="mono" style="font-size:11px;color:' + (t[2] ? '#eef1f6' : '#8b919e') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + t[0] + '</span>' +
+          '<span class="mono" style="font-size:10px;color:#8b919e;white-space:nowrap">' + t[1] + '</span>' +
+        '</span></div>';
+    }).join('') +
+    '<div class="mono" style="padding:14px 12px 6px;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#4d535f">Legend</div>' +
+    ['<span style="width:9px;height:9px;border-radius:50%;background:#98c379"></span>|frame matched by time',
+     '<span style="width:9px;height:9px;border-radius:50%;border:2px solid #c678dd"></span>|track start',
+     '<span style="width:9px;height:9px;border-radius:50%;background:#c678dd"></span>|track end'].map(function (l) {
+      var p = l.split('|');
+      return '<div style="display:flex;align-items:center;gap:9px;height:22px;padding:0 12px">' + p[0] +
+        '<span class="mono" style="flex:1;min-width:0;font-size:11px;color:#8b919e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + p[1] + '</span></div>';
+    }).join('');
+
+  document.getElementById('trackAside').innerHTML =
+    sect('At the head', kvRow('time', '19:42:07') + kvRow('position', '50.06168, 19.93700') + kvRow('speed', '4.1 km/h') + kvRow('frame', 'DSCF1207', '#61afef') + kvRow('gap to point', '2 s', '#98c379')) +
+    sect('Matching', kvRow('frames in window', '48') + kvRow('matched', '11', '#98c379') + kvRow('outside the track', '37', '#8b919e') + kvRow('camera clock offset', '+00:00') + kvRow('tolerance', '± 90 s')) +
+    sect('Note', '<div class="mono" style="font-size:11px;color:#a9b0bd;line-height:1.6">Matching writes nothing on its own. <span style="color:#98c379">g</span> stages the 11 positions, and ⌘S opens the same write plan as EXIF mode.</div>');
+})();
+</script>
+</body>
+</html>
