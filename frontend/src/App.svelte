@@ -220,7 +220,6 @@
       case "cycle-layout":
       case "apply":
       case "zoom":
-      case "toggle-loupe":
         break; // shell-owned, handled below
       default:
         if (runAction(action)) return;
@@ -294,6 +293,9 @@
           shell.setModeByIndex(modeActions[action]);
         } else if (action in paneActions) {
           shell.focusPane(paneActions[action]);
+          // Focusing the left pane hands the keyboard to the tree, so the
+          // arrows drive folders — the pane treatment alone changed nothing.
+          if (paneActions[action] === "left" && shell.mode === "cull") void focusTree();
         } else if (action in layoutActions) {
           chooseLayout(layoutActions[action]);
         } else if (action in laterActions) {

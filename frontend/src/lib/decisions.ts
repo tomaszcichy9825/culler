@@ -206,9 +206,15 @@ export function toggleMask(half: Half) {
       unrecorded++;
       continue;
     }
-    const next = toggled(startingMask(g), half);
+    const other: Half = half === "r" ? "j" : "r";
+    const next = hasHalf(g, other) ? toggled(startingMask(g), half) : null;
     if (next === null) {
-      refused = "that would leave nothing — x cuts the whole frame";
+      // Dropping the frame's only surviving half IS a cut — pressing j on a
+      // JPEG-only frame means delete it, not a lecture about the x key. The
+      // same press takes the cut back off.
+      const v = verdictOf(g);
+      record(g, v === "cut" ? "" : "cut", maskOf(g));
+      changed++;
       continue;
     }
     const v = verdictOf(g);

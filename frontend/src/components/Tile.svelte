@@ -29,6 +29,7 @@
   let { group, index, focused, selected, width, height, x, y, onfocus, onopen }: Props = $props();
 
   let url = $derived(previewURL(group, "grid"));
+  let loaded = $state(false);
   let verdict = $derived(verdictOf(group));
   let stars = $derived(Math.max(0, group.rating));
   let warnings = $derived(group.warnings ?? []);
@@ -53,7 +54,17 @@
 >
   <div class="thumb">
     {#if url !== ""}
-      <img use:queuedImage={url} alt={group.stem} decoding="async" />
+      {#if !loaded}
+        <span class="fetching" aria-hidden="true"></span>
+      {/if}
+      <img
+        use:queuedImage={url}
+        alt={group.stem}
+        decoding="async"
+        class:ready={loaded}
+        onload={() => (loaded = true)}
+        onerror={() => (loaded = true)}
+      />
     {:else}
       <span class="missing">no preview</span>
     {/if}
@@ -107,7 +118,34 @@
     outline: none;
   }
 
+  .fetching {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 30%, var(--bg-raised) 50%, transparent 70%);
+    background-size: 250% 100%;
+    animation: fetching 1.2s ease-in-out infinite;
+  }
+
+  @keyframes fetching {
+    from {
+      background-position: 130% 0;
+    }
+    to {
+      background-position: -30% 0;
+    }
+  }
+
+  img {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+
+  img.ready {
+    opacity: 1;
+  }
+
   .tile.selected {
+    box-shadow: inset 0 0 0 2px var(--accent);
     border-color: var(--border-selected);
   }
 

@@ -685,6 +685,15 @@ export const ACTIONS: Action[] = [
   { id: "rate-clear", label: "clear the rating", group: RATING, icon: "☆", when: hasFrames, run: () => setRating(0) },
 
   { id: "toggle-select", label: "toggle selection", group: SELECT, icon: "▣", when: hasFrames, run: () => app.toggleSelect() },
+  {
+    id: "toggle-loupe",
+    label: "loupe the focused frame",
+    group: VIEW,
+    icon: "◎",
+    note: "space closes it again",
+    when: hasFrames,
+    run: () => (app.view = app.view === "loupe" ? "grid" : "loupe"),
+  },
   { id: "select-all", label: "select every frame", group: SELECT, icon: "▦", when: hasFrames, run: () => app.selectAll() },
   {
     id: "escape",
