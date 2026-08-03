@@ -107,6 +107,13 @@ func (s *Store) Path(key string, size Size) (string, bool) {
 // atomically and marks it most recently used. Entries are evicted afterwards
 // if the cache is over its cap; the file just written is never one of them.
 func (s *Store) Put(key string, size Size, srcJPEG []byte) (string, error) {
+	return s.PutOriented(key, size, srcJPEG, 0)
+}
+
+// PutOriented is Put for sources whose orientation lives outside the bytes —
+// a RAW's embedded preview often carries no EXIF of its own, so the caller
+// passes the container's orientation. Zero means read it from the bytes.
+func (s *Store) PutOriented(key string, size Size, srcJPEG []byte, orientation int) (string, error) {
 	if err := validKey(key); err != nil {
 		return "", err
 	}
@@ -118,6 +125,13 @@ func (s *Store) Put(key string, size Size, srcJPEG []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("thumbs: decode source for %s: %w", key, err)
 	}
+	// The re-encode below strips the EXIF segment, so the orientation it
+	// carried must be baked into the pixels — otherwise every sideways camera
+	// shot renders sideways forever from the cache.
+	if orientation == 0 {
+		orientation = sourceOrientation(srcJPEG)
+	}
+	src = orient(src, orientation)
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, shrink(src, size), &jpeg.Options{Quality: jpegQuality}); err != nil {
 		return "", fmt.Errorf("thumbs: encode %s: %w", key, err)

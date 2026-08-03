@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
+	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/preview"
 	"github.com/tomaszcichy9825/culler/internal/thumbs"
@@ -198,7 +199,7 @@ func (s *PreviewService) thumbStore() *thumbs.Store {
 			if err != nil {
 				return
 			}
-			dir = filepath.Join(base, "culler", "thumbs")
+			dir = filepath.Join(base, "culler", "thumbs2")
 		}
 		store, err := thumbs.NewStore(dir, 0)
 		if err != nil {
@@ -217,13 +218,19 @@ func (s *PreviewService) fillThumb(store *thumbs.Store, key, path, tier string) 
 		return "", err
 	}
 	src := data
+	orientation := 0
 	if tier == TierEmbedded {
 		src, err = preview.ExtractLargestJPEG(data)
 		if err != nil {
 			return "", err
 		}
+		// The embedded preview often has no EXIF of its own; the container's
+		// orientation is the one that applies.
+		if f, err := exif.Parse(data); err == nil && f.Orientation.Present {
+			orientation = int(f.Orientation.Value)
+		}
 	}
-	return store.Put(key, thumbs.SizeGrid, src)
+	return store.PutOriented(key, thumbs.SizeGrid, src, orientation)
 }
 
 // allowedExt is the stat-free half of the request guard: an absolute, clean

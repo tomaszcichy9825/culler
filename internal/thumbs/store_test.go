@@ -374,3 +374,46 @@ func TestPutOverwriteKeepsOneEntry(t *testing.T) {
 		t.Fatalf("repeated Put of one key holds %d bytes, one entry is %d", n, one)
 	}
 }
+
+// withOrientation splices a minimal EXIF APP1 segment carrying the given
+// orientation straight after the SOI marker of a JPEG.
+func withOrientation(t *testing.T, jpegData []byte, orientation uint16) []byte {
+	t.Helper()
+	if len(jpegData) < 2 || jpegData[0] != 0xFF || jpegData[1] != 0xD8 {
+		t.Fatal("not a JPEG")
+	}
+	// TIFF block: II header, one IFD with a single SHORT orientation entry.
+	tiff := []byte{
+		'I', 'I', 42, 0, 8, 0, 0, 0, // header, IFD at offset 8
+		1, 0, // one entry
+		0x12, 0x01, 3, 0, 1, 0, 0, 0, // tag 0x0112, SHORT, count 1
+		byte(orientation), byte(orientation >> 8), 0, 0,
+		0, 0, 0, 0, // no next IFD
+	}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	seg := []byte{0xFF, 0xE1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}
+	out := append([]byte{0xFF, 0xD8}, append(seg, payload...)...)
+	return append(out, jpegData[2:]...)
+}
+
+func TestPutHonoursEXIFOrientation(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A landscape image tagged orientation 6 (rotate 90° clockwise) is a
+	// portrait photo; the cached thumb must come out portrait or every
+	// sideways camera shot renders sideways forever.
+	src := withOrientation(t, makeJPEG(t, 800, 400), 6)
+	path, err := s.Put(key("or6"), SizeGrid, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, h := decodedBounds(t, path)
+	if !(h > w) {
+		t.Fatalf("orientation 6 must rotate: got %dx%d, want portrait", w, h)
+	}
+	if w != 256 || h != 512 {
+		t.Fatalf("rotated long edge must still be the size cap: got %dx%d", w, h)
+	}
+}
