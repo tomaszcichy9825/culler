@@ -455,3 +455,49 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("path %q should be absolute", p)
 	}
 }
+
+func TestImportDefaultsAreTheCautiousOnes(t *testing.T) {
+	c := Default()
+
+	if c.Behaviour.MoveOnImport {
+		t.Error("an import must copy by default: until it finishes, the card is the only copy")
+	}
+	if !c.Behaviour.VerifyCopies {
+		t.Error("copies must be verified by default")
+	}
+	if c.Behaviour.LibraryRoot == "" {
+		t.Error("a library root is needed for a destination that is not an absolute path")
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the defaults must validate: %v", err)
+	}
+}
+
+func TestValidateRejectsAnEmptyLibraryRoot(t *testing.T) {
+	c := Default()
+	c.Behaviour.LibraryRoot = "  "
+	if err := c.Validate(); err == nil {
+		t.Error("a blank library root leaves a relative destination meaning nothing")
+	}
+}
+
+// Verification is on by default, so the only way to turn it off is a config
+// that says so — and that has to survive the merge onto the defaults.
+func TestLoadCanTurnVerificationOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeFile(t, path, `{"behaviour": {"verifyCopies": false, "moveOnImport": true}}`)
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Behaviour.VerifyCopies {
+		t.Error("verifyCopies: false was ignored")
+	}
+	if !c.Behaviour.MoveOnImport {
+		t.Error("moveOnImport: true was ignored")
+	}
+	if c.Behaviour.LibraryRoot != Default().Behaviour.LibraryRoot {
+		t.Errorf("the untouched fields lost their defaults: %q", c.Behaviour.LibraryRoot)
+	}
+}

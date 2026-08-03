@@ -137,6 +137,29 @@ type SessionDTO struct {
 	Dirs        int    `json:"dirs"`
 }
 
+// UndecidedUnknown is what a tree node reports instead of an undecided count
+// it has not worked out. A folder past the overlay's limit draws its frame
+// count and no badge, which is honest; a zero would read as "all judged".
+const UndecidedUnknown = -1
+
+// TreeNodeDTO is one row of LIBRARY's folder tree: a root at the top level, or
+// a folder found under one.
+//
+// Frames is everything at or under the node, because that is the question a
+// folder the user has not opened is being asked. Undecided is the same set
+// measured against the decision store as it stands now, or UndecidedUnknown
+// when the folder is too big to have counted.
+type TreeNodeDTO struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Frames    int    `json:"frames"`
+	Direct    int    `json:"direct"`
+	Undecided int    `json:"undecided"`
+	Bytes     int64  `json:"bytes"`
+	HasDirs   bool   `json:"hasDirs"`
+	IsRoot    bool   `json:"isRoot"`
+}
+
 // StorageRootDTO is what one root holds.
 type StorageRootDTO struct {
 	Root      string `json:"root"`
@@ -192,7 +215,19 @@ type LibraryIndexService struct {
 	// onProgress replaces the event emission in tests, which run without a
 	// Wails application to emit into.
 	onProgress func(CatalogProgress)
+
+	// undecidedLimit is how many frames a tree node may hold before its
+	// undecided count is left unknown rather than paid for. Zero takes
+	// defaultUndecidedLimit.
+	undecidedLimit int
 }
+
+// defaultUndecidedLimit caps the per-node overlay. Counting what is undecided
+// under a folder costs one point query into the decision store per frame —
+// 4 µs each on the machine BenchmarkOverlay was last run on, so ten thousand
+// frames is about 40 ms, which is already a noticeable pause on a twisty. Past
+// this the count is reported unknown rather than paid for.
+const defaultUndecidedLimit = 10000
 
 // NewLibraryIndexService binds the service to the shared state.
 func NewLibraryIndexService(a *App) *LibraryIndexService {
@@ -387,8 +422,51 @@ func (s *LibraryIndexService) report(p CatalogProgress) {
 	emitEvent(EventCatalogProgress, p)
 }
 
+// overlay replaces the verdicts and ratings the last index pass recorded with
+// what the decision store holds now, and writes the differences back into the
+// catalogue.
+//
+// The overlay is what makes a result honest: a frame marked in CULL a second
+// ago is drawn marked, without waiting for a reindex. The write-back is what
+// makes the numbers counted in SQL — the facet meters, the storage rollups —
+// agree with the tiles above them.
+//
+// It costs one point query per frame: 4 µs each measured by BenchmarkOverlay,
+// so a full page of 240 results costs about 1 ms. That is why the loop is here
+// rather than a bulk read the decision store does not offer — a page is small,
+// and this is not the code that would need one.
+func (s *LibraryIndexService) overlay(store *catalog.Store, frames []catalog.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	decisions, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	var changed []catalog.Decision
+	for i := range frames {
+		verdict, rating := "", 0
+		if rec, ok, err := decisions.Get(frames[i].Hash); err != nil {
+			return err
+		} else if ok {
+			verdict, rating = string(rec.Verdict), rec.Rating
+		}
+		if frames[i].Verdict != verdict || frames[i].Rating != rating {
+			changed = append(changed, catalog.Decision{
+				Hash: frames[i].Hash, Verdict: verdict, Rating: rating,
+			})
+		}
+		frames[i].Verdict = verdict
+		frames[i].Rating = rating
+	}
+	return store.SetDecisions(changed)
+}
+
 // Search returns one page of frames, newest first. A limit of zero returns
 // everything, which the facet counts want and the results grid does not.
+//
+// What comes back carries the decisions as they stand now, not as the last
+// index pass saw them.
 func (s *LibraryIndexService) Search(query string, facets FacetsDTO, limit, offset int) (SearchDTO, error) {
 	store, err := s.catalogue()
 	if err != nil {
@@ -402,6 +480,9 @@ func (s *LibraryIndexService) Search(query string, facets FacetsDTO, limit, offs
 	started := time.Now()
 	res, err := store.Search(query, f, catalog.Page{Limit: limit, Offset: offset})
 	if err != nil {
+		return SearchDTO{}, err
+	}
+	if err := s.overlay(store, res.Frames); err != nil {
 		return SearchDTO{}, err
 	}
 
@@ -475,12 +556,33 @@ func (s *LibraryIndexService) Counts(query string, facets FacetsDTO) (CountsDTO,
 
 // Sessions groups the catalogue into shoots, newest first. gapHours is how
 // long a break has to be to end one; zero takes the four-hour default.
+//
+// The kept, cut and undecided columns are counted against the decision store
+// as it stands now: a session the user has just finished judging says so
+// without a reindex. That is a point query per catalogued frame, which is the
+// price of the whole table being true rather than nearly true.
 func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
 	store, err := s.catalogue()
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := store.Sessions(time.Duration(gapHours * float64(time.Hour)))
+	decisions, err := s.app.decisions()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := store.SessionsWith(catalog.SessionOptions{
+		Gap: time.Duration(gapHours * float64(time.Hour)),
+		Verdict: func(hash string) (string, bool) {
+			rec, ok, err := decisions.Get(hash)
+			if err != nil || !ok {
+				// Nothing recorded is a real answer — the frame is undecided —
+				// and so is a read that failed, where the recorded verdict is
+				// the better guess than none.
+				return "", err == nil
+			}
+			return string(rec.Verdict), true
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -504,6 +606,168 @@ func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
 		})
 	}
 	return out, nil
+}
+
+// TreeRoots is the top level of LIBRARY's folder tree: every registered root,
+// with what is catalogued under it.
+func (s *LibraryIndexService) TreeRoots() ([]TreeNodeDTO, error) {
+	store, err := s.catalogue()
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := store.RootNodes()
+	if err != nil {
+		return nil, err
+	}
+	return s.treeDTO(store, nodes, true)
+}
+
+// TreeChildren is the folders immediately under dir that have anything
+// catalogued at or under them. A folder no root covers has none, which is how
+// the tree stays inside the library.
+func (s *LibraryIndexService) TreeChildren(dir string) ([]TreeNodeDTO, error) {
+	resolved, err := expandPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	store, err := s.catalogue()
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := store.Children(resolved)
+	if err != nil {
+		return nil, err
+	}
+	return s.treeDTO(store, nodes, false)
+}
+
+// treeDTO converts the catalogue's nodes and counts what is still undecided
+// under each of them.
+//
+// The undecided count is the expensive part: the hashes under a node, then a
+// point query per hash into the decision store. It is paid once per node the
+// user expands, and skipped entirely on a node holding more frames than the
+// limit — see UndecidedUnknown.
+func (s *LibraryIndexService) treeDTO(store *catalog.Store, nodes []catalog.Node, roots bool) ([]TreeNodeDTO, error) {
+	out := make([]TreeNodeDTO, 0, len(nodes))
+	for _, n := range nodes {
+		undecided, err := s.undecidedUnder(store, n)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, TreeNodeDTO{
+			Path:      n.Path,
+			Name:      n.Name,
+			Frames:    n.Frames,
+			Direct:    n.Direct,
+			Undecided: undecided,
+			Bytes:     n.Bytes(),
+			HasDirs:   n.HasDirs,
+			IsRoot:    roots,
+		})
+	}
+	return out, nil
+}
+
+// undecidedUnder counts the frames under a node that nobody has judged.
+func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Node) (int, error) {
+	limit := s.undecidedLimit
+	if limit <= 0 {
+		limit = defaultUndecidedLimit
+	}
+	if n.Frames == 0 {
+		return 0, nil
+	}
+	if n.Frames > limit {
+		return UndecidedUnknown, nil
+	}
+	hashes, err := store.HashesUnder(n.Path)
+	if err != nil {
+		return 0, err
+	}
+	decisions, err := s.app.decisions()
+	if err != nil {
+		return 0, err
+	}
+	undecided := 0
+	for _, hash := range hashes {
+		rec, ok, err := decisions.Get(hash)
+		if err != nil {
+			return 0, err
+		}
+		if !ok || rec.Verdict == "" {
+			undecided++
+		}
+	}
+	return undecided, nil
+}
+
+// PruneApplied forgets the frames whose files an apply has just taken away.
+//
+// The catalogue describes what was on disk at index time, and a batch that has
+// been applied has just made some of that untrue. Waiting for the next index
+// pass would leave the trashed frames in search results, one keystroke from
+// opening a folder they are no longer in.
+//
+// An app that has never opened the catalogue does not open one to do this:
+// there is nothing catalogued to forget, and creating the file would undo the
+// one thing that keeps a browse-only session from writing anything at all.
+func (s *LibraryIndexService) PruneApplied(hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	if !s.catalogueExists() {
+		return nil
+	}
+	store, err := s.catalogue()
+	if err != nil {
+		return err
+	}
+	return store.RemoveByHash(hashes)
+}
+
+// catalogueExists reports whether there is a catalogue to talk to, either
+// already open or waiting on disk.
+func (s *LibraryIndexService) catalogueExists() bool {
+	s.mu.Lock()
+	open := s.store != nil
+	s.mu.Unlock()
+	if open {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(s.app.dataDir, catalogFile))
+	return err == nil
+}
+
+// UpsertDir brings one folder's rows in line with what is on disk, without
+// descending into it. It is what a folder open calls: the card the user is
+// culling stays current in the library without a walk, and a folder no
+// registered root covers is left alone.
+func (s *LibraryIndexService) UpsertDir(dir string) error {
+	resolved, err := expandPath(dir)
+	if err != nil {
+		return err
+	}
+	store, err := s.catalogue()
+	if err != nil {
+		return err
+	}
+	decisions, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	_, err = store.UpsertDir(resolved, catalog.IndexOptions{
+		Scan:    s.app.Config().ScanConfig(),
+		Workers: s.app.hashWorkers(platform.IsNetwork(resolved)),
+		Lookup: func(hash string) (string, int) {
+			rec, ok, err := decisions.Get(hash)
+			if err != nil || !ok {
+				return "", 0
+			}
+			return string(rec.Verdict), rec.Rating
+		},
+	})
+	return err
 }
 
 // Storage totals the catalogue by root and rolls those up by volume.

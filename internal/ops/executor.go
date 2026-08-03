@@ -1,10 +1,15 @@
 package ops
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 )
@@ -14,6 +19,23 @@ import (
 type Executor struct {
 	Journal *journal.Journal
 	Trasher platform.Trasher
+
+	// Collision decides what happens when a copy or move lands on a file that
+	// is already there. The zero value renames, which is both the config
+	// default and the only option that cannot lose anything.
+	Collision config.CollisionPolicy
+
+	// Verify re-reads every copied file and compares it with the original
+	// before the copy is recorded as done. It doubles the reads, which is why
+	// it is a setting, and it is the only thing standing between a card reader
+	// that drops bytes and a library that quietly holds a broken RAW.
+	Verify bool
+
+	// Copier writes one file to a path nothing occupies. nil means
+	// platform.CopyFile; a test replaces it to produce the corrupted copy
+	// verification exists to catch, which is not something a test can
+	// otherwise bring about honestly.
+	Copier func(src, dst string) error
 }
 
 var batchCounter uint64
@@ -50,14 +72,17 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 	return batch, nil
 }
 
-// execute performs one action and returns where the file ended up.
+// execute performs one action and returns where the file ended up. An empty
+// destination on a copy or a move means the collision policy skipped it: the
+// user's instruction carried out, with nothing of ours at the destination for
+// undo to take back.
 func (e *Executor) execute(a FileAction) (string, error) {
 	switch a.Verb {
 	case VerbTrash:
 		return e.Trasher.Trash(a.Src)
 	case VerbMove:
-		dst, err := platform.UniquePath(a.Dst)
-		if err != nil {
+		dst, ok, err := e.clearTarget(a.Dst)
+		if err != nil || !ok {
 			return "", err
 		}
 		if err := platform.MoveFile(a.Src, dst); err != nil {
@@ -65,16 +90,103 @@ func (e *Executor) execute(a FileAction) (string, error) {
 		}
 		return dst, nil
 	case VerbCopy:
-		dst, err := platform.UniquePath(a.Dst)
-		if err != nil {
+		dst, ok, err := e.clearTarget(a.Dst)
+		if err != nil || !ok {
 			return "", err
 		}
-		if err := platform.CopyFile(a.Src, dst); err != nil {
+		if err := e.copy(a.Src, dst); err != nil {
 			return "", err
 		}
 		return dst, nil
 	}
 	return "", fmt.Errorf("unknown verb %q", a.Verb)
+}
+
+// clearTarget applies the collision policy and returns the path to write to.
+// It reports false when the policy says to leave the existing file alone. The
+// destination's parent is created either way: routing a frame into a dated
+// folder is an instruction to make the folder.
+func (e *Executor) clearTarget(dst string) (string, bool, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", false, err
+	}
+	_, err := os.Lstat(dst)
+	if os.IsNotExist(err) {
+		return dst, true, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	switch e.Collision {
+	case config.CollisionSkip:
+		return "", false, nil
+	case config.CollisionOverwrite:
+		// The user asked for this explicitly; nothing else in the app removes
+		// a file the user has not pointed at.
+		if err := os.Remove(dst); err != nil {
+			return "", false, err
+		}
+		return dst, true, nil
+	default:
+		unique, err := platform.UniquePath(dst)
+		return unique, err == nil, err
+	}
+}
+
+// copy writes one file and, when verification is on, proves it landed intact
+// before the caller is allowed to call it done. A copy that fails to verify is
+// removed: leaving it would mean a broken file in the library under a name
+// that looks right, and the rename policy would pile another one beside it on
+// every retry.
+func (e *Executor) copy(src, dst string) error {
+	write := e.Copier
+	if write == nil {
+		write = platform.CopyFile
+	}
+	if err := write(src, dst); err != nil {
+		return err
+	}
+	if !e.Verify {
+		return nil
+	}
+	if err := verifyCopy(src, dst); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return nil
+}
+
+// verifyCopy re-reads both files in full and compares them. The identity hash
+// covers only the head of a file, which is the wrong tool here: a truncated or
+// half-written tail is exactly the failure this is looking for.
+func verifyCopy(src, dst string) error {
+	want, err := contentDigest(src)
+	if err != nil {
+		return fmt.Errorf("verification read of %s: %w", src, err)
+	}
+	got, err := contentDigest(dst)
+	if err != nil {
+		return fmt.Errorf("verification read of %s: %w", dst, err)
+	}
+	if want != got {
+		return fmt.Errorf("verification failed: %s does not match %s", dst, src)
+	}
+	return nil
+}
+
+// contentDigest is a sha256 over every byte of a file.
+func contentDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Undo reverses a batch: successful actions are replayed backwards in reverse
@@ -90,6 +202,12 @@ func (e *Executor) Undo(b journal.Batch) error {
 	for i := len(b.Actions) - 1; i >= 0; i-- {
 		a := b.Actions[i]
 		if a.Outcome != journal.OutcomeOK {
+			continue
+		}
+		if a.Dst == "" && Verb(a.Verb) != VerbTrash {
+			// The collision policy skipped this one. Nothing of ours is at the
+			// destination, and the file that is there was never part of the
+			// batch.
 			continue
 		}
 		rec := journal.Action{Verb: a.Verb, Src: a.Dst, Dst: a.Src}

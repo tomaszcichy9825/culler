@@ -9,7 +9,7 @@
 // independently here, because rating a frame nobody has judged yet is normal.
 
 import { DecisionService } from "./bindings";
-import type { GroupDTO, RatingItem, VerdictItem } from "./bindings";
+import type { DestinationItem, GroupDTO, RatingItem, VerdictItem } from "./bindings";
 import { app } from "./state.svelte";
 import { clampMask, hasHalf, MAX_RATING, maskOf, toggled, verdictOf } from "./verdict";
 import type { Half, Mask, Verdict } from "./verdict";
@@ -19,6 +19,7 @@ const FLUSH_MS = 500;
 
 const verdictBuffer = new Map<string, VerdictItem>();
 const ratingBuffer = new Map<string, RatingItem>();
+const destinationBuffer = new Map<string, DestinationItem>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> = Promise.resolve();
 
@@ -40,28 +41,45 @@ function queueRating(g: GroupDTO) {
   schedule();
 }
 
+function queueDestination(g: GroupDTO) {
+  destinationBuffer.set(g.hash, {
+    hash: g.hash,
+    dir: g.dir,
+    stem: g.stem,
+    destination: g.destination,
+  });
+  schedule();
+}
+
 /**
- * flush writes every buffered change, verdicts then ratings, each in its own
- * transaction. Flushes are chained rather than overlapped so two batches can
- * never land out of order and leave the database holding the older of two
- * verdicts on a frame.
+ * flush writes every buffered change, each kind in its own transaction.
+ * Flushes are chained rather than overlapped so two batches can never land out
+ * of order and leave the database holding the older of two verdicts on a
+ * frame.
+ *
+ * Destinations go last. A destination implies a keep, so writing it after the
+ * verdicts means the implication lands on top of whatever the verdict batch
+ * said rather than being overwritten by it.
  */
 export function flush(): Promise<void> {
   if (timer !== null) {
     clearTimeout(timer);
     timer = null;
   }
-  if (verdictBuffer.size === 0 && ratingBuffer.size === 0) return inFlight;
+  if (verdictBuffer.size === 0 && ratingBuffer.size === 0 && destinationBuffer.size === 0) return inFlight;
 
   const verdicts = [...verdictBuffer.values()];
   const ratings = [...ratingBuffer.values()];
+  const routes = [...destinationBuffer.values()];
   verdictBuffer.clear();
   ratingBuffer.clear();
+  destinationBuffer.clear();
 
   inFlight = inFlight
     .catch(() => {})
     .then(() => (verdicts.length > 0 ? DecisionService.SetVerdictBatch(verdicts) : undefined))
     .then(() => (ratings.length > 0 ? DecisionService.SetRatingBatch(ratings) : undefined))
+    .then(() => (routes.length > 0 ? DecisionService.SetDestinationBatch(routes) : undefined))
     .then(
       () => {},
       (err: unknown) => {
@@ -223,6 +241,70 @@ export function toggleMask(half: Half) {
   }
 
   report(changed, unrecorded, refused);
+}
+
+/**
+ * setDestination routes the current target to a folder and then moves on, the
+ * same way a verdict does: routing a run of frames to the same place needs no
+ * navigation between them.
+ *
+ * Naming a destination implies a keep, exactly as toggling a mask does — the
+ * backend records the same implication, and it is mirrored here so the tile
+ * says so on the next frame rather than after the next reload. A cut keeps its
+ * cut: the user typed that, and this did not.
+ *
+ * It answers how many frames were routed, so the palette can say so and close.
+ */
+export function setDestination(destination: string): number {
+  const frames = targets();
+  if (frames === null) return 0;
+
+  const solo = app.selection.size === 0;
+  let changed = 0;
+  let unrecorded = 0;
+  for (const g of frames) {
+    if (g.hash === "") {
+      unrecorded++;
+      continue;
+    }
+    g.destination = destination;
+    if (destination !== "" && verdictOf(g) === "") record(g, "keep", startingMask(g));
+    queueDestination(g);
+    changed++;
+  }
+
+  if (!report(changed, unrecorded, "")) return 0;
+  if (solo && destination !== "") app.moveFocus(1);
+  return changed;
+}
+
+/**
+ * clearDestination takes the routing off the current target, leaving the
+ * verdict and the rating where they are. The focus stays put: unlike routing a
+ * run of frames, clearing one is a correction to the frame in front of you.
+ */
+export function clearDestination(): number {
+  const frames = targets();
+  if (frames === null) return 0;
+
+  let changed = 0;
+  let unrecorded = 0;
+  for (const g of frames) {
+    if (g.hash === "") {
+      unrecorded++;
+      continue;
+    }
+    if (g.destination === "") continue;
+    g.destination = "";
+    queueDestination(g);
+    changed++;
+  }
+  if (changed === 0 && unrecorded === 0) {
+    app.notify("this frame is not going anywhere");
+    return 0;
+  }
+  report(changed, unrecorded, "");
+  return changed;
 }
 
 /**

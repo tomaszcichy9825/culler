@@ -59,9 +59,12 @@
   style:height="{height}px"
   style:transform="translate({x}px, {y}px)"
   role="option"
-  tabindex="-1"
+  data-row={index}
+  data-stem={frame.stem}
+  tabindex={focused ? 0 : -1}
   aria-selected={focused}
   data-verdict={frame.verdict}
+  onfocus={() => onfocus(index)}
   onclick={() => onfocus(index)}
   ondblclick={() => onopen(index)}
 >

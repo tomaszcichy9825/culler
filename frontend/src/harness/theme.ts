@@ -137,6 +137,9 @@ function stockConfig(): Config {
       rejectedFolderName: "_Rejected",
       defaultKeepMask: KeepMask.KeepMaskBoth,
       cutRemoves: CutScope.CutRemovesBoth,
+      libraryRoot: "~/Pictures",
+      moveOnImport: false,
+      verifyCopies: true,
       localReadSlots: 16,
       networkReadSlots: 4,
       networkHashWorkers: 4,
@@ -176,6 +179,7 @@ function frame(n: number, over: Partial<GroupDTO> = {}): GroupDTO {
     mask: "rj",
     rating: 0,
     hash: `hash-${stem}`,
+    destination: "",
     decision: "",
     ...over,
   };

@@ -161,6 +161,59 @@
   };
 
   /**
+   * The grid's own keys, local so the mode keymap does not also see them.
+   * Arrows walk the tiles, ⏎ opens the focused one in cull — the same
+   * one-keystroke contract every actionable row in LIBRARY keeps.
+   */
+  function onKeydown(e: KeyboardEvent) {
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        results.move(1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        results.move(-1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        results.moveRow(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        results.moveRow(-1);
+        break;
+      case "Home":
+        e.preventDefault();
+        results.moveTo("first");
+        break;
+      case "End":
+        e.preventDefault();
+        results.moveTo("last");
+        break;
+      case "Enter": {
+        e.preventDefault();
+        const frame = library.focused;
+        if (frame !== null) library.open(frame);
+        break;
+      }
+      case "Escape":
+        e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
+        break;
+    }
+  }
+
+  /** Keeps the browser's focus on the tile the state says is focused. */
+  $effect(() => {
+    const index = library.focusIndex;
+    if (scroller === null || !scroller.contains(document.activeElement)) return;
+    queueMicrotask(() => {
+      scroller?.querySelector<HTMLElement>(`[data-row="${index}"]`)?.focus();
+    });
+  });
+
+  /**
    * The next page is asked for a screen before the end, so the grid fills as
    * the user arrives rather than after they have stopped.
    */
@@ -191,7 +244,11 @@
   bind:this={scroller}
   bind:clientWidth={width}
   bind:clientHeight={viewportHeight}
+  data-keys="local"
+  tabindex="-1"
+  role="presentation"
   onscroll={onScroll}
+  onkeydown={onKeydown}
 >
   {#if library.results.length === 0}
     <p class="empty">

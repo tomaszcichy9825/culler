@@ -22,6 +22,54 @@
     if (undecided > 0) return { label: `${formatCount(undecided)} to judge`, tone: "open" };
     return { label: "judged", tone: "done" };
   }
+
+  let body = $state<HTMLDivElement | null>(null);
+
+  function focusRow(index: number) {
+    if (index < 0 || index >= library.sessions.length) return;
+    library.focusSession(index);
+    if (body?.contains(document.activeElement) === true) {
+      queueMicrotask(() => body?.querySelector<HTMLElement>(`[data-row="${index}"]`)?.focus());
+    }
+  }
+
+  /**
+   * The table's own keys, local so the mode keymap does not also see them. ⏎
+   * opens the session's folder in cull, which is the same one-keystroke
+   * contract the tree and the results grid keep.
+   */
+  function onKeydown(e: KeyboardEvent) {
+    switch (e.key) {
+      case "ArrowDown":
+      case "j":
+        e.preventDefault();
+        focusRow(library.sessionIndex + 1);
+        break;
+      case "ArrowUp":
+      case "k":
+        e.preventDefault();
+        focusRow(library.sessionIndex - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusRow(0);
+        break;
+      case "End":
+        e.preventDefault();
+        focusRow(library.sessions.length - 1);
+        break;
+      case "Enter": {
+        e.preventDefault();
+        const session = library.sessions[library.sessionIndex];
+        if (session !== undefined) library.openDir(session.dir);
+        break;
+      }
+      case "Escape":
+        e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
+        break;
+    }
+  }
 </script>
 
 <div class="sessions">
@@ -35,17 +83,23 @@
     <span class="cell c-state">state</span>
   </div>
 
-  <div class="body" role="rowgroup">
+  <div class="body" bind:this={body} data-keys="local" role="rowgroup">
     {#if library.sessions.length === 0}
       <p class="empty">no sessions — nothing is catalogued yet</p>
     {:else}
-      {#each library.sessions as session (session.id)}
+      {#each library.sessions as session, i (session.id)}
         {@const state = stateOf(session.kept, session.cut, session.undecided)}
         <button
           type="button"
           class="row"
           class:selected={library.selectedSession === session.id}
           role="row"
+          data-row={i}
+          data-dir={session.dir}
+          tabindex={i === library.sessionIndex ? 0 : -1}
+          title="{session.dir} — ⏎ opens it in cull"
+          onfocus={() => library.focusSession(i)}
+          onkeydown={onKeydown}
           onclick={() => library.selectSession(session.id)}
           ondblclick={() => library.openDir(session.dir)}
         >
@@ -112,6 +166,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    outline: none;
   }
 
   .empty {
@@ -145,6 +200,10 @@
   .row.selected {
     background: var(--bg-row-active);
     box-shadow: var(--focus-edge);
+  }
+
+  .row:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
 
   .cell {

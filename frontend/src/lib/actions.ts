@@ -273,8 +273,15 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   }
 }
 
-export async function openFolder(dir: string) {
+export async function openFolder(dir: string, focusHash?: string) {
   await scan(dir, { remember: true, announce: true });
+  // A caller that names a frame — the library jumping into cull — gets it
+  // focused. A stale arrival (the user switched folders mid-flight) simply
+  // misses the find and changes nothing.
+  if (focusHash !== undefined) {
+    const i = app.groups.findIndex((g) => g.hash === focusHash);
+    if (i >= 0) app.setFocus(i);
+  }
 }
 
 /**

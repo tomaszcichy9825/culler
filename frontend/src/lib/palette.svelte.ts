@@ -10,7 +10,8 @@
 // The grid filter lives here too. It is a view over app.groups, never a write
 // to it — nothing in this module changes a frame or a verdict.
 
-import type { GroupDTO } from "./bindings";
+import { DecisionService } from "./bindings";
+import type { DestinationDTO, GroupDTO } from "./bindings";
 import { app } from "./state.svelte";
 import { verdictOf } from "./verdict";
 
@@ -211,36 +212,94 @@ export function filterSummary(f: Filter): string {
 }
 
 /* ---- destinations ----
-   Transitional. There is no destinations service yet, so the move and copy
-   palettes offer what the user has typed before, kept in this webview's own
-   storage. When the backend grows one, this block is what it replaces: nothing
-   else reads the key. */
+   Where frames get routed to, and the digits that reach them. The backend owns
+   the list — it has to survive a relaunch and it is the same list the apply
+   reads — so this is a cache of it, reloaded after anything that changes it. */
 
-const DESTINATIONS = "culler.destinations";
-/** How many destinations are remembered. Long enough to cover a shoot's worth. */
-const MAX_DESTINATIONS = 12;
+/** How many destinations the keyboard reaches by digit. Matches the backend. */
+export const MAX_SLOTS = 9;
 
-export function destinations(): string[] {
-  try {
-    const raw = localStorage.getItem(DESTINATIONS);
-    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p): p is string => typeof p === "string");
-  } catch {
-    return [];
+/**
+ * The backend calls the destination store makes, in one object so the headless
+ * bench can answer them without a running app. Same arrangement as the loupe
+ * and the tree: the component asks the seam, not the binding.
+ */
+export const destinationPort = {
+  list: (): Promise<DestinationDTO[] | null> => DecisionService.Destinations(),
+  use: (path: string, label: string): Promise<void> => DecisionService.UseDestination(path, label),
+  forget: (path: string): Promise<void> => DecisionService.ForgetDestination(path),
+  pin: (path: string, pinned: boolean): Promise<void> => DecisionService.PinDestination(path, pinned),
+  bind: (path: string, slot: number): Promise<void> => DecisionService.BindDestinationSlot(path, slot),
+};
+
+/**
+ * The remembered destinations, in palette order. Loaded once and refreshed
+ * after every change, because the digit each destination answers to is worked
+ * out by the backend from recency and cannot be guessed here.
+ */
+class DestinationList {
+  rows = $state<DestinationDTO[]>([]);
+  /** Set once the first load has finished, so the palette can say "loading". */
+  loaded = $state(false);
+  /** Why the list is empty, when it is empty for a reason worth showing. */
+  error = $state("");
+
+  async load(): Promise<void> {
+    try {
+      this.rows = (await destinationPort.list()) ?? [];
+      this.error = "";
+    } catch (err) {
+      this.rows = [];
+      this.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.loaded = true;
+    }
+  }
+
+  /** use records that frames have just been routed here, and reloads. */
+  async use(path: string, label = ""): Promise<void> {
+    const trimmed = path.trim();
+    if (trimmed === "") return;
+    await destinationPort.use(trimmed, label);
+    await this.load();
+  }
+
+  async pin(path: string, pinned: boolean): Promise<void> {
+    await destinationPort.pin(path, pinned);
+    await this.load();
+  }
+
+  async bind(path: string, slot: number): Promise<void> {
+    await destinationPort.bind(path, slot);
+    await this.load();
+  }
+
+  async forget(path: string): Promise<void> {
+    await destinationPort.forget(path);
+    await this.load();
+  }
+
+  /** forDigit is what pressing a digit means, or null when nothing claims it. */
+  forDigit(digit: number): DestinationDTO | null {
+    return this.rows.find((d) => d.digit === digit) ?? null;
+  }
+
+  has(path: string): boolean {
+    return this.rows.some((d) => d.path === path);
   }
 }
 
-/** rememberDestination moves path to the head of the recent list. */
-export function rememberDestination(path: string) {
-  const trimmed = path.trim();
-  if (trimmed === "") return;
-  const next = [trimmed, ...destinations().filter((d) => d !== trimmed)].slice(0, MAX_DESTINATIONS);
-  try {
-    localStorage.setItem(DESTINATIONS, JSON.stringify(next));
-  } catch {
-    // A webview with storage disabled still moves files; it just forgets where to.
-  }
+export const destinations = new DestinationList();
+
+/**
+ * leafOf is the last part of a destination, which is what a chip on a tile has
+ * room for. A template keeps its braces here: `{date:2006-01-02}` is what the
+ * user typed and what they will recognise, and the expanded folder does not
+ * exist until the apply.
+ */
+export function leafOf(path: string): string {
+  const parts = path.split("/").filter((p) => p !== "");
+  return parts.length === 0 ? path : parts[parts.length - 1];
 }
 
 /* ---- store ---- */

@@ -23,6 +23,17 @@
     for (const a of app.plan?.actions ?? []) out[a.verb] = (out[a.verb] ?? 0) + 1;
     return out;
   });
+
+  /**
+   * Where the plan sends frames, one row per destination. This is the part of
+   * the summary worth reading twice: everything else in the dialog is about
+   * files leaving, and this is about files arriving somewhere the user named
+   * possibly several minutes and several hundred frames ago.
+   */
+  let routes = $derived(app.plan?.destinations ?? []);
+
+  /** How many frames in the sheet are routed, for the pending strip. */
+  let routed = $derived(app.pending.filter((g) => (g.destination ?? "") !== "").length);
 </script>
 
 <div class="bar">
@@ -35,6 +46,9 @@
     {/if}
     {#if counts.cut > 0}
       <span class="chip cut">x cut · {counts.cut}</span>
+    {/if}
+    {#if routed > 0}
+      <span class="chip routed">→ routed · {routed}</span>
     {/if}
     <span class="muted">↩ to apply</span>
   {/if}
@@ -49,6 +63,17 @@
     <div class="panel" role="dialog" aria-label="Confirm apply">
       <h2>Apply</h2>
       <p class="description">{app.plan.description}</p>
+
+      {#if routes.length > 0}
+        <dl class="routes" aria-label="Destinations">
+          {#each routes as route (route.path)}
+            <div class="row">
+              <dt title={route.path}>{route.verb} → {route.path}</dt>
+              <dd>{route.frames} frames · {route.files} files · {formatBytes(route.bytes)}</dd>
+            </div>
+          {/each}
+        </dl>
+      {/if}
 
       <dl>
         {#each PLAN_ORDER as key (key)}
@@ -132,6 +157,33 @@
 
   .chip.cut {
     background: var(--cut);
+  }
+
+  .chip.routed {
+    background: var(--accent);
+  }
+
+  /* Destinations lead the summary and are marked off from the verdict counts:
+     they are the only rows describing files arriving rather than leaving. */
+  .routes {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--accent-wash-16);
+    font-size: 12px;
+  }
+
+  .routes .row {
+    border-bottom-color: var(--border-faint);
+  }
+
+  .routes .row:last-child {
+    border-bottom: none;
+  }
+
+  .routes dt {
+    color: var(--accent);
+    font-weight: 600;
   }
 
   .scrim {

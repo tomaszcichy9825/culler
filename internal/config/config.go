@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
@@ -65,6 +66,18 @@ type Behaviour struct {
 	DefaultKeepMask KeepMask `json:"defaultKeepMask"`
 	CutRemoves      CutScope `json:"cutRemoves"`
 
+	// Import semantics: where a destination that is not an absolute path hangs
+	// off, whether routed frames are copied or taken off the card, and whether
+	// every copy is read back and compared before it counts as done.
+	//
+	// MoveOnImport is off because a card is the only copy of a photograph until
+	// the import has finished, and VerifyCopies is on because the cost of a
+	// second read is minutes and the cost of a silently broken RAW is the
+	// photograph.
+	LibraryRoot  string `json:"libraryRoot"`
+	MoveOnImport bool   `json:"moveOnImport"`
+	VerifyCopies bool   `json:"verifyCopies"`
+
 	// Concurrency limits for slow sources. Local disks tolerate parallel
 	// reads; network shares stall under them, so those caps stay low.
 	LocalReadSlots      int `json:"localReadSlots"`      // concurrent preview reads, local volumes
@@ -94,6 +107,9 @@ func Default() Config {
 			RejectedFolderName:   "_Rejected",
 			DefaultKeepMask:      KeepMaskBoth,
 			CutRemoves:           CutRemovesBoth,
+			LibraryRoot:          "~/Pictures",
+			MoveOnImport:         false,
+			VerifyCopies:         true,
 			LocalReadSlots:       16,
 			NetworkReadSlots:     4,
 			NetworkHashWorkers:   4,
@@ -254,6 +270,13 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown cut removes scope %q: want %q or %q",
 			c.Behaviour.CutRemoves, CutRemovesBoth, CutRemovesMasked)
+	}
+
+	// A destination the user typed as a bare name has to hang off something,
+	// and silently choosing the working directory would scatter imports
+	// wherever the app happened to be launched from.
+	if strings.TrimSpace(c.Behaviour.LibraryRoot) == "" {
+		return fmt.Errorf("library root must be set: it is what a destination that is not an absolute path is relative to")
 	}
 
 	if c.Behaviour.BulkConfirmThreshold < 0 {

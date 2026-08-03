@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
 )
@@ -21,6 +23,30 @@ type RatingItem struct {
 	Dir    string `json:"dir"`
 	Stem   string `json:"stem"`
 	Rating int    `json:"rating"` // 0 clears
+}
+
+// DestinationItem is one frame's destination, as the frontend sends it. An
+// empty destination clears the routing and leaves the verdict alone.
+type DestinationItem struct {
+	Hash        string `json:"hash"`
+	Dir         string `json:"dir"`
+	Stem        string `json:"stem"`
+	Destination string `json:"destination"`
+}
+
+// DestinationDTO is one remembered destination, as the move palette shows it.
+type DestinationDTO struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+	// LastUsedAt is RFC3339, empty for a destination that has never been used.
+	LastUsedAt string `json:"lastUsedAt"`
+	UseCount   int    `json:"useCount"`
+	Pinned     bool   `json:"pinned"`
+	// Slot is the digit the user bound by hand, 0 when they have not.
+	Slot int `json:"slot"`
+	// Digit is the key that reaches this destination right now, 0 when none
+	// does. This is the one the palette shows and the one a digit press means.
+	Digit int `json:"digit"`
 }
 
 // DecisionItem is one frame's decision in the pre-verdict vocabulary. It stays
@@ -105,6 +131,142 @@ func (s *DecisionService) SetRatingBatch(items []RatingItem) error {
 		return err
 	}
 	return store.SetRatingBatch(converted)
+}
+
+// SetDestination routes one frame to a folder, or clears its routing when
+// destination is empty. Naming a destination implies the frame is worth
+// keeping, exactly as toggling a mask does, so an undecided frame becomes a
+// keep; a verdict the user has typed is left alone.
+func (s *DecisionService) SetDestination(hash, dir, stem, destination string) error {
+	item, err := toDestinationItem(DestinationItem{Hash: hash, Dir: dir, Stem: stem, Destination: destination})
+	if err != nil {
+		return err
+	}
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.SetDestination(item.Hash, item.Dir, item.Stem, item.Destination)
+}
+
+// SetDestinationBatch routes many frames in one transaction. Routing a whole
+// selection is one keystroke, so it arrives here as one batch.
+func (s *DecisionService) SetDestinationBatch(items []DestinationItem) error {
+	converted := make([]decide.DestinationItem, 0, len(items))
+	for _, it := range items {
+		item, err := toDestinationItem(it)
+		if err != nil {
+			return err
+		}
+		converted = append(converted, item)
+	}
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.SetDestinationBatch(converted)
+}
+
+// Destinations lists the remembered destinations in palette order: pinned
+// first, then most recently used, each with the digit that reaches it.
+func (s *DecisionService) Destinations() ([]DestinationDTO, error) {
+	store, err := s.app.decisions()
+	if err != nil {
+		return nil, err
+	}
+	list, err := store.Destinations()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DestinationDTO, 0, len(list))
+	for _, d := range list {
+		out = append(out, destinationDTO(d))
+	}
+	return out, nil
+}
+
+// UseDestination remembers a destination and moves it to the top of the recent
+// list. The palette calls it when a destination is chosen, which is what keeps
+// the digit slots following what the user actually does.
+func (s *DecisionService) UseDestination(path, label string) error {
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.UseDestination(path, label)
+}
+
+// ForgetDestination drops a destination from the palette. Nothing on disk
+// moves and no frame already routed there is disturbed.
+func (s *DecisionService) ForgetDestination(path string) error {
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.ForgetDestination(path)
+}
+
+// PinDestination holds a destination above the recent ones until it is
+// unpinned.
+func (s *DecisionService) PinDestination(path string, pinned bool) error {
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.PinDestination(path, pinned)
+}
+
+// BindDestinationSlot nails a destination to a digit, or releases it with 0.
+func (s *DecisionService) BindDestinationSlot(path string, slot int) error {
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	return store.BindSlot(path, slot)
+}
+
+// DestinationForDigit resolves what pressing a digit means right now. A digit
+// nothing has claimed comes back as a destination with an empty path, which is
+// how the palette says "that key does nothing yet" without an error.
+func (s *DecisionService) DestinationForDigit(digit int) (DestinationDTO, error) {
+	store, err := s.app.decisions()
+	if err != nil {
+		return DestinationDTO{}, err
+	}
+	d, ok, err := store.DestinationForDigit(digit)
+	if err != nil || !ok {
+		return DestinationDTO{}, err
+	}
+	return destinationDTO(d), nil
+}
+
+func destinationDTO(d decide.Destination) DestinationDTO {
+	dto := DestinationDTO{
+		Path:     d.Path,
+		Label:    d.Label,
+		UseCount: d.UseCount,
+		Pinned:   d.Pinned,
+		Slot:     d.Slot,
+		Digit:    d.Digit,
+	}
+	if !d.LastUsedAt.IsZero() {
+		dto.LastUsedAt = d.LastUsedAt.Format(time.RFC3339)
+	}
+	return dto
+}
+
+// toDestinationItem validates one incoming destination and converts it for the
+// store.
+func toDestinationItem(it DestinationItem) (decide.DestinationItem, error) {
+	if err := requireHash(it.Hash, it.Stem); err != nil {
+		return decide.DestinationItem{}, err
+	}
+	return decide.DestinationItem{
+		Hash:        it.Hash,
+		Dir:         it.Dir,
+		Stem:        it.Stem,
+		Destination: strings.TrimSpace(it.Destination),
+	}, nil
 }
 
 // Set records one decision in the pre-verdict vocabulary. Passing "none"

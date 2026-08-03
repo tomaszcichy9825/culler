@@ -70,7 +70,7 @@ func TestBuildPlanMapsVerdictsToActions(t *testing.T) {
 		{group: pairedGroup("DSCF0003"), hash: "h3", record: decide.Record{Verdict: decide.Keep, Mask: decide.MaskBoth}},
 	}
 
-	p, err := buildPlan(items, config.CutRemovesBoth)
+	p, err := buildPlan(items, cullRules(config.CutRemovesBoth))
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestBuildPlanCutRemovesMaskedHalvesOnly(t *testing.T) {
 		{group: pairedGroup("DSCF0002"), hash: "h2", record: decide.Record{Verdict: decide.Cut, Mask: decide.MaskBoth}},
 	}
 
-	p, err := buildPlan(items, config.CutRemovesMasked)
+	p, err := buildPlan(items, cullRules(config.CutRemovesMasked))
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBuildPlanCutRemovesMaskedHalvesOnly(t *testing.T) {
 	}
 
 	// The same frames under the default scope lose everything.
-	wide, err := buildPlan(items, config.CutRemovesBoth)
+	wide, err := buildPlan(items, cullRules(config.CutRemovesBoth))
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestBuildPlanKeepsPerFrameActions(t *testing.T) {
 		{group: pairedGroup("DSCF0001"), hash: "h1", record: decide.Record{Verdict: decide.Keep, Mask: decide.MaskRAW}},
 		{group: pairedGroup("DSCF0002"), hash: "h2", record: decide.Record{Verdict: decide.Keep, Mask: decide.MaskRAW}},
 	}
-	p, err := buildPlan(items, config.CutRemovesBoth)
+	p, err := buildPlan(items, cullRules(config.CutRemovesBoth))
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestBuildPlanKeepsPerFrameActions(t *testing.T) {
 }
 
 func TestBuildPlanEmpty(t *testing.T) {
-	p, err := buildPlan(nil, config.CutRemovesBoth)
+	p, err := buildPlan(nil, cullRules(config.CutRemovesBoth))
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}

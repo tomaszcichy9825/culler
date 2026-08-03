@@ -1,12 +1,13 @@
 <script lang="ts">
-  // LIBRARY's left pane: the roots the catalogue covers, and the one place to
-  // add or drop one.
+  // LIBRARY's left pane: the folder tree over what the catalogue covers, and
+  // the one place to add or drop a root.
   //
   // A root is a folder the user has asked the catalogue to remember. Removing
   // one forgets its rows; it never touches the disk, and the pane says so
   // rather than making the user find out.
 
-  import { basename, formatBytes, formatCount, library } from "../../lib/library.svelte";
+  import LibraryTree from "./LibraryTree.svelte";
+  import { formatCount, library } from "../../lib/library.svelte";
 
   let draft = $state("");
 
@@ -19,42 +20,15 @@
   }
 </script>
 
-<div class="tree">
-  <section>
+<div class="pane">
+  <section class="grow">
     <div class="label">
       <span>folders</span>
       <span class="rule"></span>
       <span class="hint">{formatCount(library.roots.length)}</span>
     </div>
-
-    {#each library.roots as root (root.path)}
-      <div class="root" class:on={library.facets.root === root.path}>
-        <button
-          type="button"
-          class="pick"
-          title={root.path}
-          onclick={() => library.setFacet("root", root.path)}
-        >
-          <span class="name">{basename(root.path)}</span>
-          <span class="meta">
-            {#if root.lastIndexed === ""}
-              never indexed
-            {:else}
-              {formatCount(root.frames)} · {formatBytes(root.bytes)}
-            {/if}
-          </span>
-        </button>
-        <button
-          type="button"
-          class="drop"
-          title="forget {root.path} — nothing on disk is touched"
-          aria-label="Forget {root.path}"
-          onclick={() => library.removeRoot(root.path)}>×</button
-        >
-      </div>
-    {:else}
-      <p class="empty">no folders yet</p>
-    {/each}
+    <LibraryTree />
+    <p class="note">⏎ opens the folder in cull</p>
   </section>
 
   <section>
@@ -90,15 +64,26 @@
 </div>
 
 <style>
-  .tree {
+  .pane {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
   }
 
   section {
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
+  }
+
+  /* The tree takes the slack and scrolls; the add and index blocks keep their
+     height, so the one control that grows is the one holding the folders. */
+  .grow {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
   }
 
   .label {
@@ -122,75 +107,6 @@
     font-family: var(--font-mono);
     letter-spacing: 0;
     color: var(--text-dim);
-  }
-
-  .root {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    border-radius: 3px;
-  }
-
-  .root.on {
-    background: var(--accent-wash-16);
-    box-shadow: inset 2px 0 0 var(--accent);
-  }
-
-  .pick {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 4px 6px;
-    border: none;
-    background: none;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .name {
-    font-size: 11.5px;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .root.on .name {
-    color: var(--accent);
-  }
-
-  .meta {
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-
-  .drop {
-    flex: 0 0 auto;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: none;
-    border-radius: 3px;
-    background: none;
-    color: var(--text-ghost);
-    font: inherit;
-    font-size: 13px;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .drop:hover {
-    background: var(--cut-wash-16);
-    color: var(--cut-text);
-  }
-
-  .empty {
-    margin: 0;
-    font-size: 10.5px;
-    color: var(--text-ghost);
   }
 
   input {

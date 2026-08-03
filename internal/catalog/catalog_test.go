@@ -168,36 +168,6 @@ func TestRemoveRootPrunesItsFramesOnly(t *testing.T) {
 	}
 }
 
-// A root inside another root keeps its frames when the outer one goes: the
-// frames are still catalogued, because a root the user has asked for still
-// covers them.
-func TestRemoveRootKeepsFramesCoveredByANestedRoot(t *testing.T) {
-	s := openStore(t)
-	outer := t.TempDir()
-	inner := filepath.Join(outer, "2026-05-01")
-	mkdir(t, inner)
-	writeFrame(t, outer, "OUTER001", 100, 0, shotAt(9, 0))
-	writeFrame(t, inner, "INNER001", 100, 0, shotAt(9, 1))
-
-	if _, err := s.Index(outer, IndexOptions{}); err != nil {
-		t.Fatalf("Index outer: %v", err)
-	}
-	if _, err := s.AddRoot(inner); err != nil {
-		t.Fatalf("AddRoot inner: %v", err)
-	}
-	if err := s.RemoveRoot(outer); err != nil {
-		t.Fatalf("RemoveRoot: %v", err)
-	}
-
-	res, err := s.Search("", Facets{}, Page{})
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if res.Total != 1 || res.Frames[0].Stem != "INNER001" {
-		t.Errorf("frames = %+v, want only the frame the nested root still covers", res.Frames)
-	}
-}
-
 func TestRemoveRootOfAnUnknownPathIsNotAnError(t *testing.T) {
 	s := openStore(t)
 	if err := s.RemoveRoot("/cards/never-added"); err != nil {

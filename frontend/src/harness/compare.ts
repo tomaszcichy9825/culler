@@ -85,6 +85,7 @@ function frame(n: number, over: Partial<GroupDTO> = {}): GroupDTO {
     mask: "rj",
     rating: 0,
     hash: `hash-${stem}`,
+    destination: "",
     decision: "",
     ...over,
   };

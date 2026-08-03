@@ -34,7 +34,7 @@ const (
 // schemaVersion is what this build writes. A database carrying a higher one
 // was written by a newer culler and is not opened: guessing at a schema we do
 // not know would be a good way to lose someone's catalogue.
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS frames (
@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS frames (
 	jpeg_path  TEXT NOT NULL,
 	raw_bytes  INTEGER NOT NULL,
 	jpeg_bytes INTEGER NOT NULL,
+	raw_mtime  INTEGER NOT NULL DEFAULT 0,
+	jpeg_mtime INTEGER NOT NULL DEFAULT 0,
 	rating     INTEGER NOT NULL,
 	verdict    TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
 	indexed_at INTEGER NOT NULL
@@ -149,6 +151,27 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("catalog: create schema: %w", err)
 	}
+	// Version 2 gave every frame the modification times of its files, so a
+	// rerun can tell an untouched file from a rewritten one without reading it.
+	// A database from version 1 gets the columns holding zero, which matches no
+	// real file: the next pass re-reads everything once and is incremental
+	// after that. The columns are added by inspection rather than by version,
+	// because a fresh database has already got them from the schema above.
+	held, err := columns(db, "frames")
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"raw_mtime", "jpeg_mtime"} {
+		if held[name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE frames ADD COLUMN ` + name + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("catalog: add %s: %w", name, err)
+		}
+	}
+	if err := collapseNestedRoots(db); err != nil {
+		return err
+	}
 	// Steps for future versions go here, each guarded by the version it lifts
 	// the database out of, before the version is stamped.
 	if version < schemaVersion {
@@ -159,31 +182,214 @@ func migrate(db *sql.DB) error {
 	return nil
 }
 
+// collapseNestedRoots forgets any root that another root already contains.
+//
+// It runs on every Open rather than behind a version, because the rows it
+// cleans up are not tied to a schema: a catalogue written before AddRoot kept
+// the roots apart can hold a folder and its parent at once, and the user who
+// is already in that state sees both at the top of the tree, one a superset of
+// the other. On a catalogue that is already in order it does nothing.
+//
+// Only the root rows go. Every frame the forgotten roots covered sits inside
+// the root that absorbed them, so nothing is uncatalogued by this.
+func collapseNestedRoots(db *sql.DB) error {
+	rows, err := rootPaths(db)
+	if err != nil {
+		return err
+	}
+	for _, path := range rows {
+		for _, other := range rows {
+			if other == path || !under(path, other) {
+				continue
+			}
+			if _, err := db.Exec(`DELETE FROM roots WHERE path = ?`, path); err != nil {
+				return fmt.Errorf("catalog: collapse root %s into %s: %w", path, other, err)
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// columns returns the column names of table, empty when the table does not
+// exist.
+func columns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: read %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
 // Close closes the database.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// AddRoot registers path as a folder the catalogue covers. Adding a root that
-// is already there is not an error and does not disturb when it was added; it
-// returns the root either way.
+// chunk is how many hashes go into one statement. SQLite's default parameter
+// ceiling is nine hundred and ninety-nine, and a batch is split rather than
+// risking the one statement that trips it.
+const chunk = 500
+
+// RemoveByHash forgets these frames. Hashes the catalogue does not hold are
+// ignored, so a caller does not have to know what was catalogued.
+//
+// This is what an apply calls once the files are in the trash. Waiting for the
+// next index pass would leave rows describing files that are gone, and a
+// search result the user cannot open is worse than one that is missing.
+func (s *Store) RemoveByHash(hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for start := 0; start < len(hashes); start += chunk {
+		batch := hashes[start:min(start+chunk, len(hashes))]
+		args := make([]any, len(batch))
+		for i, h := range batch {
+			args[i] = h
+		}
+		query := `DELETE FROM frames WHERE hash IN (?` + strings.Repeat(`,?`, len(batch)-1) + `)`
+		if _, err := tx.Exec(query, args...); err != nil {
+			return fmt.Errorf("catalog: forget %d frames: %w", len(batch), err)
+		}
+	}
+	return tx.Commit()
+}
+
+// Decision is one frame's judgement as the decision store currently holds it.
+type Decision struct {
+	Hash    string
+	Verdict string // "" | keep | cut
+	Rating  int
+}
+
+// SetDecisions writes fresh verdicts and ratings over what the last index pass
+// recorded. Hashes the catalogue does not hold are ignored.
+//
+// The catalogue does not own decisions and never asks for these: the caller
+// that has just read the decision store hands back what it found, so the facet
+// counts and the session table stop describing a judgement the user has since
+// changed. What is on screen is overlaid at read time regardless; this is what
+// keeps the aggregates that are counted in SQL honest.
+func (s *Store) SetDecisions(items []Decision) error {
+	if len(items) == 0 {
+		return nil
+	}
+	for _, it := range items {
+		switch it.Verdict {
+		case "", VerdictKeep, VerdictCut:
+		default:
+			return fmt.Errorf("catalog: %s cannot hold verdict %q", it.Hash, it.Verdict)
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, it := range items {
+		rating := it.Rating
+		if rating < 0 {
+			rating = 0
+		}
+		if _, err := tx.Exec(
+			`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ?`,
+			it.Verdict, rating, it.Hash); err != nil {
+			return fmt.Errorf("catalog: record decision for %s: %w", it.Hash, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// AddRoot registers path as a folder the catalogue covers, and keeps the roots
+// from overlapping. No two registered roots ever contain one another, because
+// a folder that appeared both at the top of the tree and inside another root
+// would be two different answers to the same question.
+//
+// Three things can happen, and none of them is an error:
+//
+//   - The path is already registered, or sits inside a root that is: nothing
+//     changes and the root that covers it comes back. Re-adding does not
+//     disturb when a root was added.
+//   - The path contains roots that are already registered: it absorbs them.
+//     Their rows go and it takes their place. The frames stay exactly as they
+//     are — they are keyed on content and filed by directory, so they are
+//     already under the new root and nothing has to move.
+//   - Neither: it is registered beside what is there.
+//
+// An absorbing root starts out never indexed, even though most of what is
+// under it has been. That is the truth: it also covers ground no pass has
+// walked, and the walk is cheap now that an unchanged file is not re-read.
 func (s *Store) AddRoot(path string) (Root, error) {
 	clean, err := cleanRoot(path)
 	if err != nil {
 		return Root{}, err
 	}
-	_, err = s.db.Exec(
-		`INSERT INTO roots (path, added_at, last_indexed_at) VALUES (?, ?, 0)
-		 ON CONFLICT(path) DO NOTHING`, clean, time.Now().Unix())
+
+	covering, err := s.addRootTx(clean)
 	if err != nil {
-		return Root{}, fmt.Errorf("catalog: add root %s: %w", clean, err)
+		return Root{}, err
 	}
-	return s.root(clean)
+	// Read back outside the transaction: the store holds one connection, and
+	// querying through it while a transaction is open would wait on itself.
+	return s.root(covering)
 }
 
-// RemoveRoot forgets a root and the frames only it covered. Frames that
-// another registered root still covers stay, because the user has not stopped
-// asking for them. Removing a root that was never added is not an error.
+// addRootTx does the write half of AddRoot and returns the path of the root
+// that now covers clean.
+func (s *Store) addRootTx(clean string) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	existing, err := rootPaths(tx)
+	if err != nil {
+		return "", err
+	}
+	for _, root := range existing {
+		if under(clean, root) {
+			return root, nil // already covered; the deferred rollback writes nothing
+		}
+	}
+	for _, root := range existing {
+		if !under(root, clean) {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM roots WHERE path = ?`, root); err != nil {
+			return "", fmt.Errorf("catalog: absorb root %s into %s: %w", root, clean, err)
+		}
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO roots (path, added_at, last_indexed_at) VALUES (?, ?, 0)
+		 ON CONFLICT(path) DO NOTHING`, clean, time.Now().Unix()); err != nil {
+		return "", fmt.Errorf("catalog: add root %s: %w", clean, err)
+	}
+	return clean, tx.Commit()
+}
+
+// RemoveRoot forgets a root and the frames under it. Nothing on disk is
+// touched, and removing a root that was never added is not an error.
+//
+// No surviving root can be holding those frames up: registered roots never
+// contain one another, so a frame under this one is under no other.
 func (s *Store) RemoveRoot(path string) error {
 	clean, err := cleanRoot(path)
 	if err != nil {
@@ -198,17 +404,7 @@ func (s *Store) RemoveRoot(path string) error {
 	if _, err := tx.Exec(`DELETE FROM roots WHERE path = ?`, clean); err != nil {
 		return fmt.Errorf("catalog: remove root %s: %w", clean, err)
 	}
-
-	survivors, err := rootPaths(tx)
-	if err != nil {
-		return err
-	}
 	where, args := underRoot(clean)
-	for _, other := range survivors {
-		clause, extra := underRoot(other)
-		where += " AND NOT " + clause
-		args = append(args, extra...)
-	}
 	if _, err := tx.Exec(`DELETE FROM frames WHERE `+where, args...); err != nil {
 		return fmt.Errorf("catalog: prune frames under %s: %w", clean, err)
 	}
@@ -295,6 +491,23 @@ func cleanRoot(path string) (string, error) {
 		return "", fmt.Errorf("catalog: root %s is not an absolute path", path)
 	}
 	return filepath.Clean(path), nil
+}
+
+// under reports whether path is root or sits inside it.
+//
+// The comparison is on whole path segments, so /Volumes/CardTwo is not treated
+// as living inside /Volumes/Card. It is the same rule the sidebar's tree uses,
+// and the two have to agree: a folder that counted as covered in one place and
+// not the other would be a root here and a child there.
+func under(path, root string) bool {
+	if path == root {
+		return true
+	}
+	sep := string(filepath.Separator)
+	if root == sep {
+		return strings.HasPrefix(path, sep)
+	}
+	return strings.HasPrefix(path, root+sep)
 }
 
 // underRoot builds the predicate for "this frame's directory is the root or

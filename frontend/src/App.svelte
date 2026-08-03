@@ -168,9 +168,9 @@
     Storage: () => LibraryIndexService.Storage() as never,
   });
   void watchCatalogProgress();
-  onOpenFolder((dir) => {
+  onOpenFolder((dir, focusHash) => {
     shell.setMode("cull");
-    void openFolderAction(dir);
+    void openFolderAction(dir, focusHash);
   });
 
   // The filter narrows what the whole app sees: the grid, focus movement,

@@ -354,9 +354,31 @@ type Session struct {
 // Span is how long the session ran.
 func (s Session) Span() time.Duration { return s.End.Sub(s.Start) }
 
+// SessionOptions tunes how the catalogue is grouped into shoots.
+type SessionOptions struct {
+	// Gap is the break that ends a session. Zero takes DefaultSessionGap.
+	Gap time.Duration
+
+	// Verdict answers with how a frame is judged now, which is what lets the
+	// kept and cut columns follow the decision store rather than the last index
+	// pass. The second result is false when the caller has nothing to say, and
+	// the verdict recorded at index time stands. Nil is the same thing for
+	// every frame.
+	//
+	// It is called once per catalogued frame, so a caller that answers out of a
+	// database should know what that costs.
+	Verdict func(hash string) (string, bool)
+}
+
 // Sessions returns every session in the catalogue, newest first. A gap of zero
 // takes DefaultSessionGap.
 func (s *Store) Sessions(gap time.Duration) ([]Session, error) {
+	return s.SessionsWith(SessionOptions{Gap: gap})
+}
+
+// SessionsWith is Sessions with the judgements the caller supplies.
+func (s *Store) SessionsWith(opts SessionOptions) ([]Session, error) {
+	gap := opts.Gap
 	if gap <= 0 {
 		gap = DefaultSessionGap
 	}
@@ -391,7 +413,13 @@ func (s *Store) Sessions(gap time.Duration) ([]Session, error) {
 		current.Frames++
 		current.RawBytes += f.RawBytes
 		current.JpegBytes += f.JpegBytes
-		switch f.Verdict {
+		verdict := f.Verdict
+		if opts.Verdict != nil {
+			if live, ok := opts.Verdict(f.Hash); ok {
+				verdict = live
+			}
+		}
+		switch verdict {
 		case VerdictKeep:
 			current.Kept++
 		case VerdictCut:

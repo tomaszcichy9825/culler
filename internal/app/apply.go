@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/decide"
+	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/ops"
 	"github.com/tomaszcichy9825/culler/internal/platform"
@@ -19,16 +22,30 @@ import (
 type ActionDTO struct {
 	Verb string `json:"verb"` // copy | move | trash
 	Src  string `json:"src"`
+	Dst  string `json:"dst"` // empty for trash, and for a plan that only removes
+}
+
+// DestinationPlanDTO is one destination's share of a plan, for the
+// confirmation summary. Path is the destination as the user set it, tokens
+// and all, because that is the thing they recognise — a template that expands
+// per frame has no single expanded path to show.
+type DestinationPlanDTO struct {
+	Path   string `json:"path"`
+	Verb   string `json:"verb"` // copy | move
+	Frames int    `json:"frames"`
+	Files  int    `json:"files"`
+	Bytes  int64  `json:"bytes"`
 }
 
 // PlanDTO is what an apply would do, with nothing done yet. Counts is keyed
 // by decision and holds the number of frames each one contributes; the file
 // count is the length of Actions.
 type PlanDTO struct {
-	Description string         `json:"description"`
-	Actions     []ActionDTO    `json:"actions"`
-	Counts      map[string]int `json:"counts"`
-	TotalBytes  int64          `json:"totalBytes"`
+	Description  string               `json:"description"`
+	Actions      []ActionDTO          `json:"actions"`
+	Counts       map[string]int       `json:"counts"`
+	Destinations []DestinationPlanDTO `json:"destinations"`
+	TotalBytes   int64                `json:"totalBytes"`
 }
 
 // ResultDTO is one executed action and where the file ended up.
@@ -68,7 +85,11 @@ func (s *ApplyService) Plan(dir string, hashes []string) (PlanDTO, error) {
 	if err != nil {
 		return PlanDTO{}, err
 	}
-	p, err := buildPlan(items, s.app.Config().Behaviour.CutRemoves)
+	rules, err := planRules(s.app.Config())
+	if err != nil {
+		return PlanDTO{}, err
+	}
+	p, err := buildPlan(items, rules)
 	if err != nil {
 		return PlanDTO{}, err
 	}
@@ -83,7 +104,12 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	p, err := buildPlan(items, s.app.Config().Behaviour.CutRemoves)
+	cfg := s.app.Config()
+	rules, err := planRules(cfg)
+	if err != nil {
+		return BatchDTO{}, err
+	}
+	p, err := buildPlan(items, rules)
 	if err != nil {
 		return BatchDTO{}, err
 	}
@@ -98,7 +124,12 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 		if err != nil {
 			return BatchDTO{}, err
 		}
-		executor := &ops.Executor{Journal: jrnl, Trasher: trasher}
+		executor := &ops.Executor{
+			Journal:   jrnl,
+			Trasher:   trasher,
+			Collision: cfg.Behaviour.CollisionPolicy,
+			Verify:    cfg.Behaviour.VerifyCopies,
+		}
 		var applyErr error
 		batch, applyErr = executor.Apply(p.dto.Description, p.actions)
 		// Executor.Apply errors only on journal write failure, after the
@@ -225,24 +256,57 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 	return items, nil
 }
 
-// buildPlan maps each frame's verdict onto its op and plans it. Planning one
+// rules is the part of the configuration that changes what a plan does, with
+// the paths in it already resolved.
+type rules struct {
+	cut config.CutScope
+	// libraryRoot is what a destination that is not an absolute path hangs
+	// off. Already expanded, so nothing downstream has to know about ~.
+	libraryRoot string
+	// moveOnImport takes routed frames off the card instead of copying them.
+	moveOnImport bool
+}
+
+// planRules resolves the configuration a plan is built against, failing early
+// if the library root cannot be made sense of — better here than halfway
+// through writing files into a path nobody meant.
+func planRules(cfg config.Config) (rules, error) {
+	root, err := expandPath(cfg.Behaviour.LibraryRoot)
+	if err != nil {
+		return rules{}, fmt.Errorf("library root: %w", err)
+	}
+	return rules{
+		cut:          cfg.Behaviour.CutRemoves,
+		libraryRoot:  root,
+		moveOnImport: cfg.Behaviour.MoveOnImport,
+	}, nil
+}
+
+// buildPlan maps each frame's decision onto its op and plans it. Planning one
 // frame at a time costs nothing — Plan is pure — and keeps every action
 // attributable to the frame that asked for it, which is what lets a failed
-// action hold on to its verdict. cut says how far a cut reaches, which is the
-// one part of the mapping the user can change.
-func buildPlan(items []planned, cut config.CutScope) (plan, error) {
+// action hold on to its verdict.
+//
+// A frame with a destination is an import and is planned separately: its
+// surviving halves are copied into the library and nothing on the card is
+// touched, whatever its mask says. Trashing half a frame is a cull of a folder
+// you already own; an import reads the card and leaves it exactly as it found
+// it, so the same card can be imported twice or imported to two places.
+func buildPlan(items []planned, r rules) (plan, error) {
 	p := plan{dto: PlanDTO{Counts: map[string]int{}}}
 	sizes := map[string]int64{}
 	var parts []string
 
+	staying, routed := splitRouted(items)
+
 	for _, j := range planOrder {
 		record := decide.Record{Verdict: j.verdict, Mask: j.mask}
-		op, ok := opFor(record, cut)
+		op, ok := opFor(record, r.cut)
 		if !ok {
 			continue
 		}
 		var frames int
-		for _, it := range items {
+		for _, it := range staying {
 			if it.record.Verdict != j.verdict || it.record.Mask != j.mask {
 				continue
 			}
@@ -265,9 +329,43 @@ func buildPlan(items []planned, cut config.CutScope) (plan, error) {
 		}
 	}
 
+	for _, dest := range sortedKeys(routed) {
+		target, err := resolveDestination(dest, r.libraryRoot)
+		if err != nil {
+			return plan{}, err
+		}
+		summary := DestinationPlanDTO{Path: dest, Verb: routeVerb(r.moveOnImport)}
+		for _, it := range routed[dest] {
+			// The mask travels with the frame, so a keep on the RAW alone
+			// imports the RAW alone. It is read per frame rather than per
+			// destination because a plan can hold frames masked differently
+			// and importing the wrong half is not recoverable by re-running.
+			op := routeOp(target, ops.Halves(it.record.Mask), r.moveOnImport)
+			actions, err := op.Plan([]scan.PhotoGroup{it.group})
+			if err != nil {
+				return plan{}, fmt.Errorf("plan %s for %s: %w", dest, it.group.Stem, err)
+			}
+			it.actions = actions
+			summary.Frames++
+			summary.Files += len(actions)
+			collectSizes(sizes, it.group)
+			for _, a := range actions {
+				summary.Bytes += sizes[a.Src]
+			}
+			p.planned = append(p.planned, it)
+			p.actions = append(p.actions, actions...)
+		}
+		if summary.Frames == 0 {
+			continue
+		}
+		p.dto.Destinations = append(p.dto.Destinations, summary)
+		parts = append(parts, fmt.Sprintf("%s %s (%d %s)",
+			importVerb(r.moveOnImport), dest, summary.Frames, pluralFrames(summary.Frames)))
+	}
+
 	p.dto.Actions = make([]ActionDTO, 0, len(p.actions))
 	for _, a := range p.actions {
-		p.dto.Actions = append(p.dto.Actions, ActionDTO{Verb: string(a.Verb), Src: a.Src})
+		p.dto.Actions = append(p.dto.Actions, ActionDTO{Verb: string(a.Verb), Src: a.Src, Dst: a.Dst})
 		p.dto.TotalBytes += sizes[a.Src]
 	}
 	p.dto.Description = "Nothing to apply"
@@ -275,6 +373,94 @@ func buildPlan(items []planned, cut config.CutScope) (plan, error) {
 		p.dto.Description = strings.Join(parts, ", ")
 	}
 	return p, nil
+}
+
+// splitRouted separates the frames going somewhere from the frames staying
+// where they are. A cut with a destination is a contradiction the store
+// already refuses to create; if one turns up anyway the cut wins, because
+// deleting something the user asked to keep is the worse mistake.
+func splitRouted(items []planned) (staying []planned, routed map[string][]planned) {
+	routed = map[string][]planned{}
+	for _, it := range items {
+		if it.record.Destination != "" && it.record.Verdict == decide.Keep {
+			routed[it.record.Destination] = append(routed[it.record.Destination], it)
+			continue
+		}
+		staying = append(staying, it)
+	}
+	return staying, routed
+}
+
+// routeOp builds the op that carries one frame's surviving halves to target.
+// The op reads EXIF only if the destination template asks it to.
+func routeOp(target string, halves ops.Halves, move bool) ops.Op {
+	if move {
+		return ops.MoveTo{Dest: target, Halves: halves, Metadata: frameMetadata}
+	}
+	return ops.CopyTo{Dest: target, Halves: halves, Metadata: frameMetadata}
+}
+
+// frameMetadata answers {camera} and {lens} for one frame. It is called only
+// when a destination template names them, so the usual import pays nothing for
+// it. A frame whose EXIF will not read answers with nothing, and those parts
+// of the path collapse rather than the import failing.
+func frameMetadata(g scan.PhotoGroup) (camera, lens string) {
+	ref := g.Raw
+	if ref == nil {
+		ref = g.Jpeg
+	}
+	if ref == nil {
+		return "", ""
+	}
+	fields, err := exif.Read(ref.Path)
+	if err != nil {
+		return "", ""
+	}
+	camera = strings.TrimSpace(fields.Model.Value)
+	if camera == "" {
+		camera = strings.TrimSpace(fields.Make.Value)
+	}
+	return camera, strings.TrimSpace(fields.LensModel.Value)
+}
+
+func routeVerb(move bool) string {
+	if move {
+		return string(ops.VerbMove)
+	}
+	return string(ops.VerbCopy)
+}
+
+func importVerb(move bool) string {
+	if move {
+		return "Move to"
+	}
+	return "Copy to"
+}
+
+// resolveDestination turns a recorded destination into a real path. An
+// absolute path or one starting with ~ is taken at its word; anything else is
+// library-relative, which is what makes "2026/portraits" mean the same thing
+// on every machine the library is opened on.
+func resolveDestination(dest, libraryRoot string) (string, error) {
+	trimmed := strings.TrimSpace(dest)
+	if trimmed == "" {
+		return "", errors.New("a routed frame has no destination")
+	}
+	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "~") {
+		return expandPath(trimmed)
+	}
+	return filepath.Join(libraryRoot, trimmed), nil
+}
+
+// sortedKeys fixes the order destinations are planned in, so the same set of
+// frames always produces the same plan and the same summary.
+func sortedKeys(m map[string][]planned) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // opFor maps a recorded verdict onto the op that carries it out. A keep holds
@@ -341,12 +527,17 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	}
 
 	var cleared []decide.VerdictItem
+	var pruned []string
 	for _, it := range items {
 		done := true
+		removed := false
 		for _, a := range it.actions {
 			if outcomes[a.Src] != journal.OutcomeOK {
 				done = false
 				break
+			}
+			if a.Verb == ops.VerbTrash || a.Verb == ops.VerbMove {
+				removed = true
 			}
 		}
 		if !done {
@@ -355,7 +546,18 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 		cleared = append(cleared, decide.VerdictItem{
 			Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Verdict: decide.Undecided,
 		})
+		if removed {
+			pruned = append(pruned, it.hash)
+		}
 	}
+
+	// The catalogue must not keep frames whose files just left their folder.
+	// Best-effort: a prune failure never fails the apply — the files have
+	// already moved — and the self-healing reindex catches anything missed.
+	if len(pruned) > 0 {
+		_ = NewLibraryIndexService(s.app).PruneApplied(pruned)
+	}
+
 	if len(cleared) == 0 {
 		return nil
 	}

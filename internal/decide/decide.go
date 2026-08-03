@@ -38,11 +38,15 @@ const (
 const MaxRating = 5
 
 // Record is everything the store remembers about one frame. A record with no
-// verdict and no rating is not stored at all.
+// verdict, no rating and no destination is not stored at all.
 type Record struct {
 	Verdict Verdict
 	Mask    Mask
 	Rating  int
+	// Destination is where the frame is routed on apply: a library-relative or
+	// absolute directory, possibly holding token templates. Empty means the
+	// frame goes nowhere and stays where it is.
+	Destination string
 }
 
 // VerdictItem is one frame's verdict in a batch.
@@ -62,6 +66,14 @@ type RatingItem struct {
 	Rating int
 }
 
+// DestinationItem is one frame's destination in a batch.
+type DestinationItem struct {
+	Hash        string
+	Dir         string
+	Stem        string
+	Destination string
+}
+
 // Store is the decision database.
 //
 // Rows are keyed on the content hash rather than the path, which is what makes
@@ -73,15 +85,24 @@ type Store struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS decisions (
-	hash       TEXT PRIMARY KEY,
-	dir        TEXT NOT NULL,
-	stem       TEXT NOT NULL,
-	verdict    TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
-	mask       TEXT NOT NULL CHECK (mask IN ('rj','r','j')),
-	rating     INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 5),
-	updated_at INTEGER NOT NULL
+	hash        TEXT PRIMARY KEY,
+	dir         TEXT NOT NULL,
+	stem        TEXT NOT NULL,
+	verdict     TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
+	mask        TEXT NOT NULL CHECK (mask IN ('rj','r','j')),
+	rating      INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 5),
+	destination TEXT NOT NULL DEFAULT '',
+	updated_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS decisions_dir ON decisions(dir);
+CREATE TABLE IF NOT EXISTS destinations (
+	path         TEXT PRIMARY KEY,
+	label        TEXT NOT NULL DEFAULT '',
+	last_used_at INTEGER NOT NULL DEFAULT 0,
+	use_count    INTEGER NOT NULL DEFAULT 0,
+	pinned       INTEGER NOT NULL DEFAULT 0,
+	slot         INTEGER
+);
 `
 
 // Open opens the decision database at path, creating the file and schema if
@@ -116,14 +137,23 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// migrate rewrites a database that still holds the single-column decision
-// model into verdicts, masks and ratings. It is a no-op on a fresh database
-// and on one that has already been through it, so it can run on every Open.
+// migrate brings a database written by an older build up to the current
+// schema, oldest step first. Every step is a no-op on a database that has
+// already been through it, so the chain runs on every Open.
+func migrate(db *sql.DB) error {
+	if err := migrateToVerdicts(db); err != nil {
+		return err
+	}
+	return migrateToDestinations(db)
+}
+
+// migrateToVerdicts rewrites a database that still holds the single-column
+// decision model into verdicts, masks and ratings.
 //
 // The four old decisions each describe a keep with a mask, except drop_all
 // which is a cut. Anything else — an undecided row, or a value from a
 // hand-edited database — has no verdict to migrate to and is dropped.
-func migrate(db *sql.DB) error {
+func migrateToVerdicts(db *sql.DB) error {
 	cols, err := columns(db, "decisions")
 	if err != nil {
 		return err
@@ -147,7 +177,7 @@ func migrate(db *sql.DB) error {
 		`DROP INDEX IF EXISTS decisions_dir`,
 		`ALTER TABLE decisions RENAME TO decisions_old`,
 		schema,
-		`INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, updated_at)
+		`INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
 		 SELECT hash, dir, stem,
 		        CASE decision WHEN 'drop_all' THEN 'cut' ELSE 'keep' END,
 		        CASE decision
@@ -155,7 +185,7 @@ func migrate(db *sql.DB) error {
 		             WHEN 'drop_jpeg' THEN 'r'
 		             ELSE 'rj'
 		        END,
-		        0, updated_at
+		        0, '', updated_at
 		 FROM decisions_old
 		 WHERE decision IN ('keep_all','drop_raw','drop_jpeg','drop_all')`,
 		`DROP TABLE decisions_old`,
@@ -166,6 +196,23 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// migrateToDestinations adds the per-frame destination to a verdict-era
+// database. The destinations table itself needs no migration: Open creates it
+// if it is missing, and there is nothing to carry over into it.
+func migrateToDestinations(db *sql.DB) error {
+	cols, err := columns(db, "decisions")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 || cols["destination"] {
+		return nil // fresh database, or already migrated
+	}
+	if _, err := db.Exec(`ALTER TABLE decisions ADD COLUMN destination TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("decide: add destination column: %w", err)
+	}
+	return nil
 }
 
 // columns returns the column names of table, empty when the table does not
@@ -193,20 +240,23 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// upsertVerdictSQL writes a verdict. Clearing one takes the destination with
+// it: a frame nobody is keeping is not being routed anywhere either.
 const upsertVerdictSQL = `
-INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, updated_at)
-VALUES (?, ?, ?, ?, ?, 0, ?)
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
+VALUES (?, ?, ?, ?, ?, 0, '', ?)
 ON CONFLICT(hash) DO UPDATE SET
 	dir = excluded.dir,
 	stem = excluded.stem,
 	verdict = excluded.verdict,
 	mask = excluded.mask,
+	destination = CASE WHEN excluded.verdict = '' THEN '' ELSE decisions.destination END,
 	updated_at = excluded.updated_at
 `
 
 const upsertRatingSQL = `
-INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, updated_at)
-VALUES (?, ?, ?, '', 'rj', ?, ?)
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
+VALUES (?, ?, ?, '', 'rj', ?, '', ?)
 ON CONFLICT(hash) DO UPDATE SET
 	dir = excluded.dir,
 	stem = excluded.stem,
@@ -214,8 +264,27 @@ ON CONFLICT(hash) DO UPDATE SET
 	updated_at = excluded.updated_at
 `
 
-// pruneSQL drops a row that now says nothing: no verdict and no rating.
-const pruneSQL = `DELETE FROM decisions WHERE hash = ? AND verdict = '' AND rating = 0`
+// upsertDestinationSQL routes a frame. Naming a destination is a way of saying
+// the frame is worth keeping, so an undecided frame becomes a keep — the same
+// implication a mask toggle carries. A verdict the user has actually typed is
+// left exactly as it is, including a cut.
+const upsertDestinationSQL = `
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
+VALUES (?, ?, ?, ?, 'rj', 0, ?, ?)
+ON CONFLICT(hash) DO UPDATE SET
+	dir = excluded.dir,
+	stem = excluded.stem,
+	verdict = CASE
+		WHEN decisions.verdict = '' AND excluded.destination <> '' THEN 'keep'
+		ELSE decisions.verdict
+	END,
+	destination = excluded.destination,
+	updated_at = excluded.updated_at
+`
+
+// pruneSQL drops a row that now says nothing: no verdict, no rating and
+// nowhere to go.
+const pruneSQL = `DELETE FROM decisions WHERE hash = ? AND verdict = '' AND rating = 0 AND destination = ''`
 
 // SetVerdict records verdict v with mask m for the frame whose primary file
 // hashes to hash, remembering the directory and stem it was last seen at.
@@ -264,6 +333,28 @@ func (s *Store) SetRatingBatch(items []RatingItem) error {
 	})
 }
 
+// SetDestination routes a frame to dest, or clears its routing when dest is
+// empty. Clearing the destination leaves the verdict alone: the frame is still
+// being kept, it just stays where it is.
+func (s *Store) SetDestination(hash, dir, stem, dest string) error {
+	return s.inTx(func(tx *sql.Tx) error {
+		return applyDestination(tx, DestinationItem{Hash: hash, Dir: dir, Stem: stem, Destination: dest})
+	})
+}
+
+// SetDestinationBatch routes many frames in one transaction, all or nothing.
+// Routing a whole selection is one keystroke, so it arrives as one batch.
+func (s *Store) SetDestinationBatch(items []DestinationItem) error {
+	return s.inTx(func(tx *sql.Tx) error {
+		for _, it := range items {
+			if err := applyDestination(tx, it); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // applyVerdict writes one verdict inside a transaction.
 func applyVerdict(tx *sql.Tx, it VerdictItem) error {
 	if err := validVerdict(it.Verdict, it.Mask, it.Stem); err != nil {
@@ -275,6 +366,25 @@ func applyVerdict(tx *sql.Tx, it VerdictItem) error {
 	}
 	if _, err := tx.Exec(upsertVerdictSQL,
 		it.Hash, it.Dir, it.Stem, string(it.Verdict), string(mask), time.Now().Unix()); err != nil {
+		return err
+	}
+	_, err := tx.Exec(pruneSQL, it.Hash)
+	return err
+}
+
+// applyDestination writes one destination inside a transaction. A frame with
+// no identity hash is refused rather than stored: every such frame would share
+// the one empty key and so route the rest of them wherever the last one went.
+func applyDestination(tx *sql.Tx, it DestinationItem) error {
+	if it.Hash == "" {
+		return fmt.Errorf("decide: no frame identity for %s: it cannot be routed", it.Stem)
+	}
+	verdict := ""
+	if it.Destination != "" {
+		verdict = string(Keep)
+	}
+	if _, err := tx.Exec(upsertDestinationSQL,
+		it.Hash, it.Dir, it.Stem, verdict, it.Destination, time.Now().Unix()); err != nil {
 		return err
 	}
 	_, err := tx.Exec(pruneSQL, it.Hash)
@@ -328,8 +438,8 @@ func (m Mask) valid() bool {
 func (s *Store) Get(hash string) (Record, bool, error) {
 	var r Record
 	err := s.db.QueryRow(
-		`SELECT verdict, mask, rating FROM decisions WHERE hash = ?`, hash,
-	).Scan(&r.Verdict, &r.Mask, &r.Rating)
+		`SELECT verdict, mask, rating, destination FROM decisions WHERE hash = ?`, hash,
+	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination)
 	if err == sql.ErrNoRows {
 		return Record{}, false, nil
 	}
@@ -343,7 +453,7 @@ func (s *Store) Get(hash string) (Record, bool, error) {
 // dir. This is the one query the grid runs when a folder is opened.
 func (s *Store) ForDir(dir string) (map[string]Record, error) {
 	rows, err := s.db.Query(
-		`SELECT stem, verdict, mask, rating FROM decisions WHERE dir = ? ORDER BY updated_at`, dir)
+		`SELECT stem, verdict, mask, rating, destination FROM decisions WHERE dir = ? ORDER BY updated_at`, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +463,7 @@ func (s *Store) ForDir(dir string) (map[string]Record, error) {
 	for rows.Next() {
 		var stem string
 		var r Record
-		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating); err != nil {
+		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating, &r.Destination); err != nil {
 			return nil, err
 		}
 		// Ordered by updated_at, so if an edited file left a stale row under

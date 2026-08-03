@@ -39,6 +39,11 @@ type GroupDTO struct {
 	Rating   int      `json:"rating"`  // 0-5, 0 is unrated
 	Hash     string   `json:"hash"`    // identity of the primary file, empty if unreadable
 
+	// Destination is where an apply would route this frame, empty when it
+	// stays where it is. Library-relative or absolute, and possibly a token
+	// template rather than a literal path.
+	Destination string `json:"destination"`
+
 	// Decision is the verdict and mask named in the pre-verdict vocabulary,
 	// kept so the grid keeps rendering until it is restyled onto verdicts.
 	Decision string `json:"decision"` // none | keep_all | drop_raw | drop_jpeg | drop_all
@@ -110,19 +115,20 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 // remembered across a reopen.
 func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
 	dto := GroupDTO{
-		Dir:      g.Dir,
-		Stem:     g.Stem,
-		Kind:     g.Kind.String(),
-		HasRaw:   g.Raw != nil,
-		HasJpeg:  g.Jpeg != nil,
-		Sidecars: len(g.Sidecars),
-		Shot:     g.Shot.Format(time.RFC3339),
-		Warnings: append([]string{}, g.Warnings...),
-		Verdict:  string(rec.Verdict),
-		Mask:     string(rec.Mask),
-		Rating:   rec.Rating,
-		Hash:     hash,
-		Decision: legacyDecision(rec),
+		Dir:         g.Dir,
+		Stem:        g.Stem,
+		Kind:        g.Kind.String(),
+		HasRaw:      g.Raw != nil,
+		HasJpeg:     g.Jpeg != nil,
+		Sidecars:    len(g.Sidecars),
+		Shot:        g.Shot.Format(time.RFC3339),
+		Warnings:    append([]string{}, g.Warnings...),
+		Verdict:     string(rec.Verdict),
+		Mask:        string(rec.Mask),
+		Rating:      rec.Rating,
+		Destination: rec.Destination,
+		Hash:        hash,
+		Decision:    legacyDecision(rec),
 	}
 	if g.Raw != nil {
 		dto.RawPath = g.Raw.Path

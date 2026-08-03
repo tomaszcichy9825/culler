@@ -122,6 +122,27 @@ export interface CatalogStorage {
   volumes: CatalogStorageVolume[];
 }
 
+/**
+ * One folder in the tree. Mirrors the backend's TreeNodeDTO.
+ *
+ * `frames` counts everything at or under the folder; `direct` is what is filed
+ * in the folder itself. `undecided` is measured against the decision store as
+ * it stands now, or UNDECIDED_UNKNOWN on a folder too big to have counted.
+ */
+export interface CatalogTreeNode {
+  path: string;
+  name: string;
+  frames: number;
+  direct: number;
+  undecided: number;
+  bytes: number;
+  hasDirs: boolean;
+  isRoot: boolean;
+}
+
+/** What a node reports when its undecided count was not worked out. */
+export const UNDECIDED_UNKNOWN = -1;
+
 /** What an index pass reports. Mirrors the backend's CatalogProgress. */
 export interface CatalogProgress {
   root: string;
@@ -145,6 +166,13 @@ export interface CatalogSource {
   Counts(query: string, facets: CatalogFacets): Promise<CatalogCounts>;
   Sessions(gapHours: number): Promise<CatalogSession[]>;
   Storage(): Promise<CatalogStorage>;
+  /**
+   * The tree's two calls. They are optional so that a shell which has not
+   * wired them yet still type-checks: without them the tree draws the roots
+   * flat, with no expansion, rather than failing to mount.
+   */
+  TreeRoots?(): Promise<CatalogTreeNode[]>;
+  TreeChildren?(dir: string): Promise<CatalogTreeNode[]>;
 }
 
 export const NO_FACETS: CatalogFacets = {
@@ -173,14 +201,26 @@ export function connectCatalog(backend: CatalogSource) {
   source = backend;
 }
 
-let openFolderHandler: ((dir: string) => void) | null = null;
+/**
+ * OpenFolderHandler is how LIBRARY hands a folder to CULL.
+ *
+ * `dir` is the folder to load. `focusHash` names one frame in it and is what a
+ * search result passes, so that opening a tile lands on the frame the user was
+ * looking at rather than at the top of its folder. A tree node and a session
+ * row have no one frame in mind and leave it out; a handler that does not know
+ * the hash — the frame has moved, the folder has changed — is free to ignore
+ * it and open the folder anyway.
+ */
+export type OpenFolderHandler = (dir: string, focusHash?: string) => void;
+
+let openFolderHandler: OpenFolderHandler | null = null;
 
 /**
  * onOpenFolder registers what happens when a result is opened. The shell hands
  * over its own openFolder action; this module does not reach into it, so that
  * LIBRARY has no opinion about how CULL loads a folder.
  */
-export function onOpenFolder(handler: (dir: string) => void) {
+export function onOpenFolder(handler: OpenFolderHandler) {
   openFolderHandler = handler;
 }
 
@@ -204,7 +244,18 @@ class LibraryState {
   /** What the facet lists are drawn from, or null before the first search. */
   counts = $state<CatalogCounts | null>(null);
 
+  /** The tree's top level, and the children of every node opened so far. */
+  treeRoots = $state<CatalogTreeNode[]>([]);
+  treeChildren = $state<Record<string, CatalogTreeNode[]>>({});
+  /** Paths whose children are showing, and paths waiting for theirs. */
+  expanded = $state<Set<string>>(new Set());
+  loadingNodes = $state<Set<string>>(new Set());
+  /** Which tree row has the keyboard, as an index into the visible rows. */
+  treeIndex = $state(0);
+
   sessions = $state<CatalogSession[]>([]);
+  /** Which session row has the keyboard. */
+  sessionIndex = $state(0);
   /** The break that ends a session, in hours. Four is the backend's default. */
   sessionGapHours = $state(4);
   selectedSession = $state<string | null>(null);
@@ -328,18 +379,27 @@ class LibraryState {
     this.focusIndex = index;
   }
 
-  /** open hands a result's folder to the shell, which loads it into CULL. */
+  /**
+   * open hands a result to the shell, which loads its folder into CULL and
+   * focuses the frame itself — the tile the user pressed ⏎ on is the one they
+   * arrive at.
+   */
   open(frame: CatalogFrame) {
-    this.openDir(frame.dir);
+    if (frame.dir !== "") openFolderHandler?.(frame.dir, frame.hash);
   }
 
-  /** openDir is the same handoff from a session or a root, which has no frame. */
+  /**
+   * openDir is the same handoff from a tree node or a session row, which name
+   * a folder and no particular frame in it.
+   */
   openDir(dir: string) {
     if (dir !== "") openFolderHandler?.(dir);
   }
 
   selectSession(id: string) {
     this.selectedSession = id;
+    const index = this.sessions.findIndex((s) => s.id === id);
+    if (index >= 0) this.sessionIndex = index;
   }
 
   async loadRoots() {
@@ -351,11 +411,107 @@ class LibraryState {
     }
   }
 
+  // --- the folder tree ---------------------------------------------------
+  // Lazy: the top level arrives with the roots, and a node's children are
+  // fetched the first time it is opened. The counts under a folder are
+  // measured against the decision store, which is not free, so nothing is
+  // fetched for a node the user has not asked to see.
+
+  #treeAsked = false;
+
+  /**
+   * ensureTree fills the top level the first time the tree is drawn, so the
+   * pane is populated whether or not anything else has refreshed LIBRARY yet.
+   * Subsequent mounts reuse what is already there; loadTree is the way to ask
+   * again.
+   */
+  async ensureTree() {
+    if (this.#treeAsked) return;
+    this.#treeAsked = true;
+    if (this.roots.length === 0) await this.loadRoots();
+    await this.loadTree();
+  }
+
+  /** loadTree replaces the top level. Children already loaded are kept. */
+  async loadTree() {
+    this.#treeAsked = true;
+    if (source?.TreeRoots === undefined) {
+      // A shell that has not wired the tree still gets the roots, flat.
+      this.treeRoots = this.roots.map((root) => ({
+        path: root.path,
+        name: basename(root.path),
+        frames: root.frames,
+        direct: root.frames,
+        undecided: UNDECIDED_UNKNOWN,
+        bytes: root.bytes,
+        hasDirs: false,
+        isRoot: true,
+      }));
+      return;
+    }
+    try {
+      this.treeRoots = (await source.TreeRoots()) ?? [];
+    } catch (error) {
+      this.error = message(error);
+    }
+  }
+
+  /** The children of a node, or undefined while they have never been asked for. */
+  childrenOf(path: string): CatalogTreeNode[] | undefined {
+    return this.treeChildren[path];
+  }
+
+  async expandNode(path: string) {
+    if (this.expanded.has(path)) return;
+    this.expanded = new Set(this.expanded).add(path);
+    if (this.treeChildren[path] !== undefined || source?.TreeChildren === undefined) return;
+
+    this.loadingNodes = new Set(this.loadingNodes).add(path);
+    try {
+      const children = (await source.TreeChildren(path)) ?? [];
+      this.treeChildren = { ...this.treeChildren, [path]: children };
+    } catch (error) {
+      this.error = message(error);
+      // Left unexpanded rather than showing an empty folder that is not empty.
+      this.collapseNode(path);
+    } finally {
+      const loading = new Set(this.loadingNodes);
+      loading.delete(path);
+      this.loadingNodes = loading;
+    }
+  }
+
+  collapseNode(path: string) {
+    const expanded = new Set(this.expanded);
+    expanded.delete(path);
+    this.expanded = expanded;
+  }
+
+  async toggleNode(path: string) {
+    if (this.expanded.has(path)) this.collapseNode(path);
+    else await this.expandNode(path);
+  }
+
+  focusNode(index: number) {
+    this.treeIndex = Math.max(0, index);
+  }
+
+  focusSession(index: number) {
+    if (index < 0 || index >= this.sessions.length) return;
+    this.sessionIndex = index;
+    this.selectedSession = this.sessions[index].id;
+  }
+
   async addRoot(dir: string) {
     if (source === null || dir.trim() === "") return;
     this.error = null;
     try {
       this.roots = await source.RegisterRoot(dir.trim());
+      // A folder added on top of folders already registered absorbs them, so
+      // the top of the tree can have changed shape before a single frame has
+      // been indexed. Redraw it now rather than at the end of the pass.
+      this.treeChildren = {};
+      await this.loadTree();
       await this.reindex(dir.trim());
     } catch (error) {
       this.error = message(error);
@@ -390,6 +546,10 @@ class LibraryState {
     try {
       this.sessions = await source.Sessions(this.sessionGapHours);
       if (this.session === null) this.selectedSession = this.sessions[0]?.id ?? null;
+      this.sessionIndex = Math.max(
+        0,
+        this.sessions.findIndex((s) => s.id === this.selectedSession),
+      );
     } catch (error) {
       this.error = message(error);
     }
@@ -412,6 +572,10 @@ class LibraryState {
   /** refresh reloads everything the catalogue can answer. */
   async refresh() {
     await Promise.all([this.loadRoots(), this.search(), this.loadSessions(), this.loadStorage()]);
+    // After the roots, because the tree falls back to them when the shell has
+    // not wired the tree calls.
+    this.treeChildren = {};
+    await this.loadTree();
   }
 
   /**

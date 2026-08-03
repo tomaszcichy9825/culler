@@ -6,6 +6,7 @@
   // that is not there read the same at a glance and mean opposite things.
 
   import { queuedImage } from "../lib/imageQueue";
+  import { leafOf } from "../lib/palette.svelte";
   import { previewURL } from "../lib/preview";
   import { app } from "../lib/state.svelte";
   import { halfState, HALVES, maskOf, verdictOf, verdictWord } from "../lib/verdict";
@@ -33,6 +34,10 @@
   let verdict = $derived(verdictOf(group));
   let stars = $derived(Math.max(0, group.rating));
   let warnings = $derived(group.warnings ?? []);
+  // Where this frame is going, if anywhere. The leaf is all a tile has room
+  // for; the full path is on the title, which is also what a screenshot of a
+  // routed sheet needs to be checkable.
+  let destination = $derived(group.destination ?? "");
 </script>
 
 <button
@@ -94,6 +99,9 @@
 
   <div class="footer">
     <span class="stem" title={group.stem}>{group.stem}</span>
+    {#if destination !== ""}
+      <span class="dest" title={destination}>→ {leafOf(destination)}</span>
+    {/if}
   </div>
 </button>
 
@@ -291,6 +299,23 @@
     flex: 1 1 auto;
     min-width: 0;
     color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The chip takes the width it needs before the stem does: which frames are
+     routed where is the thing being scanned for on a sheet mid-import. */
+  .dest {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 60%;
+    padding: 1px 4px;
+    border-radius: 2px;
+    background: var(--accent-wash-16);
+    color: var(--accent);
+    font-size: 9.5px;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
