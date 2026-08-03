@@ -33,7 +33,7 @@ func catalogued(t *testing.T) (*LibraryIndexService, string) {
 	if _, err := s.RegisterRoot(root); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(root); err != nil {
+	if _, err := s.reindex(root); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 	return s, root
@@ -86,7 +86,7 @@ func TestSearchShowsDecisionsMadeSinceTheIndexPass(t *testing.T) {
 func TestSearchDropsAVerdictTakenBackSinceTheIndexPass(t *testing.T) {
 	s, root := catalogued(t)
 	hash := mark(t, s, "DSCF0001", decide.Keep, 0)
-	if err := s.reindex(root); err != nil {
+	if _, err := s.reindex(root); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestRegisterRootAbsorbsTheRootsItContains(t *testing.T) {
 		if _, err := s.RegisterRoot(root); err != nil {
 			t.Fatalf("RegisterRoot %s: %v", root, err)
 		}
-		if err := s.reindex(root); err != nil {
+		if _, err := s.reindex(root); err != nil {
 			t.Fatalf("reindex %s: %v", root, err)
 		}
 	}
@@ -262,7 +262,7 @@ func TestRegisterRootAbsorbsTheRootsItContains(t *testing.T) {
 			nodes[0].Frames, before.Total)
 	}
 
-	if err := s.reindex(photos); err != nil {
+	if _, err := s.reindex(photos); err != nil {
 		t.Fatalf("reindex the parent: %v", err)
 	}
 	after, err := s.Search("", FacetsDTO{}, 0, 0)
@@ -419,7 +419,7 @@ func BenchmarkOverlay(b *testing.B) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		b.Fatal(err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		b.Fatal(err)
 	}
 	store, err := s.catalogue()

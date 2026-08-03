@@ -360,10 +360,17 @@ func (s *LibraryIndexService) Reindex(dir string) error {
 	s.running.Add(1)
 	go func() {
 		defer s.running.Done()
-		defer s.indexing.Store(false)
-		if err := s.reindex(root); err != nil {
-			s.report(CatalogProgress{Root: root, Done: true, Error: err.Error()})
+		stats, err := s.reindex(root)
+		// The flag clears before the final report goes out: a consumer that
+		// hears Done and immediately asks Indexing() must be told no. The
+		// walk's own per-root Done events are suppressed for the same reason —
+		// this pass-end report is the only Done anyone sees.
+		s.indexing.Store(false)
+		final := CatalogProgress{Root: root, Dirs: stats.Dirs, Frames: stats.Frames, Done: true}
+		if err != nil {
+			final.Error = err.Error()
 		}
+		s.report(final)
 	}()
 	return nil
 }
@@ -371,14 +378,14 @@ func (s *LibraryIndexService) Reindex(dir string) error {
 // reindex walks one root, or every registered root when root is empty, and
 // reports as it goes. It runs on the caller's goroutine; Reindex is the
 // version the frontend calls.
-func (s *LibraryIndexService) reindex(root string) error {
+func (s *LibraryIndexService) reindex(root string) (catalog.Stats, error) {
 	store, err := s.catalogue()
 	if err != nil {
-		return err
+		return catalog.Stats{}, err
 	}
 	decisions, err := s.app.decisions()
 	if err != nil {
-		return err
+		return catalog.Stats{}, err
 	}
 
 	opts := catalog.IndexOptions{
@@ -394,22 +401,24 @@ func (s *LibraryIndexService) reindex(root string) error {
 			return string(rec.Verdict), rec.Rating
 		},
 		Progress: func(p catalog.Progress) {
+			// Per-root Done events are withheld: Reindex's goroutine sends
+			// the one pass-end report, after the indexing flag has cleared.
+			if p.Done {
+				return
+			}
 			s.report(CatalogProgress{
 				Root:   p.Root,
 				Dir:    p.Dir,
 				Dirs:   p.Dirs,
 				Frames: p.Frames,
-				Done:   p.Done,
 			})
 		},
 	}
 
 	if root == "" {
-		_, err = store.IndexAll(nil, opts)
-	} else {
-		_, err = store.Index(root, opts)
+		return store.IndexAll(nil, opts)
 	}
-	return err
+	return store.Index(root, opts)
 }
 
 // report publishes one progress record, through the test seam when there is

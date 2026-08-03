@@ -54,7 +54,7 @@ func TestRegisterRootIndexesAndReports(t *testing.T) {
 		t.Errorf("a never-indexed root reports LastIndexed = %q", roots[0].LastIndexed)
 	}
 
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 	roots, err = s.Roots()
@@ -96,7 +96,7 @@ func TestRemoveRootDropsItsFrames(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 	roots, err := s.RemoveRoot(dir)
@@ -140,7 +140,7 @@ func TestSearchReturnsFramesWithTheirDecisions(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestSearchFacetsAndPaging(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestCountsDTO(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestSessionsDTO(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestStorageDTO(t *testing.T) {
 	if _, err := s.RegisterRoot(dir); err != nil {
 		t.Fatalf("RegisterRoot: %v", err)
 	}
-	if err := s.reindex(dir); err != nil {
+	if _, err := s.reindex(dir); err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
 
