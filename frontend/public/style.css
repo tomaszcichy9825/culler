@@ -169,7 +169,52 @@
    The theme resolves to an explicit data-theme on <html> — the inline script in
    index.html reads the system preference before first paint and keeps watching
    it, so the values below live in one place rather than being repeated under a
-   prefers-color-scheme query as well. */
+   prefers-color-scheme query as well.
+
+   ---- how the values that were not drawn were derived ----
+
+   The design extracted one light screen (the cull screen) and the on-light
+   branding plates, so about half of these names have an authored value and the
+   rest do not. Nothing below was picked by eye: the extracted pairs establish
+   six patterns, and every derived value follows one of them. Where a value is
+   derived rather than authored it says so.
+
+   1. Hue is invariant. A token keeps its hue and its family; only lightness
+      moves. Every grey stays on the same cool blue-grey axis (~215°) the dark
+      set uses, and every chromatic token stays its own hue.
+
+   2. Light ranks a surface by what it is, not by how far forward it sits.
+      Dark stacks upward from #0e1013 as a surface comes forward, so the naive
+      derivation is to invert that order — but the extracted values do not do
+      that, and the reason is the caption: paper. A surface that holds content
+      or takes typing is paper (#ffffff — --bg-app, --bg-window, --bg-field);
+      chrome and side panes step down one (#f2f4f7–#f7f8fa); anything inset or
+      recessed — a thumbnail well, an inset value box, a keycap, a progress
+      track — lands in the greys at the bottom (#e7eaf0–#eceef2). A derived
+      surface takes the tier its job puts it in.
+
+   3. A border steps away from its surface, never towards the light. Dark
+      borders are lighter than what they sit on, light borders are darker, and
+      "stronger" means a bigger step in that direction in both themes:
+      dark #23272f → #2b313b → #2f3742 climbs, light #dfe2e8 → #d6dae2 →
+      #c3c9d3 descends, and the hairline sits the other side of the default.
+
+   4. Text compresses at the extremes. The design merged the tiers it drew —
+      --text-hi with --text at #1b1e25, --text-dim with --text-faint at
+      #8e95a3 — so the derived middle tiers are spaced evenly across that
+      range rather than inverted one for one from the dark ramp.
+
+   5. A chromatic token keeps its hue and takes the lightness that carries the
+      same contrast against the new background, which on paper means darker and
+      more saturated: the authored pairs run --keep #98c379 → #45903a and
+      --gold #e5c07b → #a8781c, both about 40–45% lightness. Derived hues
+      (--amber, --violet) are placed at the same lightness on their own hue.
+
+   6. A wash keeps its alpha and swaps only the colour it is mixed from, so the
+      0.07–0.22 family stays one family across both themes. Scrims and shadows
+      keep their geometry; black becomes the cool navy the design used for the
+      light window shadow, rgb(20,26,40), at a lower alpha, because paper needs
+      less separation than a dark room to read as raised. */
 :root[data-theme="light"] {
   color-scheme: light;
 
@@ -177,53 +222,54 @@
   --bg-window: #ffffff;
   --bg-chrome: #f2f4f7;
   --bg-pane: #f7f8fa;
-  --bg-raised: #eceef2;
+  --bg-raised: #eceef2; /* derived — a dialog footer is a recessed strip (2) */
   --bg-tile: #f7f8fa;
   --bg-thumb: #e7eaf0;
   --bg-field: #ffffff;
   --bg-field-alt: #e7eaf0;
   --bg-kbd: #eceef2;
-  --bg-track: #e7eaf0;
-  --bg-row-active: #e8eefa;
-  --bg-row-zebra: #fafbfc;
+  --bg-track: #e7eaf0; /* derived — a track is a well, same tier as the thumb (2) */
+  --bg-row-active: #e8eefa; /* derived — the accent wash laid over paper (2, 6) */
+  --bg-row-zebra: #fafbfc; /* derived — a hair off paper, as the dark zebra is off its window (2) */
 
   --border: #dfe2e8;
-  --border-hair: #e7eaee;
-  --border-faint: #e3e6ec;
+  --border-hair: #e7eaee; /* derived — the far side of the default, towards paper (3) */
+  --border-faint: #e3e6ec; /* derived — between hair and default (3) */
   --border-strong: #d6dae2;
   --border-window: #cbd0d9;
-  --border-dialog: #cbd0d9;
+  --border-dialog: #c3c9d3; /* derived — the strongest border, so a step past the window's (3) */
 
   --text-hi: #1b1e25;
   --text: #1b1e25;
-  --text-2: #2f3541;
-  --text-3: #454c5a;
+  --text-2: #2f3541; /* derived — evenly spaced between --text and --text-muted (4) */
+  --text-3: #454c5a; /* derived — as above (4) */
   --text-muted: #5a616f;
   --text-dim: #8e95a3;
   --text-faint: #8e95a3;
-  --text-ghost: #a2a9b6;
+  --text-ghost: #a2a9b6; /* derived — between --text-dim and --text-dead (4) */
   --text-dead: #adb3bf;
 
   --brand: #0e8792;
-  --brand-hi: #0b6a73;
-  --brand-dark: #0e8792;
+  --brand-hi: #0b6a73; /* derived — hover lifts away from the surface, so darker on paper (3, 5) */
+  --brand-dark: #0e8792; /* the mark's solid square on light is the brand itself */
   --mark-stroke: #b6bdc9;
   --wordmark: #12151b;
   /* No light screen draws focus, selection or an active mode, so the accent is
      the one hue the design did not supply. #61afef fails contrast on white;
-     this is the blue the app already shipped. */
+     this is the blue the app already shipped. Rule 5 in its own right: same
+     blue hue, dropped to the lightness that reads on paper. */
   --accent: #2f6fe0;
-  --on-accent: #ffffff;
+  --on-accent: #ffffff; /* derived — the accent, keep and gold are all dark on paper */
 
   --keep: #45903a;
   --keep-text: #3d7f33;
   --cut: #cc4550;
   --cut-text: #c03b46;
   --undecided: #cbd0d9;
-  --amber: #a05a12;
+  --amber: #a05a12; /* derived — the dark amber's hue at the authored light lightness (5) */
   --gold: #a8781c;
-  --violet: #8d3fb0;
-  --neutral-bar: #cbd0d9;
+  --violet: #8d3fb0; /* derived — as above (5) */
+  --neutral-bar: #cbd0d9; /* derived — the losing bar reads as a well, not as ink (2) */
 
   --accent-wash-10: rgba(47, 111, 224, 0.1);
   --accent-wash-14: rgba(47, 111, 224, 0.14);
