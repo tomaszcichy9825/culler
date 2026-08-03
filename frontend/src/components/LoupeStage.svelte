@@ -136,13 +136,22 @@
 </div>
 
 <style>
+  /* Flex, not grid, and the distinction is the whole reason the image used to
+     hang off the bottom of the stage. A grid item's `max-height: 100%`
+     resolves against its track, and the single implicit row was auto-sized to
+     the photograph's own height — so the track grew past the stage, the
+     percentage ceiling never bit, and the image was laid out from the top-left
+     of a box taller than the one clipping it. A flex item's percentage
+     resolves against the flex container, which is the box that does the
+     clipping, so the image can never be larger than what is on screen. */
   .stage {
     position: relative;
     flex: 1;
     min-width: 0;
     min-height: 0;
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     overflow: hidden;
     background: var(--bg-app);
   }

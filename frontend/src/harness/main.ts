@@ -19,7 +19,7 @@
 
 import { flushSync, mount } from "svelte";
 import type { GroupDTO } from "../lib/bindings";
-import { app } from "../lib/state.svelte";
+import { app, loupe } from "../lib/state.svelte";
 import Filmstrip from "../components/Filmstrip.svelte";
 import LoupeFirst from "../components/LoupeFirst.svelte";
 import LoupeOverlay from "../components/LoupeOverlay.svelte";
@@ -484,6 +484,160 @@ function loupeOverlay() {
   eq("overlay · the strip moves the app's focus", picked.at(-1), 6);
 }
 
+// ---- the stage frames the photograph -----------------------------------------
+
+// The overlay used to hang the image off the bottom of its stage: a grid item's
+// `max-height: 100%` resolves against its track, and the single implicit row was
+// auto-sized to the photograph, so the ceiling never bit and a 3:2 frame ran 68px
+// past the clip. The image has to sit inside the stage, centred, at any window
+// the app can be dragged to — which is the point of checking three of them.
+//
+// The preview endpoint is not up under the bench, so the stage is given an SVG
+// with real intrinsic dimensions. Layout does not care where the pixels came
+// from; it cares that the element reports 3000×2000.
+/**
+ * inner is the box an image actually has to fit inside: the element's rectangle
+ * less its border and its padding. The overlay's stage is framed and 1b's is
+ * padded, and measuring either against `getBoundingClientRect` would call a
+ * correctly sized image two pixels short.
+ */
+function inner(el: HTMLElement): DOMRect {
+  const r = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  const px = (v: string) => parseFloat(v) || 0;
+  const left = r.left + px(s.borderLeftWidth) + px(s.paddingLeft);
+  const top = r.top + px(s.borderTopWidth) + px(s.paddingTop);
+  const right = r.right - px(s.borderRightWidth) - px(s.paddingRight);
+  const bottom = r.bottom - px(s.borderBottomWidth) - px(s.paddingBottom);
+  return new DOMRect(left, top, right - left, bottom - top);
+}
+
+async function loupeFraming() {
+  const shapes: [number, number][] = [
+    [3000, 2000], // landscape, wider than the stage
+    [2000, 3000], // portrait, taller than the stage
+  ];
+  const windows: [number, number][] = [
+    [1440, 820],
+    [1024, 640],
+    [1920, 1200],
+  ];
+
+  for (const [w, h] of windows) {
+    for (const [nw, nh] of shapes) {
+      const host = stage(w, h);
+      mount(LoupeOverlay, { target: host, props: { groups, index: 0, onfocus: () => {}, onrating: () => {} } });
+      flushSync();
+
+      const box = host.querySelector<HTMLElement>(".stage")!;
+      const img = host.querySelector<HTMLImageElement>(".stage img")!;
+      await new Promise<void>((done) => {
+        img.onload = () => done();
+        img.onerror = () => done();
+        img.src =
+          "data:image/svg+xml;utf8," +
+          encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${nw}" height="${nh}"></svg>`);
+      });
+      flushSync();
+
+      const s = inner(box);
+      const i = img.getBoundingClientRect();
+      const shape = `${nw}×${nh} at ${w}×${h}`;
+      const seen = `stage ${Math.round(s.width)}×${Math.round(s.height)}, image ${Math.round(i.width)}×${Math.round(i.height)} at ${Math.round(i.left - s.left)},${Math.round(i.top - s.top)}`;
+      check(
+        `loupe · ${shape} · the whole image is inside the stage`,
+        i.left >= s.left - 1 && i.right <= s.right + 1 && i.top >= s.top - 1 && i.bottom <= s.bottom + 1,
+        seen,
+      );
+      check(
+        `loupe · ${shape} · and centred in it`,
+        Math.abs(i.left - s.left - (s.right - i.right)) <= 1 && Math.abs(i.top - s.top - (s.bottom - i.bottom)) <= 1,
+        seen,
+      );
+      check(
+        `loupe · ${shape} · at the largest size that fits`,
+        Math.abs(s.width - i.width) <= 1 || Math.abs(s.height - i.height) <= 1,
+        seen,
+      );
+      check(`loupe · ${shape} · aspect ratio kept`, Math.abs(i.width / i.height - nw / nh) < 0.01, seen);
+
+      host.remove();
+    }
+  }
+
+  // 1b draws the same stage with 22px of breathing room, which the image has to
+  // stay inside rather than merely inside the clip.
+  const host = stage(1280, 760);
+  mount(LoupeFirst, {
+    target: host,
+    props: { groups, index: 0, onfocus: () => {}, onverdict: () => {}, onrating: () => {} },
+  });
+  flushSync();
+  const box = host.querySelector<HTMLElement>(".stage")!;
+  const img = host.querySelector<HTMLImageElement>(".stage img")!;
+  await new Promise<void>((done) => {
+    img.onload = () => done();
+    img.onerror = () => done();
+    img.src =
+      "data:image/svg+xml;utf8," +
+      encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"></svg>');
+  });
+  flushSync();
+  const s = inner(box);
+  const i = img.getBoundingClientRect();
+  const outer = box.getBoundingClientRect();
+  check(
+    "loupe-first · the image stays inside the stage's 22px padding",
+    i.left >= outer.left + 21 && i.right <= outer.right - 21 && i.top >= outer.top + 21 && i.bottom <= outer.bottom - 21,
+    `stage ${Math.round(outer.width)}×${Math.round(outer.height)}, image ${Math.round(i.width)}×${Math.round(i.height)} at ${Math.round(i.left - outer.left)},${Math.round(i.top - outer.top)}`,
+  );
+  check(
+    "loupe-first · and fills what the padding leaves",
+    Math.abs(s.width - i.width) <= 1 || Math.abs(s.height - i.height) <= 1,
+    `available ${Math.round(s.width)}×${Math.round(s.height)}, image ${Math.round(i.width)}×${Math.round(i.height)}`,
+  );
+
+  // The zoom factor is read off the laid-out width, so a change to how the
+  // image is sized is a change to what 1:1 means. z has to still put one image
+  // pixel on one screen pixel, and the arrows have to still pan within it.
+  const fitted = i.width;
+  app.zoom = true;
+  flushSync();
+  const zoomed = img.getBoundingClientRect();
+  eq("loupe · z renders the image at its own pixel count", Math.round(zoomed.width), 3000);
+  check(
+    "loupe · and that is a real magnification of the fitted size",
+    zoomed.width > fitted * 2,
+    `fitted ${Math.round(fitted)}, zoomed ${Math.round(zoomed.width)}`,
+  );
+
+  app.panX = 0;
+  app.panY = 0;
+  loupe.pan(-400, 0);
+  flushSync();
+  check("loupe · arrows pan while zoomed", app.panX !== 0, `panX ${app.panX}`);
+
+  // Far enough to be against the stop, then further: the second press must not
+  // move it, or the photograph slides off and leaves the background showing.
+  loupe.pan(-40000, 0);
+  flushSync();
+  const limit = app.panX;
+  loupe.pan(-40000, 0);
+  flushSync();
+  eq("loupe · and a pan is clamped to the part that is off stage", app.panX, limit);
+  const scale = 3000 / fitted;
+  check(
+    "loupe · the stop is exactly the overhang, so no background shows",
+    Math.abs(Math.abs(limit) * scale - (3000 - box.clientWidth) / 2) <= 1,
+    `stopped at ${Math.round(Math.abs(limit) * scale)} of ${Math.round((3000 - box.clientWidth) / 2)} available`,
+  );
+
+  app.zoom = false;
+  app.panX = 0;
+  app.panY = 0;
+  host.remove();
+}
+
 // ---- run ---------------------------------------------------------------------
 
 async function run() {
@@ -496,6 +650,7 @@ async function run() {
   loupeFirst();
   loupeFirstStates();
   loupeOverlay();
+  await loupeFraming();
 
   const failed = results.filter((r) => !r.pass);
   document.getElementById("results")!.textContent = JSON.stringify(

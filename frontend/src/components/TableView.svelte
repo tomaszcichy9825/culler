@@ -57,10 +57,13 @@
    * the header and the rows cannot drift apart; this list is identity, label
    * and sortability only.
    *
-   * raw, jpeg, shutter, ƒ, iso and lens have no source on GroupDTO — file sizes
-   * and EXIF are not carried on it — so they render an em-dash and cannot be
-   * sorted. When the backend carries them, each one takes a `sort` id, a case
-   * in `compare`, and a value in place of the dash in its cell.
+   * shutter, ƒ, iso and lens are not on GroupDTO either; they are filled in
+   * from the shared EXIF cache once the read for that row lands, which is why
+   * they still cannot be sorted — a sort would have to reorder the table under
+   * the user as reads came back. raw and jpeg have no source at all yet: file
+   * sizes are not carried anywhere, so those two render an em-dash for good.
+   * When the backend carries them, each one takes a `sort` id, a case in
+   * `compare`, and a value in place of the dash in its cell.
    */
   const COLUMNS: Column[] = [
     { id: "thumb", label: "" },
@@ -180,6 +183,7 @@
   // table so the scrollbar tells the truth, and only the rows in view plus a
   // screen of overscan exist as DOM.
 
+  import { exifCache, valueOf } from "../lib/exifcache.svelte";
   import { previewURL } from "../lib/preview";
   import { queuedImage } from "../lib/imageQueue";
   import { groupKey } from "../lib/state.svelte";
@@ -241,6 +245,15 @@
       out.push({ row: rows[i], place: i, y: i * ROW_H });
     }
     return out;
+  });
+
+  // The four EXIF columns are filled from the cache, and the cache is only
+  // asked about rows that exist. A folder of nine hundred frames is not nine
+  // hundred file reads on open; it is one read per screenful actually scrolled
+  // to, and nothing at all for the eight hundred never looked at.
+  $effect(() => {
+    exifCache.request(visible.map((v) => v.row.group));
+    if (focused) exifCache.request([focused]);
   });
 
   function focusRow(place: number) {
@@ -322,7 +335,14 @@
         {#each visible as { row, place, y } (groupKey(row.group))}
           {@const g = row.group}
           {@const url = previewURL(g)}
-          {@const clock = clockOf(g.shot)}
+          {@const ex = exifCache.get(groupKey(g))}
+          <!-- The camera's own capture time when the read has landed, and the
+               time the scan recorded until it has. -->
+          {@const clock = clockOf(valueOf(ex, "DateTimeOriginal") || g.shot)}
+          {@const shutter = valueOf(ex, "ExposureTime")}
+          {@const aperture = valueOf(ex, "FNumber")}
+          {@const iso = valueOf(ex, "ISO")}
+          {@const lens = valueOf(ex, "LensModel")}
           {@const r = halfState(g, "r", cutRemoves)}
           {@const j = halfState(g, "j", cutRemoves)}
           {@const verdict = verdictOf(g)}
@@ -353,16 +373,25 @@
               <span class="half" class:kept={r === "kept"} class:cut={r === "cut"} class:absent={r === "absent"}>R</span>
               <span class="half" class:kept={j === "kept"} class:cut={j === "cut"} class:absent={j === "absent"}>J</span>
             </span>
-            <!-- Sizes and EXIF are not on GroupDTO; the cell says so. -->
+            <!-- File sizes are not on GroupDTO and are not read; the cell says
+                 so. The four EXIF cells say so too until their read lands. -->
             <span class="cell c-raw num absent" role="gridcell">{NO_DATA}</span>
             <span class="cell c-jpeg num absent" role="gridcell">{NO_DATA}</span>
             <span class="cell c-shot num" class:absent={clock === ""} role="gridcell">
               {clock === "" ? NO_DATA : clock}
             </span>
-            <span class="cell c-shutter num absent" role="gridcell">{NO_DATA}</span>
-            <span class="cell c-aperture num absent" role="gridcell">{NO_DATA}</span>
-            <span class="cell c-iso num absent" role="gridcell">{NO_DATA}</span>
-            <span class="cell c-lens absent" role="gridcell">{NO_DATA}</span>
+            <span class="cell c-shutter num" class:absent={shutter === ""} role="gridcell">
+              {shutter === "" ? NO_DATA : shutter}
+            </span>
+            <span class="cell c-aperture num" class:absent={aperture === ""} role="gridcell">
+              {aperture === "" ? NO_DATA : aperture}
+            </span>
+            <span class="cell c-iso num" class:absent={iso === ""} role="gridcell">
+              {iso === "" ? NO_DATA : iso}
+            </span>
+            <span class="cell c-lens" class:absent={lens === ""} role="gridcell" title={lens}>
+              {lens === "" ? NO_DATA : lens}
+            </span>
             <span class="cell c-rating" role="gridcell" aria-label="{g.rating} of 5">
               {#each { length: g.rating } as _, i (i)}
                 <span class="star"></span>
@@ -394,7 +423,7 @@
       </div>
 
       {#if focused}
-        {@const stamp = stampOf(focused.shot)}
+        {@const stamp = stampOf(valueOf(exifCache.get(groupKey(focused)), "DateTimeOriginal") || focused.shot)}
         <div class="subject">
           <span class="name">{focused.stem}</span>
           <span class="spacer"></span>
