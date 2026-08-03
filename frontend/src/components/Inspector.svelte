@@ -17,6 +17,7 @@
   import type { GroupDTO } from "../lib/bindings";
   import { message } from "../lib/decisions";
   import { exifCache, valueOf } from "../lib/exifcache.svelte";
+  import { sampleHistogram } from "../lib/histogram";
   import { queuedImage } from "../lib/imageQueue";
   import { previewURL } from "../lib/preview";
   import { app, groupKey } from "../lib/state.svelte";
@@ -32,18 +33,6 @@
     verdictWord,
   } from "../lib/verdict";
   import type { Half } from "../lib/verdict";
-
-  /** Bars in the exposure histogram, per the design. */
-  const BINS = 40;
-  /** The sample is drawn small: 6k pixels is plenty for a 40-bin shape. */
-  const SAMPLE_W = 96;
-  const SAMPLE_H = 64;
-
-  /**
-   * Histograms are cached by frame identity. Arrowing along a burst and back
-   * would otherwise redraw and re-read the same pixels every time.
-   */
-  const cache = new Map<string, number[]>();
 
   /** A value the pane does not have. Never a zero, never a guess. */
   const NO_DATA = "—";
@@ -142,39 +131,11 @@
     }
   }
 
-  /**
-   * sample reads the loaded preview into a luma histogram. The preview is
-   * served from the app's own origin, so the canvas is never tainted; a reader
-   * that throws anyway leaves the block empty rather than breaking the pane.
-   */
+  /** sample feeds the loaded preview through the shared histogram cache. */
   function sample(img: HTMLImageElement, id: string) {
-    if (cache.has(id)) {
-      bins = cache.get(id) ?? null;
-      return;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = SAMPLE_W;
-    canvas.height = SAMPLE_H;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (ctx === null) return;
-    let pixels: Uint8ClampedArray;
-    try {
-      ctx.drawImage(img, 0, 0, SAMPLE_W, SAMPLE_H);
-      pixels = ctx.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
-    } catch {
-      return;
-    }
-
-    const counts = new Array<number>(BINS).fill(0);
-    for (let i = 0; i < pixels.length; i += 4) {
-      const luma = pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722;
-      counts[Math.min(BINS - 1, Math.floor((luma / 256) * BINS))]++;
-    }
-    const peak = Math.max(1, ...counts);
-    const shape = counts.map((c) => Math.round((c / peak) * 100));
-    cache.set(id, shape);
+    const shape = sampleHistogram(img, id);
     // The focus may have moved on while the image was decoding.
-    if (id === key) bins = shape;
+    if (shape !== null && id === key) bins = shape;
   }
 </script>
 

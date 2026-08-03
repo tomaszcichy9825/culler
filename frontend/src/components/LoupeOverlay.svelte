@@ -17,7 +17,10 @@
   import { factSections, fileRows, shotLine, verdictBadge } from "../lib/frame";
   import { MAX_RATING } from "../lib/verdict";
   import type { CutScope } from "../lib/verdict";
+  import { previewURL } from "../lib/preview";
+  import { groupKey } from "../lib/state.svelte";
   import Filmstrip from "./Filmstrip.svelte";
+  import Histogram from "./Histogram.svelte";
   import LoupeStage from "./LoupeStage.svelte";
 
   interface Props {
@@ -98,6 +101,11 @@
               ></button>
             {/each}
           </div>
+        </div>
+
+        <div class="histo">
+          <span class="hlabel">Histogram</span>
+          <Histogram url={previewURL(group, "grid")} id={groupKey(group)} height={40} />
         </div>
 
         <div class="files">
@@ -211,6 +219,20 @@
 
   .dot.on {
     background: var(--gold);
+  }
+
+  .histo {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .hlabel {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
   }
 
   .files {
