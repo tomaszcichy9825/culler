@@ -141,6 +141,8 @@ func DefaultKeymap() map[string][]string {
 		"redo":             {"shift+mod+z"},
 		"command-palette":  {"mod+k"},
 		"keymap-overlay":   {"?"},
+		"open-settings":    {"mod+,"},
+		"enter-compare":    {"shift+c"},
 	}
 }
 

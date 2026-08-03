@@ -164,6 +164,25 @@ export function setVerdict(v: "keep" | "cut") {
 }
 
 /**
+ * setVerdictFor records a verdict on explicit frames, for screens like
+ * compare that judge frames other than the grid's current target. No focus
+ * movement, no toggling: the caller said exactly what it means.
+ */
+export function setVerdictFor(frames: GroupDTO[], v: "keep" | "cut") {
+  let changed = 0;
+  let unrecorded = 0;
+  for (const g of frames) {
+    if (g.hash === "") {
+      unrecorded++;
+      continue;
+    }
+    record(g, v, v === "keep" ? startingMask(g) : maskOf(g));
+    changed++;
+  }
+  report(changed, unrecorded, "");
+}
+
+/**
  * toggleMask flips whether one half of a pair survives. On a frame nobody has
  * judged yet this implies a keep: a mask says which halves a verdict holds on
  * to, so setting one without a verdict would mean nothing.

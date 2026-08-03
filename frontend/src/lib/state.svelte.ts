@@ -44,8 +44,13 @@ export function groupKey(g: GroupDTO): string {
 
 class CullerState {
   folder = $state<FolderDTO | null>(null);
+  /** Every frame the open folder holds, unfiltered. */
+  allGroups = $state<GroupDTO[]>([]);
+  /** The frames on screen: allGroups once the filter has had its say. */
   groups = $state<GroupDTO[]>([]);
   focusIndex = $state(0);
+  /** The frames being compared side by side, or null. */
+  compare = $state<GroupDTO[] | null>(null);
   selection = $state<Set<string>>(new Set());
   anchor = $state<number | null>(null);
 
@@ -175,10 +180,12 @@ class CullerState {
   setFolder(folder: FolderDTO) {
     const groups = folder.groups ?? [];
     this.folder = folder;
+    this.allGroups = groups;
     this.groups = groups;
     this.focusIndex = groups.length === 0 ? 0 : Math.min(this.focusIndex, groups.length - 1);
     this.selection = new Set();
     this.anchor = null;
+    this.compare = null;
     this.error = "";
   }
 

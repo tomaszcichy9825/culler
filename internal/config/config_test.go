@@ -88,6 +88,8 @@ func TestDefaultKeymapCoversEveryAction(t *testing.T) {
 		"undo":             "mod+z",
 		"redo":             "shift+mod+z",
 		"command-palette":  "mod+k",
+		"open-settings":    "mod+,",
+		"enter-compare":    "shift+c",
 		"keymap-overlay":   "?",
 	}
 

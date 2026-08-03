@@ -6,15 +6,22 @@
   // The shell is the same on every screen: a title bar, three panes and a
   // status bar. A mode is a set of pane bodies, nothing more.
 
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import ApplyBar from "./components/ApplyBar.svelte";
   import Grid from "./components/Grid.svelte";
   import Inspector from "./components/Inspector.svelte";
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
   import Loader from "./components/Loader.svelte";
+  import CompareView from "./components/CompareView.svelte";
   import LoupeFirst from "./components/LoupeFirst.svelte";
   import LoupeOverlay from "./components/LoupeOverlay.svelte";
+  import Palettes from "./components/Palettes.svelte";
+  import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
+  import { runAction } from "./lib/actions";
+  import { setVerdictFor } from "./lib/decisions";
+  import { visibleGroups } from "./lib/palette.svelte";
+  import { settings } from "./lib/settings.svelte";
   import { groupKey } from "./lib/state.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import StatusBar from "./components/StatusBar.svelte";
@@ -132,7 +139,34 @@
     chooseLayout(next);
   }
 
+  // The filter narrows what the whole app sees: the grid, focus movement,
+  // selection targets and the apply flow all read app.groups, so applying it
+  // here keeps every one of them consistent. Focus follows the frame it was
+  // on when that frame survives the filter.
+  $effect(() => {
+    const vis = visibleGroups();
+    untrack(() => {
+      const focused = app.groups[app.focusIndex];
+      const key = focused === undefined ? null : groupKey(focused);
+      app.groups = vis;
+      if (key !== null) {
+        const kept = vis.findIndex((g) => groupKey(g) === key);
+        app.focusIndex = kept >= 0 ? kept : Math.max(0, Math.min(app.focusIndex, vis.length - 1));
+      } else {
+        app.focusIndex = 0;
+      }
+    });
+  });
+
   function escape() {
+    if (settings.open) {
+      settings.open = false;
+      return;
+    }
+    if (app.compare !== null) {
+      app.compare = null;
+      return;
+    }
     if (app.plan) {
       cancelApply();
       return;
@@ -178,6 +212,19 @@
   }
 
   function run(action: string) {
+    // The registry runs everything it knows; the switch below keeps the
+    // shell-owned behaviours (escape unwinding, layout cycling, apply flow)
+    // that need this component's own state.
+    switch (action) {
+      case "escape":
+      case "cycle-layout":
+      case "apply":
+      case "zoom":
+      case "toggle-loupe":
+        break; // shell-owned, handled below
+      default:
+        if (runAction(action)) return;
+    }
     switch (action) {
       case "focus-left":
         moveFocus(-1, 0);
@@ -369,6 +416,21 @@
   {#if app.view === "loupe" && shell.mode === "cull" && shell.layout !== 1 && app.folder !== null && app.groups.length > 0}
     <LoupeOverlay />
   {/if}
+
+  {#if app.compare !== null}
+    <CompareView
+      groups={app.compare}
+      onverdict={(frames, v) => setVerdictFor(frames, v)}
+      onexit={() => (app.compare = null)}
+      cutRemoves={app.cutRemoves}
+    />
+  {/if}
+
+  {#if settings.open}
+    <SettingsView />
+  {/if}
+
+  <Palettes />
 
   <ApplyBar />
   <StatusBar />

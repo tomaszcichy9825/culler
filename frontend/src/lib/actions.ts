@@ -1,12 +1,25 @@
 // The things the keyboard layer and the buttons both call. Everything that
 // talks to the backend goes through here so the busy flag, the error banner
 // and the toast are handled in one place.
+//
+// The bottom of this file is the action registry: every action the user can
+// take, declared once, with the code that runs it. The keymap dispatch and the
+// command palette both read that one list, so an action cannot exist on a key
+// without also being reachable from the palette.
+
+import { tick } from "svelte";
 
 import { Clipboard, Events } from "@wailsio/runtime";
 
 import { ApplyService, ConfigService, LibraryService } from "./bindings";
-import { flush, message } from "./decisions";
-import { app, DEFAULT_SLOW_SCAN_SECONDS } from "./state.svelte";
+import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
+import { palette } from "./palette.svelte";
+import { settings } from "./settings.svelte";
+import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
+import type { Pane } from "./shell.svelte";
+import { app, DEFAULT_SLOW_SCAN_SECONDS, loupe, picker, tree } from "./state.svelte";
+import { MAX_RATING } from "./verdict";
+import type { Half } from "./verdict";
 
 /** Where the last opened folder is remembered, so a relaunch lands back in it. */
 const LAST_FOLDER = "culler.lastFolder";
@@ -402,4 +415,447 @@ export async function copyPath() {
   } catch (err) {
     app.notify(`could not copy: ${message(err)}`, "error");
   }
+}
+
+/* ---- the shell's own actions ---- */
+
+/** How far one arrow press pans the zoomed loupe, in image pixels. */
+const PAN_STEP = 120;
+
+function moveFocus(dx: number, dy: number) {
+  if (app.view === "loupe" && app.zoom) {
+    loupe.pan(-dx * PAN_STEP, -dy * PAN_STEP);
+    return;
+  }
+  const rowStep = app.view === "loupe" ? 1 : app.cols;
+  app.setFocus(app.focusIndex + dx + dy * rowStep);
+}
+
+/**
+ * CULL's first two sub-layouts are the grid and one frame at a time, which the
+ * app already has as its two views — so choosing a layout and the view have to
+ * agree, or the segmented control starts lying.
+ */
+export function chooseLayout(index: number) {
+  if (!shell.setLayout(index)) return;
+  if (shell.mode !== "cull") return;
+  if (index === LOUPE_FIRST && app.groups.length > 0) {
+    app.view = "loupe";
+    return;
+  }
+  app.view = "grid";
+  app.resetZoom();
+}
+
+/**
+ * Tab walks the current mode's sub-layouts in order, wrapping. The mode decides
+ * how many there are, so nothing here knows that CULL has three.
+ */
+function cycleLayout() {
+  const next = shell.nextLayout();
+  if (next === null) return;
+  chooseLayout(next);
+}
+
+/**
+ * escape unwinds one level of whatever is up, innermost first. A palette is the
+ * outermost thing on screen and handles its own Esc, so this only reaches it
+ * when the keyboard has drifted off the dialog.
+ */
+function escape() {
+  if (palette.open) {
+    palette.close();
+    return;
+  }
+  if (app.plan) {
+    cancelApply();
+    return;
+  }
+  if (app.overlay) {
+    app.overlay = false;
+    return;
+  }
+  if (app.view === "loupe") {
+    if (app.zoom) {
+      app.resetZoom();
+      return;
+    }
+    app.view = "grid";
+    if (shell.mode === "cull") shell.setLayout(CONTACT_SHEET);
+    return;
+  }
+  if (shell.releasePane()) return;
+  app.clearSelection();
+}
+
+/** The sidebar's controls only exist while it is open, so reveal it first. */
+async function revealSidebar() {
+  if (!app.sidebar) {
+    app.sidebar = true;
+    await tick();
+  }
+}
+
+async function focusPath() {
+  await revealSidebar();
+  picker.focus();
+}
+
+async function focusTree() {
+  await revealSidebar();
+  if (app.roots.length === 0) {
+    app.notify("no folders yet — add one to start the tree");
+    picker.focus();
+    return;
+  }
+  tree.focus();
+}
+
+function toggleZoom() {
+  if (app.view !== "loupe") {
+    app.notify("zoom works in the loupe — Tab to open it");
+    return;
+  }
+  if (app.zoom) app.resetZoom();
+  else app.zoom = true;
+}
+
+/* ---- the action registry ---- */
+
+/**
+ * Action is one thing the user can do, declared once. The keymap binds ids to
+ * chords and this list says what an id means, which is what makes every
+ * binding reachable from the command palette without a second list to keep in
+ * step.
+ */
+export interface Action {
+  /** The name the config keymap binds a chord to. */
+  id: string;
+  /** As the palette names it. */
+  label: string;
+  /** The palette's section title. Sections appear in first-declared order. */
+  group: string;
+  /**
+   * The dimmed note beside the name. A function for anything that depends on
+   * the current mode or the open folder, so the row is right when it is drawn
+   * rather than when it was declared.
+   */
+  note?: string | (() => string);
+  /** One glyph for the palette's icon column. */
+  icon?: string;
+  run: () => void;
+  /**
+   * Whether the action can run at all right now. An action whose when() is
+   * false is hidden from the palette and does nothing on its key: it is for
+   * things that do not exist in the current context, not for things that would
+   * fail and want to say why.
+   */
+  when?: () => boolean;
+}
+
+const NAVIGATE = "navigate";
+const VERDICT = "verdict";
+const RATING = "rating";
+const SELECT = "select";
+const VIEW = "view";
+const MODE = "mode";
+const PANES = "panes";
+const FILES = "files";
+const FOLDERS = "folders";
+const APP = "app";
+
+/** Whether there is anything on screen for a frame action to act on. */
+function hasFrames(): boolean {
+  return app.groups.length > 0;
+}
+
+function ratingActions(): Action[] {
+  const rows: Action[] = [];
+  for (let n = 1; n <= MAX_RATING; n++) {
+    rows.push({
+      id: `rate-${n}`,
+      label: `${n} star${n === 1 ? "" : "s"}`,
+      group: RATING,
+      icon: "★",
+      note: "again clears it",
+      when: hasFrames,
+      run: () => setRating(n),
+    });
+  }
+  return rows;
+}
+
+function maskAction(half: Half): Action {
+  const name = half === "r" ? "RAW" : "JPEG";
+  return {
+    id: half === "r" ? "mask-toggle-raw" : "mask-toggle-jpeg",
+    label: `keep or drop the ${name} half`,
+    group: VERDICT,
+    icon: half === "r" ? "R" : "J",
+    note: "implies a keep",
+    when: hasFrames,
+    run: () => toggleMask(half),
+  };
+}
+
+function layoutAction(index: number): Action {
+  return {
+    id: `layout-${index + 1}`,
+    label: `layout ${index + 1}`,
+    group: VIEW,
+    icon: "▤",
+    note: () => shell.spec.layouts[index] ?? "",
+    when: () => shell.spec.layouts.length > index,
+    run: () => chooseLayout(index),
+  };
+}
+
+function modeAction(index: number): Action {
+  const spec = MODES[index];
+  return {
+    id: `mode-${spec.id}`,
+    label: `${spec.label} mode`,
+    group: MODE,
+    icon: "◧",
+    note: () => Object.values(spec.panes).join(" · "),
+    run: () => shell.setModeByIndex(index),
+  };
+}
+
+function paneAction(pane: Pane): Action {
+  return {
+    id: `pane-${pane}`,
+    label: `focus the ${pane} pane`,
+    group: PANES,
+    icon: "▥",
+    note: () => shell.spec.panes[pane],
+    run: () => shell.focusPane(pane),
+  };
+}
+
+/**
+ * ACTIONS is the whole vocabulary of the application, in the order the palette
+ * shows it. Adding a user action means adding a row here; there is nowhere else
+ * to add one.
+ */
+export const ACTIONS: Action[] = [
+  { id: "focus-left", label: "move focus left", group: NAVIGATE, icon: "←", when: hasFrames, run: () => moveFocus(-1, 0) },
+  { id: "focus-right", label: "move focus right", group: NAVIGATE, icon: "→", when: hasFrames, run: () => moveFocus(1, 0) },
+  { id: "focus-up", label: "move focus up", group: NAVIGATE, icon: "↑", when: hasFrames, run: () => moveFocus(0, -1) },
+  { id: "focus-down", label: "move focus down", group: NAVIGATE, icon: "↓", when: hasFrames, run: () => moveFocus(0, 1) },
+  {
+    id: "focus-path",
+    label: "jump to the folder path box",
+    group: NAVIGATE,
+    icon: "›",
+    note: "type a path, ↩ opens it",
+    run: () => void focusPath(),
+  },
+  {
+    id: "focus-tree",
+    label: "jump to the folder tree",
+    group: NAVIGATE,
+    icon: "›",
+    note: "arrows move, ↩ opens",
+    run: () => void focusTree(),
+  },
+
+  {
+    id: "verdict-keep",
+    label: "keep the frame",
+    group: VERDICT,
+    icon: "✓",
+    note: "again clears it",
+    when: hasFrames,
+    run: () => setVerdict("keep"),
+  },
+  {
+    id: "verdict-cut",
+    label: "cut the frame",
+    group: VERDICT,
+    icon: "✕",
+    note: "again clears it",
+    when: hasFrames,
+    run: () => setVerdict("cut"),
+  },
+  maskAction("r"),
+  maskAction("j"),
+
+  ...ratingActions(),
+  { id: "rate-clear", label: "clear the rating", group: RATING, icon: "☆", when: hasFrames, run: () => setRating(0) },
+
+  { id: "toggle-select", label: "toggle selection", group: SELECT, icon: "▣", when: hasFrames, run: () => app.toggleSelect() },
+  { id: "select-all", label: "select every frame", group: SELECT, icon: "▦", when: hasFrames, run: () => app.selectAll() },
+  {
+    id: "escape",
+    label: "back out",
+    group: SELECT,
+    icon: "⎋",
+    note: "clears the selection, leaves the loupe",
+    run: escape,
+  },
+
+  { id: "cycle-layout", label: "cycle layout", group: VIEW, icon: "▤", note: () => shell.layoutLabel, run: cycleLayout },
+  { id: "zoom", label: "1:1 zoom", group: VIEW, icon: "⊕", note: "in the loupe", run: toggleZoom },
+  layoutAction(0),
+  layoutAction(1),
+  layoutAction(2),
+  { id: "toggle-sidebar", label: "show or hide the sidebar", group: VIEW, icon: "▯", run: () => (app.sidebar = !app.sidebar) },
+
+  modeAction(0),
+  modeAction(1),
+  modeAction(2),
+  modeAction(3),
+
+  paneAction("left"),
+  paneAction("centre"),
+  paneAction("right"),
+
+  {
+    id: "apply",
+    label: "apply pending verdicts",
+    group: FILES,
+    icon: "▶",
+    note: () => (app.plan ? "confirm the plan on screen" : `${app.pending.length} frame(s) pending`),
+    when: () => app.folder !== null,
+    run: () => {
+      if (app.plan) void confirmApply();
+      else void requestApply();
+    },
+  },
+  {
+    id: "undo",
+    label: "undo the last batch",
+    group: FILES,
+    icon: "↺",
+    run: () => void flush().then(undo),
+  },
+  {
+    id: "redo",
+    label: "redo",
+    group: FILES,
+    icon: "↻",
+    note: "there is no redo stack yet",
+    run: () => app.notify("nothing to redo"),
+  },
+  {
+    id: "move-palette",
+    label: "move frames to a folder",
+    group: FILES,
+    icon: "⇢",
+    note: "pick a destination",
+    when: () => app.targets.length > 0,
+    run: () => palette.toggle("move"),
+  },
+  {
+    id: "copy-palette",
+    label: "copy frames to a folder",
+    group: FILES,
+    icon: "⇉",
+    note: "pick a destination",
+    when: () => app.targets.length > 0,
+    run: () => palette.toggle("copy"),
+  },
+  {
+    id: "copy-path",
+    label: "copy the open folder's path",
+    group: FILES,
+    icon: "⧉",
+    when: () => app.folder !== null,
+    run: () => void copyPath(),
+  },
+
+  { id: "add-root", label: "add a folder to the sidebar", group: FOLDERS, icon: "+", run: () => void pickRoot() },
+
+  {
+    id: "command-palette",
+    label: "command palette",
+    group: APP,
+    icon: "›",
+    note: "everything, searchable",
+    run: () => palette.toggle("command"),
+  },
+  {
+    id: "filter-palette",
+    label: "filter the grid",
+    group: APP,
+    icon: "⛭",
+    note: "by kind, verdict or rating",
+    when: hasFrames,
+    run: () => palette.toggle("filter"),
+  },
+  { id: "keymap-overlay", label: "keyboard shortcuts", group: APP, icon: "?", run: () => (app.overlay = !app.overlay) },
+  {
+    id: "open-settings",
+    label: "settings",
+    group: APP,
+    icon: "⚙",
+    note: "behaviours and shortcuts",
+    run: () => (settings.open = true),
+  },
+  {
+    id: "enter-compare",
+    label: "compare frames",
+    group: VIEW,
+    icon: "⇄",
+    note: "the selection, or this frame and the next",
+    when: () => app.groups.length >= 2,
+    run: enterCompare,
+  },
+];
+
+/**
+ * enterCompare pits the selection against each other, or, with nothing
+ * selected, the focused frame against its neighbour — the burst-culling case.
+ */
+function enterCompare() {
+  const selected = app.selected;
+  if (selected.length >= 2) {
+    app.compare = selected;
+    return;
+  }
+  const i = app.focusIndex;
+  const pair = app.groups.slice(i, i + 2);
+  if (pair.length < 2) {
+    app.notify("nothing to compare this frame with");
+    return;
+  }
+  app.compare = pair;
+}
+
+const BY_ID = new Map(ACTIONS.map((a) => [a.id, a]));
+
+export function actionOf(id: string): Action | undefined {
+  return BY_ID.get(id);
+}
+
+/** noteOf resolves a note that may depend on the current state. */
+export function noteOf(action: Action): string {
+  return typeof action.note === "function" ? action.note() : (action.note ?? "");
+}
+
+/**
+ * While a palette is up it is the only thing the keyboard drives. The palettes
+ * mark themselves data-keys="local" so the global listener stays out of the
+ * way, but a click that moves focus off the dialog would otherwise put the grid
+ * back in charge behind a dialog the user can still see.
+ */
+const WHILE_PALETTE_OPEN = new Set(["escape", "command-palette", "copy-palette", "move-palette", "filter-palette"]);
+
+/**
+ * runAction is the single dispatch. It answers whether the action ran, so a
+ * caller can tell an unknown id from one that declined.
+ */
+export function runAction(id: string): boolean {
+  const action = BY_ID.get(id);
+  if (action === undefined) return false;
+  if (palette.open && !WHILE_PALETTE_OPEN.has(id)) return false;
+  if (action.when !== undefined && !action.when()) return false;
+  action.run();
+  return true;
+}
+
+/** available lists the actions that could run right now, in declared order. */
+export function available(): Action[] {
+  return ACTIONS.filter((a) => a.when === undefined || a.when());
 }
