@@ -16,8 +16,15 @@ first-class deliverable — Fujifilm film simulations, in-camera profiles, strai
 delivery — that is backwards. The unmet need is a **per-frame three-way decision** over a
 RAW+JPEG pair, with the JPEG as the thing you actually look at when it exists.
 
-Non-goals, explicitly: no develop/edit module, no catalogue or library, no AI culling, no
-cloud, no telemetry, no plugin system.
+Non-goals, explicitly: no develop/edit module (image pixels are never altered), no AI culling,
+no telemetry, no plugin system.
+
+Amended 2026-08-03 with the adopted redesign (`docs/design/DESIGN-SPEC.md`): a local catalogue
+(LIBRARY mode) is now in scope, superseding the original "no catalogue" stance; MAP mode makes
+two narrow, opt-in exceptions to "no cloud" — map tiles and ask-first reverse geocoding. EXIF
+metadata editing (not pixel editing) is in scope via the op engine with journal and undo. The
+decision model is verdict + mask + star ratings (k/x/r/j, 1–5), superseding the four numeric
+decision keys below where they conflict.
 
 ---
 
