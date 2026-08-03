@@ -15,7 +15,7 @@ func TestGroupDTOPaired(t *testing.T) {
 	g := pairedGroup("DSCF0001")
 	g.Warnings = []string{"duplicate files for this frame"}
 
-	dto := groupDTO(g, "abc123", decide.DropRAW)
+	dto := groupDTO(g, "abc123", decide.Record{Verdict: decide.Keep, Mask: decide.MaskJPEG, Rating: 4})
 
 	if dto.Kind != "paired" {
 		t.Errorf("Kind = %q, want paired", dto.Kind)
@@ -32,8 +32,15 @@ func TestGroupDTOPaired(t *testing.T) {
 	if dto.Shot != "2026-05-01T09:30:00Z" {
 		t.Errorf("Shot = %q, want RFC3339", dto.Shot)
 	}
+	if dto.Verdict != "keep" || dto.Mask != "j" {
+		t.Errorf("Verdict/Mask = %q/%q, want keep/j", dto.Verdict, dto.Mask)
+	}
+	if dto.Rating != 4 {
+		t.Errorf("Rating = %d, want 4", dto.Rating)
+	}
+	// The pre-verdict field the current grid still renders.
 	if dto.Decision != "drop_raw" {
-		t.Errorf("Decision = %q", dto.Decision)
+		t.Errorf("Decision = %q, want the drop_raw the verdict maps onto", dto.Decision)
 	}
 	if dto.Hash != "abc123" {
 		t.Errorf("Hash = %q", dto.Hash)
@@ -55,12 +62,15 @@ func TestGroupDTORawOnly(t *testing.T) {
 		Raw:  &scan.FileRef{Path: "/card/DCIM/DSCF0002.RAF"},
 		Shot: time.Date(2026, 5, 1, 9, 31, 0, 0, time.UTC),
 	}
-	dto := groupDTO(g, "def456", decide.None)
+	dto := groupDTO(g, "def456", decide.Record{})
 	if dto.HasJpeg || dto.JpegPath != "" {
 		t.Errorf("RAW-only frame reports a JPEG: %+v", dto)
 	}
 	if dto.Kind != "raw-only" {
 		t.Errorf("Kind = %q, want raw-only", dto.Kind)
+	}
+	if dto.Verdict != "" || dto.Rating != 0 {
+		t.Errorf("undecided frame reports %q/%d", dto.Verdict, dto.Rating)
 	}
 	if dto.Decision != "none" {
 		t.Errorf("Decision = %q, want none", dto.Decision)
@@ -68,7 +78,7 @@ func TestGroupDTORawOnly(t *testing.T) {
 }
 
 func TestGroupDTOUnhashableFrameIsWarned(t *testing.T) {
-	dto := groupDTO(pairedGroup("DSCF0003"), "", decide.None)
+	dto := groupDTO(pairedGroup("DSCF0003"), "", decide.Record{})
 	if len(dto.Warnings) != 1 || !strings.Contains(dto.Warnings[0], "will not be remembered") {
 		t.Errorf("Warnings = %v, want a warning about the missing identity", dto.Warnings)
 	}
@@ -141,11 +151,69 @@ func TestExpandPath(t *testing.T) {
 	}
 }
 
-func TestParseDecision(t *testing.T) {
-	for _, s := range []string{"none", "keep_all", "drop_raw", "drop_jpeg", "drop_all"} {
-		if _, err := parseDecision(s); err != nil {
-			t.Errorf("parseDecision(%q): %v", s, err)
+func TestParseVerdict(t *testing.T) {
+	tests := []struct {
+		verdict, mask string
+		want          decide.Record
+	}{
+		{"keep", "rj", decide.Record{Verdict: decide.Keep, Mask: decide.MaskBoth}},
+		{"keep", "r", decide.Record{Verdict: decide.Keep, Mask: decide.MaskRAW}},
+		{"cut", "j", decide.Record{Verdict: decide.Cut, Mask: decide.MaskJPEG}},
+		{"", "", decide.Record{}},
+	}
+	for _, tt := range tests {
+		v, m, err := parseVerdict(tt.verdict, tt.mask)
+		if err != nil {
+			t.Errorf("parseVerdict(%q, %q): %v", tt.verdict, tt.mask, err)
+			continue
 		}
+		if v != tt.want.Verdict || m != tt.want.Mask {
+			t.Errorf("parseVerdict(%q, %q) = %q/%q, want %q/%q",
+				tt.verdict, tt.mask, v, m, tt.want.Verdict, tt.want.Mask)
+		}
+	}
+	for _, tt := range []struct{ verdict, mask string }{
+		{"burn", "rj"}, {"KEEP", "rj"}, {"keep", "raw"}, {"keep", "jr"}, {"cut", ""},
+	} {
+		if _, _, err := parseVerdict(tt.verdict, tt.mask); err == nil {
+			t.Errorf("parseVerdict(%q, %q) accepted an unknown value", tt.verdict, tt.mask)
+		}
+	}
+}
+
+// Both directions of the compatibility mapping, which is the only thing
+// keeping the pre-verdict frontend rendering.
+func TestLegacyDecisionMapping(t *testing.T) {
+	tests := []struct {
+		decision string
+		record   decide.Record
+	}{
+		{"none", decide.Record{}},
+		{"keep_all", decide.Record{Verdict: decide.Keep, Mask: decide.MaskBoth}},
+		{"drop_raw", decide.Record{Verdict: decide.Keep, Mask: decide.MaskJPEG}},
+		{"drop_jpeg", decide.Record{Verdict: decide.Keep, Mask: decide.MaskRAW}},
+		{"drop_all", decide.Record{Verdict: decide.Cut, Mask: decide.MaskBoth}},
+	}
+	for _, tt := range tests {
+		got, err := parseDecision(tt.decision)
+		if err != nil {
+			t.Errorf("parseDecision(%q): %v", tt.decision, err)
+			continue
+		}
+		if got != tt.record {
+			t.Errorf("parseDecision(%q) = %+v, want %+v", tt.decision, got, tt.record)
+		}
+		if back := legacyDecision(tt.record); back != tt.decision {
+			t.Errorf("legacyDecision(%+v) = %q, want %q", tt.record, back, tt.decision)
+		}
+	}
+	// A cut keeps its name whatever the mask says, and a rating alone is not
+	// a decision the old model could express.
+	if got := legacyDecision(decide.Record{Verdict: decide.Cut, Mask: decide.MaskRAW}); got != "drop_all" {
+		t.Errorf("a masked cut reads as %q, want drop_all", got)
+	}
+	if got := legacyDecision(decide.Record{Rating: 3}); got != "none" {
+		t.Errorf("a rated but undecided frame reads as %q, want none", got)
 	}
 	for _, s := range []string{"", "delete", "DROP_RAW", "copy_to"} {
 		if _, err := parseDecision(s); err == nil {
@@ -155,14 +223,28 @@ func TestParseDecision(t *testing.T) {
 }
 
 func TestToItemRequiresHash(t *testing.T) {
-	if _, err := toItem(DecisionItem{Stem: "DSCF0001", Decision: "drop_raw"}); err == nil {
+	if _, err := toVerdictItem(VerdictItem{Stem: "DSCF0001", Verdict: "keep", Mask: "rj"}); err == nil {
+		t.Error("verdict without a frame identity accepted")
+	}
+	if _, err := toRatingItem(RatingItem{Stem: "DSCF0001", Rating: 3}); err == nil {
+		t.Error("rating without a frame identity accepted")
+	}
+	if _, err := toLegacyItem(DecisionItem{Stem: "DSCF0001", Decision: "drop_raw"}); err == nil {
 		t.Error("decision without a frame identity accepted")
 	}
-	item, err := toItem(DecisionItem{Hash: "h", Dir: "/card", Stem: "DSCF0001", Decision: "drop_all"})
+
+	item, err := toVerdictItem(VerdictItem{Hash: "h", Dir: "/card", Stem: "DSCF0001", Verdict: "cut", Mask: "rj"})
 	if err != nil {
-		t.Fatalf("toItem: %v", err)
+		t.Fatalf("toVerdictItem: %v", err)
 	}
-	if item.D != decide.DropAll {
-		t.Errorf("decision = %q, want drop_all", item.D)
+	if item.Verdict != decide.Cut || item.Mask != decide.MaskBoth {
+		t.Errorf("verdict = %q/%q, want cut/rj", item.Verdict, item.Mask)
+	}
+	legacy, err := toLegacyItem(DecisionItem{Hash: "h", Dir: "/card", Stem: "DSCF0001", Decision: "drop_all"})
+	if err != nil {
+		t.Fatalf("toLegacyItem: %v", err)
+	}
+	if legacy.Verdict != decide.Cut || legacy.Mask != decide.MaskBoth {
+		t.Errorf("drop_all became %q/%q, want cut/rj", legacy.Verdict, legacy.Mask)
 	}
 }

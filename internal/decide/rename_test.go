@@ -30,7 +30,7 @@ func TestDecisionSurvivesRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Set(h, dir, "DSCF1234", decide.DropRAW); err != nil {
+	if err := s.SetVerdict(h, dir, "DSCF1234", decide.Keep, decide.MaskJPEG); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,12 +46,12 @@ func TestDecisionSurvivesRename(t *testing.T) {
 	if h2 != h {
 		t.Fatalf("hash changed on rename: %s -> %s", h, h2)
 	}
-	d, ok, err := s.Get(h2)
+	r, ok, err := s.Get(h2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || d != decide.DropRAW {
-		t.Fatalf("decision lost across rename: %q (ok=%v)", d, ok)
+	if !ok || r.Verdict != decide.Keep || r.Mask != decide.MaskJPEG {
+		t.Fatalf("verdict lost across rename: %+v (ok=%v)", r, ok)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestDecisionDoesNotSurviveEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Set(h, dir, "DSCF1234", decide.DropAll); err != nil {
+	if err := s.SetVerdict(h, dir, "DSCF1234", decide.Cut, decide.MaskBoth); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,9 +88,9 @@ func TestDecisionDoesNotSurviveEdit(t *testing.T) {
 	if h2 == h {
 		t.Fatal("edited file kept its hash")
 	}
-	if d, ok, err := s.Get(h2); err != nil {
+	if r, ok, err := s.Get(h2); err != nil {
 		t.Fatal(err)
 	} else if ok {
-		t.Errorf("edited file inherited the old decision %q", d)
+		t.Errorf("edited file inherited the old verdict %+v", r)
 	}
 }

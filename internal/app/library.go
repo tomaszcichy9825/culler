@@ -21,8 +21,8 @@ type FolderDTO struct {
 }
 
 // GroupDTO is a PhotoGroup flattened for the frontend: paths instead of file
-// references, a formatted timestamp, and the decision currently recorded for
-// the frame.
+// references, a formatted timestamp, and what is currently recorded for the
+// frame.
 type GroupDTO struct {
 	Dir      string   `json:"dir"`
 	Stem     string   `json:"stem"`
@@ -34,8 +34,14 @@ type GroupDTO struct {
 	Sidecars int      `json:"sidecars"`
 	Shot     string   `json:"shot"` // RFC3339
 	Warnings []string `json:"warnings"`
-	Decision string   `json:"decision"` // none | keep_all | drop_raw | drop_jpeg | drop_all
-	Hash     string   `json:"hash"`     // identity of the primary file, empty if unreadable
+	Verdict  string   `json:"verdict"` // empty | keep | cut
+	Mask     string   `json:"mask"`    // rj | r | j — which halves a keep holds on to
+	Rating   int      `json:"rating"`  // 0-5, 0 is unrated
+	Hash     string   `json:"hash"`    // identity of the primary file, empty if unreadable
+
+	// Decision is the verdict and mask named in the pre-verdict vocabulary,
+	// kept so the grid keeps rendering until it is restyled onto verdicts.
+	Decision string `json:"decision"` // none | keep_all | drop_raw | drop_jpeg | drop_all
 }
 
 // LibraryService opens folders for the grid.
@@ -83,17 +89,17 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 		Groups:  make([]GroupDTO, 0, len(groups)),
 	}
 	for i, g := range groups {
-		d := decide.None
+		var rec decide.Record
 		if hashes[i] != "" {
 			recorded, ok, err := store.Get(hashes[i])
 			if err != nil {
 				return FolderDTO{}, fmt.Errorf("read decisions: %w", err)
 			}
 			if ok {
-				d = recorded
+				rec = recorded
 			}
 		}
-		out.Groups = append(out.Groups, groupDTO(g, hashes[i], d))
+		out.Groups = append(out.Groups, groupDTO(g, hashes[i], rec))
 	}
 	return out, nil
 }
@@ -102,7 +108,7 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 // hashed still shows up — it can be moved and deleted like any other — but it
 // carries a warning, because without an identity its decision cannot be
 // remembered across a reopen.
-func groupDTO(g scan.PhotoGroup, hash string, d decide.Decision) GroupDTO {
+func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
 	dto := GroupDTO{
 		Dir:      g.Dir,
 		Stem:     g.Stem,
@@ -112,8 +118,11 @@ func groupDTO(g scan.PhotoGroup, hash string, d decide.Decision) GroupDTO {
 		Sidecars: len(g.Sidecars),
 		Shot:     g.Shot.Format(time.RFC3339),
 		Warnings: append([]string{}, g.Warnings...),
-		Decision: string(d),
+		Verdict:  string(rec.Verdict),
+		Mask:     string(rec.Mask),
+		Rating:   rec.Rating,
 		Hash:     hash,
+		Decision: legacyDecision(rec),
 	}
 	if g.Raw != nil {
 		dto.RawPath = g.Raw.Path

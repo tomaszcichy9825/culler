@@ -35,6 +35,12 @@ func TestDefault(t *testing.T) {
 	if c.Behaviour.RejectedFolderName != "_Rejected" {
 		t.Errorf("rejected folder: want %q, got %q", "_Rejected", c.Behaviour.RejectedFolderName)
 	}
+	if c.Behaviour.DefaultKeepMask != KeepMaskBoth {
+		t.Errorf("default keep mask: want %q, got %q", KeepMaskBoth, c.Behaviour.DefaultKeepMask)
+	}
+	if c.Behaviour.CutRemoves != CutRemovesBoth {
+		t.Errorf("cut removes: want %q, got %q", CutRemovesBoth, c.Behaviour.CutRemoves)
+	}
 
 	def := scan.DefaultConfig()
 	if !slices.Equal(c.RawExts, def.RawExts) {
@@ -56,28 +62,33 @@ func TestDefaultKeymapCoversEveryAction(t *testing.T) {
 	km := Default().Keymap
 
 	want := map[string]string{
-		"focus-left":      "ArrowLeft",
-		"focus-right":     "ArrowRight",
-		"focus-up":        "ArrowUp",
-		"focus-down":      "ArrowDown",
-		"toggle-loupe":    "Tab",
-		"toggle-select":   "space",
-		"select-all":      "mod+a",
-		"escape":          "Escape",
-		"keep-all":        "1",
-		"drop-raw":        "2",
-		"drop-jpeg":       "3",
-		"drop-both":       "4",
-		"clear-decision":  "0",
-		"copy-palette":    "c",
-		"move-palette":    "m",
-		"filter-palette":  "f",
-		"zoom":            "z",
-		"apply":           "Enter",
-		"undo":            "mod+z",
-		"redo":            "shift+mod+z",
-		"command-palette": "mod+k",
-		"keymap-overlay":  "?",
+		"focus-left":       "ArrowLeft",
+		"focus-right":      "ArrowRight",
+		"focus-up":         "ArrowUp",
+		"focus-down":       "ArrowDown",
+		"toggle-loupe":     "Tab",
+		"toggle-select":    "space",
+		"select-all":       "mod+a",
+		"escape":           "Escape",
+		"verdict-keep":     "k",
+		"verdict-cut":      "x",
+		"mask-toggle-raw":  "r",
+		"mask-toggle-jpeg": "j",
+		"rate-1":           "1",
+		"rate-2":           "2",
+		"rate-3":           "3",
+		"rate-4":           "4",
+		"rate-5":           "5",
+		"rate-clear":       "0",
+		"copy-palette":     "c",
+		"move-palette":     "m",
+		"filter-palette":   "f",
+		"zoom":             "z",
+		"apply":            "Enter",
+		"undo":             "mod+z",
+		"redo":             "shift+mod+z",
+		"command-palette":  "mod+k",
+		"keymap-overlay":   "?",
 	}
 
 	for action, chord := range want {
@@ -93,13 +104,26 @@ func TestDefaultKeymapCoversEveryAction(t *testing.T) {
 	if len(km) != len(want) {
 		t.Errorf("keymap has %d actions, want %d: %v", len(km), len(want), km)
 	}
+}
 
-	// The vim keys are alternates on the same actions as the arrows.
+// The decision model is a verdict plus a mask, so the four numeric decision
+// bindings are gone and 1-5 rate instead. A config file may still bind the old
+// action names; nothing in this package knows them any more.
+func TestDefaultKeymapHasNoDecisionActions(t *testing.T) {
+	km := Default().Keymap
+
+	for _, action := range []string{"keep-all", "drop-raw", "drop-jpeg", "drop-both", "clear-decision"} {
+		if chords, ok := km[action]; ok {
+			t.Errorf("action %q is still in the default keymap, bound to %v", action, chords)
+		}
+	}
+	// j and k belong to the mask and the keep verdict now, so the vim
+	// alternates on the focus actions have gone with them.
 	for action, chord := range map[string]string{
 		"focus-left": "h", "focus-down": "j", "focus-up": "k", "focus-right": "l",
 	} {
-		if !slices.Contains(km[action], chord) {
-			t.Errorf("action %q: want vim alternate %q in %v", action, chord, km[action])
+		if slices.Contains(km[action], chord) {
+			t.Errorf("action %q still carries the vim alternate %q: %v", action, chord, km[action])
 		}
 	}
 }
@@ -333,6 +357,29 @@ func TestValidate(t *testing.T) {
 			name:    "negative bulk confirm threshold",
 			mutate:  func(c *Config) { c.Behaviour.BulkConfirmThreshold = -1 },
 			wantErr: "threshold",
+		},
+		{
+			name:    "unknown default keep mask",
+			mutate:  func(c *Config) { c.Behaviour.DefaultKeepMask = "raw" },
+			wantErr: "keep mask",
+		},
+		{
+			name:    "empty default keep mask",
+			mutate:  func(c *Config) { c.Behaviour.DefaultKeepMask = "" },
+			wantErr: "keep mask",
+		},
+		{
+			name:   "keep mask may be one half",
+			mutate: func(c *Config) { c.Behaviour.DefaultKeepMask = KeepMaskJPEG },
+		},
+		{
+			name:    "unknown cut scope",
+			mutate:  func(c *Config) { c.Behaviour.CutRemoves = "everything" },
+			wantErr: "cut removes",
+		},
+		{
+			name:   "cut may remove the masked halves only",
+			mutate: func(c *Config) { c.Behaviour.CutRemoves = CutRemovesMasked },
 		},
 	}
 

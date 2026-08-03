@@ -75,6 +75,9 @@ func TestOpenFolderReportsFrames(t *testing.T) {
 	if paired.Hash == "" {
 		t.Error("frame has no identity hash")
 	}
+	if paired.Verdict != "" || paired.Rating != 0 {
+		t.Errorf("verdict/rating = %q/%d, want an undecided frame in a fresh folder", paired.Verdict, paired.Rating)
+	}
 	if paired.Decision != "none" {
 		t.Errorf("decision = %q, want none on a fresh folder", paired.Decision)
 	}
@@ -106,8 +109,8 @@ func TestApplyThenUndoRestoresTheFolder(t *testing.T) {
 		t.Fatalf("OpenFolder: %v", err)
 	}
 	frame := folder.Groups[0]
-	if err := decisions.Set(frame.Hash, frame.Dir, frame.Stem, "drop_raw"); err != nil {
-		t.Fatalf("Set: %v", err)
+	if err := decisions.SetVerdict(frame.Hash, frame.Dir, frame.Stem, "keep", "j"); err != nil {
+		t.Fatalf("SetVerdict: %v", err)
 	}
 
 	// Plan is pure: it says what would happen and touches nothing.
@@ -158,8 +161,8 @@ func TestApplyThenUndoRestoresTheFolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder after apply: %v", err)
 	}
-	if got := reopened.Groups[0].Decision; got != "none" {
-		t.Errorf("decision after apply = %q, want none", got)
+	if got := reopened.Groups[0].Verdict; got != "" {
+		t.Errorf("verdict after apply = %q, want cleared", got)
 	}
 	if got := reopened.Groups[0].Kind; got != "jpeg-only" {
 		t.Errorf("frame kind after dropping the RAW = %q, want jpeg-only", got)
@@ -192,12 +195,12 @@ func TestApplyOnlyTouchesRequestedFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
-	items := make([]DecisionItem, 0, len(folder.Groups))
+	items := make([]VerdictItem, 0, len(folder.Groups))
 	for _, g := range folder.Groups {
-		items = append(items, DecisionItem{Hash: g.Hash, Dir: g.Dir, Stem: g.Stem, Decision: "drop_all"})
+		items = append(items, VerdictItem{Hash: g.Hash, Dir: g.Dir, Stem: g.Stem, Verdict: "cut", Mask: "rj"})
 	}
-	if err := NewDecisionService(a).SetBatch(items); err != nil {
-		t.Fatalf("SetBatch: %v", err)
+	if err := NewDecisionService(a).SetVerdictBatch(items); err != nil {
+		t.Fatalf("SetVerdictBatch: %v", err)
 	}
 
 	// Only the second frame is named, so the first must survive untouched.
@@ -216,8 +219,119 @@ func TestApplyOnlyTouchesRequestedFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
-	if got := reopened.Groups[0].Decision; got != "drop_all" {
-		t.Errorf("untouched frame's decision = %q, want drop_all", got)
+	if got := reopened.Groups[0].Verdict; got != "cut" {
+		t.Errorf("untouched frame's verdict = %q, want cut", got)
+	}
+}
+
+// A rating outlives the cull it was made during: applying spends the verdict
+// and leaves the stars on the frame that survived.
+func TestApplyClearsTheVerdictAndKeepsTheRating(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	library := NewLibraryService(a)
+	decisions := NewDecisionService(a)
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	frame := folder.Groups[0]
+	if err := decisions.SetVerdict(frame.Hash, frame.Dir, frame.Stem, "keep", "j"); err != nil {
+		t.Fatalf("SetVerdict: %v", err)
+	}
+	if err := decisions.SetRating(frame.Hash, frame.Dir, frame.Stem, 5); err != nil {
+		t.Fatalf("SetRating: %v", err)
+	}
+
+	if _, err := NewApplyService(a).Apply(dir, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	reopened, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder after apply: %v", err)
+	}
+	got := reopened.Groups[0]
+	if got.Verdict != "" {
+		t.Errorf("verdict after apply = %q, want cleared", got.Verdict)
+	}
+	if got.Rating != 5 {
+		t.Errorf("rating after apply = %d, want the 5 stars to survive", got.Rating)
+	}
+}
+
+// Ratings are set and batched separately from verdicts, and a rating alone is
+// enough to remember a frame.
+func TestRatingServiceRoundTrip(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	library := NewLibraryService(a)
+	decisions := NewDecisionService(a)
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	items := make([]RatingItem, 0, len(folder.Groups))
+	for i, g := range folder.Groups {
+		items = append(items, RatingItem{Hash: g.Hash, Dir: g.Dir, Stem: g.Stem, Rating: i + 1})
+	}
+	if err := decisions.SetRatingBatch(items); err != nil {
+		t.Fatalf("SetRatingBatch: %v", err)
+	}
+
+	reopened, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	for i, g := range reopened.Groups {
+		if g.Rating != i+1 {
+			t.Errorf("%s rating = %d, want %d", g.Stem, g.Rating, i+1)
+		}
+		if g.Verdict != "" {
+			t.Errorf("%s gained verdict %q from a rating", g.Stem, g.Verdict)
+		}
+	}
+
+	// A plan ignores rated frames: only a verdict asks for files to move.
+	plan, err := NewApplyService(a).Plan(dir, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Actions) != 0 {
+		t.Errorf("a rating planned %d actions: %+v", len(plan.Actions), plan.Actions)
+	}
+}
+
+// The pre-verdict decision strings still arrive from the frontend that has not
+// been restyled yet, and land as the verdict and mask they mean.
+func TestLegacyDecisionServiceStillWrites(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	library := NewLibraryService(a)
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	frame := folder.Groups[0]
+	if err := NewDecisionService(a).SetBatch([]DecisionItem{
+		{Hash: frame.Hash, Dir: frame.Dir, Stem: frame.Stem, Decision: "drop_jpeg"},
+	}); err != nil {
+		t.Fatalf("SetBatch: %v", err)
+	}
+
+	reopened, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	got := reopened.Groups[0]
+	if got.Verdict != "keep" || got.Mask != "r" {
+		t.Errorf("drop_jpeg stored as %q/%q, want keep/r", got.Verdict, got.Mask)
+	}
+	if got.Decision != "drop_jpeg" {
+		t.Errorf("Decision reads back as %q, want drop_jpeg", got.Decision)
 	}
 }
 
@@ -270,9 +384,20 @@ func TestConfigServiceRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestDecisionServiceRejectsUnknownDecision(t *testing.T) {
+func TestDecisionServiceRejectsUnknownValues(t *testing.T) {
 	a := testApp(t)
-	if err := NewDecisionService(a).Set("hash", "/card", "DSCF0001", "burn"); err == nil {
+	decisions := NewDecisionService(a)
+
+	if err := decisions.Set("hash", "/card", "DSCF0001", "burn"); err == nil {
 		t.Error("unknown decision accepted")
+	}
+	if err := decisions.SetVerdict("hash", "/card", "DSCF0001", "burn", "rj"); err == nil {
+		t.Error("unknown verdict accepted")
+	}
+	if err := decisions.SetVerdict("hash", "/card", "DSCF0001", "keep", "raw"); err == nil {
+		t.Error("unknown mask accepted")
+	}
+	if err := decisions.SetRating("hash", "/card", "DSCF0001", 6); err == nil {
+		t.Error("rating off the scale accepted")
 	}
 }

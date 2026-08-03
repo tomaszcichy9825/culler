@@ -35,12 +35,35 @@ const (
 	TrashRejectedFolder TrashMode = "rejected-folder"
 )
 
+// KeepMask says which halves of a RAW+JPEG pair a keep verdict holds on to.
+type KeepMask string
+
+const (
+	KeepMaskBoth KeepMask = "rj"
+	KeepMaskRAW  KeepMask = "r"
+	KeepMaskJPEG KeepMask = "j"
+)
+
+// CutScope says how much of a frame a cut verdict removes: the whole frame, or
+// only the halves the mask leaves out.
+type CutScope string
+
+const (
+	CutRemovesBoth   CutScope = "both"
+	CutRemovesMasked CutScope = "masked"
+)
+
 // Behaviour groups the settings that change what an apply does.
 type Behaviour struct {
 	CollisionPolicy      CollisionPolicy `json:"collisionPolicy"`
 	BulkConfirmThreshold int             `json:"bulkConfirmThreshold"`
 	TrashMode            TrashMode       `json:"trashMode"`
 	RejectedFolderName   string          `json:"rejectedFolderName"`
+
+	// Culling semantics: the mask a fresh keep starts with, and how far a cut
+	// reaches.
+	DefaultKeepMask KeepMask `json:"defaultKeepMask"`
+	CutRemoves      CutScope `json:"cutRemoves"`
 
 	// Concurrency limits for slow sources. Local disks tolerate parallel
 	// reads; network shares stall under them, so those caps stay low.
@@ -69,6 +92,8 @@ func Default() Config {
 			BulkConfirmThreshold: 20,
 			TrashMode:            TrashSystem,
 			RejectedFolderName:   "_Rejected",
+			DefaultKeepMask:      KeepMaskBoth,
+			CutRemoves:           CutRemovesBoth,
 			LocalReadSlots:       16,
 			NetworkReadSlots:     4,
 			NetworkHashWorkers:   4,
@@ -83,30 +108,39 @@ func Default() Config {
 
 // DefaultKeymap returns the stock bindings. "mod" stands for Cmd on macOS and
 // Ctrl elsewhere; resolving it is the frontend's job, not this package's.
+//
+// A verdict is a letter and a rating is a digit: k keeps, x cuts, r and j
+// toggle which half of a pair a keep holds on to, and 1-5 rate. That claims
+// j, k and r, so the focus actions are on the arrow keys alone.
 func DefaultKeymap() map[string][]string {
 	return map[string][]string{
-		"focus-left":      {"ArrowLeft", "h"},
-		"focus-right":     {"ArrowRight", "l"},
-		"focus-up":        {"ArrowUp", "k"},
-		"focus-down":      {"ArrowDown", "j"},
-		"toggle-loupe":    {"Tab"},
-		"toggle-select":   {"space"},
-		"select-all":      {"mod+a"},
-		"escape":          {"Escape"},
-		"keep-all":        {"1"},
-		"drop-raw":        {"2"},
-		"drop-jpeg":       {"3"},
-		"drop-both":       {"4"},
-		"clear-decision":  {"0"},
-		"copy-palette":    {"c"},
-		"move-palette":    {"m"},
-		"filter-palette":  {"f"},
-		"zoom":            {"z"},
-		"apply":           {"Enter"},
-		"undo":            {"mod+z"},
-		"redo":            {"shift+mod+z"},
-		"command-palette": {"mod+k"},
-		"keymap-overlay":  {"?"},
+		"focus-left":       {"ArrowLeft"},
+		"focus-right":      {"ArrowRight"},
+		"focus-up":         {"ArrowUp"},
+		"focus-down":       {"ArrowDown"},
+		"toggle-loupe":     {"Tab"},
+		"toggle-select":    {"space"},
+		"select-all":       {"mod+a"},
+		"escape":           {"Escape"},
+		"verdict-keep":     {"k"},
+		"verdict-cut":      {"x"},
+		"mask-toggle-raw":  {"r"},
+		"mask-toggle-jpeg": {"j"},
+		"rate-1":           {"1"},
+		"rate-2":           {"2"},
+		"rate-3":           {"3"},
+		"rate-4":           {"4"},
+		"rate-5":           {"5"},
+		"rate-clear":       {"0"},
+		"copy-palette":     {"c"},
+		"move-palette":     {"m"},
+		"filter-palette":   {"f"},
+		"zoom":             {"z"},
+		"apply":            {"Enter"},
+		"undo":             {"mod+z"},
+		"redo":             {"shift+mod+z"},
+		"command-palette":  {"mod+k"},
+		"keymap-overlay":   {"?"},
 	}
 }
 
@@ -202,6 +236,20 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown trash mode %q: want %q or %q",
 			c.Behaviour.TrashMode, TrashSystem, TrashRejectedFolder)
+	}
+
+	switch c.Behaviour.DefaultKeepMask {
+	case KeepMaskBoth, KeepMaskRAW, KeepMaskJPEG:
+	default:
+		return fmt.Errorf("unknown default keep mask %q: want %q, %q or %q",
+			c.Behaviour.DefaultKeepMask, KeepMaskBoth, KeepMaskRAW, KeepMaskJPEG)
+	}
+
+	switch c.Behaviour.CutRemoves {
+	case CutRemovesBoth, CutRemovesMasked:
+	default:
+		return fmt.Errorf("unknown cut removes scope %q: want %q or %q",
+			c.Behaviour.CutRemoves, CutRemovesBoth, CutRemovesMasked)
 	}
 
 	if c.Behaviour.BulkConfirmThreshold < 0 {

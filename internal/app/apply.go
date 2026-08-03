@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/decide"
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/ops"
@@ -67,7 +68,7 @@ func (s *ApplyService) Plan(dir string, hashes []string) (PlanDTO, error) {
 	if err != nil {
 		return PlanDTO{}, err
 	}
-	p, err := buildPlan(items)
+	p, err := buildPlan(items, s.app.Config().Behaviour.CutRemoves)
 	if err != nil {
 		return PlanDTO{}, err
 	}
@@ -82,7 +83,7 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	p, err := buildPlan(items)
+	p, err := buildPlan(items, s.app.Config().Behaviour.CutRemoves)
 	if err != nil {
 		return BatchDTO{}, err
 	}
@@ -139,11 +140,11 @@ func (s *ApplyService) Undo() error {
 	return executor.Undo(target)
 }
 
-// planned is one frame with the actions its decision produces.
+// planned is one frame with the actions its verdict produces.
 type planned struct {
 	group   scan.PhotoGroup
 	hash    string
-	d       decide.Decision
+	record  decide.Record
 	actions []ops.FileAction
 }
 
@@ -155,9 +156,23 @@ type plan struct {
 	dto     PlanDTO
 }
 
-// decisionOrder fixes the order decisions are planned in, so the same set of
+// judgement is a verdict and the mask it applies to, which is all of a record
+// that decides what happens to the files. The rating plays no part.
+type judgement struct {
+	verdict decide.Verdict
+	mask    decide.Mask
+}
+
+// planOrder fixes the order judgements are planned in, so the same set of
 // frames always produces the same plan.
-var decisionOrder = []decide.Decision{decide.DropRAW, decide.DropJPEG, decide.DropAll, decide.KeepAll}
+var planOrder = []judgement{
+	{decide.Keep, decide.MaskJPEG},
+	{decide.Keep, decide.MaskRAW},
+	{decide.Cut, decide.MaskBoth},
+	{decide.Cut, decide.MaskRAW},
+	{decide.Cut, decide.MaskJPEG},
+	{decide.Keep, decide.MaskBoth},
+}
 
 // collect rescans dir and pairs each decided frame with its decision. The
 // scan is redone rather than trusted from the last open: files may have moved
@@ -198,40 +213,42 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 		if h == "" || (len(wanted) > 0 && !wanted[h]) {
 			continue
 		}
-		d, ok, err := store.Get(h)
+		rec, ok, err := store.Get(h)
 		if err != nil {
 			return nil, fmt.Errorf("read decisions: %w", err)
 		}
 		if !ok {
 			continue
 		}
-		items = append(items, planned{group: g, hash: h, d: d})
+		items = append(items, planned{group: g, hash: h, record: rec})
 	}
 	return items, nil
 }
 
-// buildPlan maps each frame's decision onto its op and plans it. Planning one
+// buildPlan maps each frame's verdict onto its op and plans it. Planning one
 // frame at a time costs nothing — Plan is pure — and keeps every action
 // attributable to the frame that asked for it, which is what lets a failed
-// action hold on to its decision.
-func buildPlan(items []planned) (plan, error) {
+// action hold on to its verdict. cut says how far a cut reaches, which is the
+// one part of the mapping the user can change.
+func buildPlan(items []planned, cut config.CutScope) (plan, error) {
 	p := plan{dto: PlanDTO{Counts: map[string]int{}}}
 	sizes := map[string]int64{}
 	var parts []string
 
-	for _, d := range decisionOrder {
-		op, ok := opFor(d)
+	for _, j := range planOrder {
+		record := decide.Record{Verdict: j.verdict, Mask: j.mask}
+		op, ok := opFor(record, cut)
 		if !ok {
 			continue
 		}
 		var frames int
 		for _, it := range items {
-			if it.d != d {
+			if it.record.Verdict != j.verdict || it.record.Mask != j.mask {
 				continue
 			}
 			actions, err := op.Plan([]scan.PhotoGroup{it.group})
 			if err != nil {
-				return plan{}, fmt.Errorf("plan %s for %s: %w", d, it.group.Stem, err)
+				return plan{}, fmt.Errorf("plan %s for %s: %w", j.verdict, it.group.Stem, err)
 			}
 			it.actions = actions
 			frames++
@@ -240,7 +257,10 @@ func buildPlan(items []planned) (plan, error) {
 			p.actions = append(p.actions, actions...)
 		}
 		if frames > 0 {
-			p.dto.Counts[string(d)] = frames
+			// Counts are keyed in the pre-verdict vocabulary for as long as
+			// the frontend renders that field.
+			key := legacyDecision(record)
+			p.dto.Counts[key] += frames
 			parts = append(parts, fmt.Sprintf("%s (%d %s)", op.Describe(), frames, pluralFrames(frames)))
 		}
 	}
@@ -257,17 +277,34 @@ func buildPlan(items []planned) (plan, error) {
 	return p, nil
 }
 
-// opFor maps a recorded decision onto the op that carries it out.
-func opFor(d decide.Decision) (ops.Op, bool) {
-	switch d {
-	case decide.KeepAll:
-		return ops.KeepAll{}, true
-	case decide.DropRAW:
-		return ops.DropRAW{}, true
-	case decide.DropJPEG:
-		return ops.DropJPEG{}, true
-	case decide.DropAll:
+// opFor maps a recorded verdict onto the op that carries it out. A keep holds
+// on to the halves its mask names and trashes the rest; a cut takes the whole
+// frame, unless the user has scoped cuts to the mask, in which case it takes
+// only the halves the mask leaves out — which for a mask of both halves means
+// it takes nothing at all. An undecided frame plans nothing, whatever its
+// rating, and so does a record whose verdict makes no sense.
+func opFor(r decide.Record, cut config.CutScope) (ops.Op, bool) {
+	switch r.Verdict {
+	case decide.Keep:
+		return maskOp(r.Mask)
+	case decide.Cut:
+		if cut == config.CutRemovesMasked {
+			return maskOp(r.Mask)
+		}
 		return ops.DropBoth{}, true
+	}
+	return nil, false
+}
+
+// maskOp is the op that leaves exactly the halves m names on disk.
+func maskOp(m decide.Mask) (ops.Op, bool) {
+	switch m {
+	case decide.MaskBoth:
+		return ops.KeepAll{}, true
+	case decide.MaskRAW:
+		return ops.DropJPEG{}, true
+	case decide.MaskJPEG:
+		return ops.DropRAW{}, true
 	}
 	return nil, false
 }
@@ -292,16 +329,18 @@ func pluralFrames(n int) string {
 	return "frames"
 }
 
-// clearApplied removes the decisions of the frames whose actions all
-// succeeded. A frame that lost only some of its files keeps its decision so
-// the user can apply it again once the cause is fixed.
+// clearApplied clears the verdicts of the frames whose actions all succeeded.
+// A frame that lost only some of its files keeps its verdict so the user can
+// apply it again once the cause is fixed. Ratings are left alone: they judge
+// the photograph, not the cull, and a frame that survived still carries its
+// stars.
 func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error {
 	outcomes := make(map[string]string, len(batch.Actions))
 	for _, a := range batch.Actions {
 		outcomes[a.Src] = a.Outcome
 	}
 
-	var cleared []decide.Item
+	var cleared []decide.VerdictItem
 	for _, it := range items {
 		done := true
 		for _, a := range it.actions {
@@ -313,8 +352,8 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 		if !done {
 			continue
 		}
-		cleared = append(cleared, decide.Item{
-			Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, D: decide.None,
+		cleared = append(cleared, decide.VerdictItem{
+			Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Verdict: decide.Undecided,
 		})
 	}
 	if len(cleared) == 0 {
@@ -324,7 +363,7 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	if err != nil {
 		return err
 	}
-	return store.SetBatch(cleared)
+	return store.SetVerdictBatch(cleared)
 }
 
 // pickUndoTarget returns the most recent batch that is neither an undo itself
