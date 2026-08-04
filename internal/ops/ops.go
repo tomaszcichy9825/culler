@@ -14,6 +14,12 @@ const (
 	VerbCopy  Verb = "copy"
 	VerbMove  Verb = "move"
 	VerbTrash Verb = "trash"
+	// VerbDestroy records a file that was permanently deleted. No Op plans it
+	// and the Executor refuses to perform it: it exists so that the one command
+	// allowed to destroy — emptying the rejects — can journal what it did in a
+	// verb that cannot be mistaken for a recoverable trash, and so that undo can
+	// tell those batches apart and leave them alone.
+	VerbDestroy Verb = "destroy"
 )
 
 // FileAction is one planned file operation. Dst is empty for Trash — the

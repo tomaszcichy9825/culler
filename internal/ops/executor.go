@@ -3,6 +3,7 @@ package ops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -98,6 +99,12 @@ func (e *Executor) execute(a FileAction) (string, error) {
 			return "", err
 		}
 		return dst, nil
+	case VerbDestroy:
+		// Permanent deletion never routes through here. It belongs to the one
+		// command sanctioned to do it, which journals the verb itself; letting
+		// an op plan a destroy would put unrecoverable deletion one typo away
+		// from every apply.
+		return "", errors.New("destroy is not an executable verb: only the empty-rejects command deletes permanently")
 	}
 	return "", fmt.Errorf("unknown verb %q", a.Verb)
 }
@@ -193,6 +200,15 @@ func contentDigest(path string) (string, error) {
 // order; failed ones are skipped. The undo is itself journaled as a batch
 // with UndoOf set.
 func (e *Executor) Undo(b journal.Batch) error {
+	// A batch that destroyed files has nothing to replay: there is no
+	// destination to move back from. It is refused whole rather than
+	// half-undone, and nothing is journalled, so the record of the destruction
+	// stays the last word on those files.
+	for _, a := range b.Actions {
+		if Verb(a.Verb) == VerbDestroy {
+			return fmt.Errorf("%q permanently deleted its files and cannot be undone", b.Description)
+		}
+	}
 	undo := journal.Batch{
 		ID:          newBatchID(),
 		Time:        time.Now(),

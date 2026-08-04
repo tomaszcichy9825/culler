@@ -17,6 +17,7 @@ import { exifState } from "./exif.svelte";
 import { frameToGroup, library } from "./library.svelte";
 import type { CatalogFrame } from "./library.svelte";
 import { palette } from "./palette.svelte";
+import { rejects } from "./rejects.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
@@ -817,6 +818,14 @@ export const ACTIONS: Action[] = [
     run: () => palette.toggle("filter"),
   },
   { id: "keymap-overlay", label: "keyboard shortcuts", group: APP, icon: "?", run: () => (app.overlay = !app.overlay) },
+  {
+    id: "empty-rejects",
+    label: "empty rejects…",
+    group: FILES,
+    icon: "⌫",
+    note: "the only permanent deletion in the app",
+    run: () => void rejects.request(),
+  },
   {
     id: "open-settings",
     label: "settings",
