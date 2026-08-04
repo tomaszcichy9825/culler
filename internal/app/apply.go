@@ -142,6 +142,13 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 		if applyErr != nil {
 			return batchDTO(batch), applyErr
 		}
+		// With auto-export on, the surviving frames get fresh sidecars so a
+		// library read in Lightroom stays in step with the cull. Best-effort:
+		// a sidecar that could not be written never fails the apply that has
+		// already moved the files.
+		if cfg.Behaviour.XMPExport {
+			_, _ = NewXMPExportService(s.app).ExportFolder(dir)
+		}
 		return batchDTO(batch), nil
 	}
 

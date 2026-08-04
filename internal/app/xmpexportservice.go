@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,11 +35,6 @@ type XMPExportResultDTO struct {
 // pattern, not enough to be a log file.
 const maxExportErrors = 20
 
-// errExportOff is the refusal when the setting is off. The palette action is
-// gated on the same setting, so reaching this means something called the
-// service directly — it still refuses, and says where the switch is.
-var errExportOff = errors.New("XMP sidecar export is off: turn it on in Settings → Files & writes")
-
 // XMPExportService writes culling decisions out as XMP sidecars.
 //
 // Nothing here runs on its own. The export is invoked, never automatic: the
@@ -50,32 +44,13 @@ var errExportOff = errors.New("XMP sidecar export is off: turn it on in Settings
 //
 // It is also the one thing in this package that writes into the folder being
 // culled, alongside the sidecar ExifService writes and the _Rejected folder.
-// Both need the same defence, and this one has three: a setting that ships
-// off, an action the user has to run, and a writer that only ever touches two
-// fields of one file per frame.
+// Its defences: the run is always explicit, and the writer only ever touches
+// two fields of one file per frame.
 //
 // The run is not journalled and so is not undoable. There is nothing to undo:
 // re-exporting writes the same bytes, and clearing a frame's decision takes
 // our fields back out of the sidecar on the next run. Nothing this service
 // writes can remove a file or a field that belongs to anything else.
-//
-// # Palette action contract
-//
-// The frontend action that drives this is:
-//
-//	id     "export-xmp"
-//	label  "export XMP sidecars"
-//	group  FILES
-//	note   "ratings and labels, for Lightroom and Bridge"
-//	when   the setting is on and a folder is open
-//	run    XMPExportService.ExportFolder(app.folder.dir), then report the
-//	       returned Description, and reload the folder so the new sidecars
-//	       are grouped onto their frames
-//
-// The when() gate keeps the action out of the palette while the setting is
-// off; the service refuses anyway, because a gate in the UI is not a rule.
-// The action takes no keyboard chord — it is a deliberate, occasional export,
-// and every stock chord already means something faster.
 type XMPExportService struct {
 	app *App
 }
@@ -86,7 +61,9 @@ func NewXMPExportService(a *App) *XMPExportService {
 }
 
 // ExportFolder writes a sidecar beside every decided or rated frame in dir and
-// reports what it did.
+// reports what it did. It is always an explicit action — a button or a palette
+// command — so the call is the consent, and nothing here consults a setting to
+// allow it. The setting decides only whether an apply does this on its own.
 //
 // Every frame is visited, not only the decided ones: a frame whose decision
 // has since been cleared has to have our fields taken back out of the sidecar
@@ -95,9 +72,6 @@ func NewXMPExportService(a *App) *XMPExportService {
 // back in the result.
 func (s *XMPExportService) ExportFolder(dir string) (XMPExportResultDTO, error) {
 	cfg := s.app.Config()
-	if !cfg.Behaviour.XMPExport {
-		return XMPExportResultDTO{}, errExportOff
-	}
 
 	resolved, err := expandPath(dir)
 	if err != nil {

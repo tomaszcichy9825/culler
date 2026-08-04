@@ -429,6 +429,27 @@ export async function markNetwork(path: string) {
  * requestApply plans the pending decisions and puts the summary up for
  * confirmation. Nothing has touched the disk when this resolves.
  */
+/**
+ * exportXMP writes a sidecar beside every decided or rated frame in the open
+ * folder, for Lightroom and Bridge. It is the explicit, on-demand action the
+ * button and the palette both run, and it reloads the folder afterwards so the
+ * new sidecars are grouped onto their frames.
+ */
+export async function exportXMP() {
+  const dir = app.folder?.dir;
+  if (!dir) return;
+  app.busy = true;
+  try {
+    const r = await XMPExportService.ExportFolder(dir);
+    app.notify(r.description);
+    await reload(dir);
+  } catch (err) {
+    app.notify(message(err), "error");
+  } finally {
+    app.busy = false;
+  }
+}
+
 export async function requestApply() {
   const dir = app.folder?.dir;
   if (!dir) return;
@@ -1005,17 +1026,7 @@ export const ACTIONS: Action[] = [
     icon: "✧",
     note: "verdicts and ratings, for Lightroom and Bridge",
     when: () => app.folder !== null,
-    run: () =>
-      void (async () => {
-        try {
-          const r = await XMPExportService.ExportFolder(app.folder?.dir ?? "");
-          const cleared = r.cleared > 0 ? `, cleared ${r.cleared}` : "";
-          const failed = r.failed > 0 ? ` — ${r.failed} failed` : "";
-          app.notify(`wrote ${r.written} sidecar${r.written === 1 ? "" : "s"}${cleared}${failed}`, r.failed > 0 ? "error" : undefined);
-        } catch (err) {
-          app.notify(message(err), "error");
-        }
-      })(),
+    run: () => void exportXMP(),
   },
   {
     id: "empty-rejects",

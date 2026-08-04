@@ -3,7 +3,7 @@
   // decision and the disk. The panel takes no DOM focus: the global key layer
   // routes Enter and Esc to it while it is up, so nothing is ever trapped.
 
-  import { cancelApply, confirmApply } from "../lib/actions";
+  import { cancelApply, confirmApply, exportXMP } from "../lib/actions";
   import { formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
   import { PLAN_ORDER, PLAN_TERMS } from "../lib/verdict";
@@ -56,6 +56,11 @@
        the title bar and the status bar now; this strip is only the pending
        decisions and the way to apply them. -->
   <span class="spacer"></span>
+  {#if app.folder !== null}
+    <button class="xmp" onclick={() => void exportXMP()} disabled={app.busy} title="Write XMP sidecars for Lightroom and Bridge">
+      ✧ Write XMP
+    </button>
+  {/if}
 </div>
 
 {#if app.plan}
@@ -105,6 +110,29 @@
 {/if}
 
 <style>
+  .xmp {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-field);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .xmp:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .xmp:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   .bar {
     display: flex;
     align-items: center;
