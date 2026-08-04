@@ -11,7 +11,7 @@
   import type { Snippet } from "svelte";
   import type { GroupDTO } from "../lib/bindings";
   import { app, loupe } from "../lib/state.svelte";
-  import { previewURL } from "../lib/preview";
+  import { developURL, previewURL } from "../lib/preview";
 
   interface Props {
     group: GroupDTO | null;
@@ -33,6 +33,38 @@
 
   let url = $derived(group ? previewURL(group) : "");
 
+  // Tier 3 is an upgrade, never a dependency. On a frame with no JPEG the
+  // embedded preview runs out of pixels well before 1:1, so zooming asks for
+  // the demosaiced RAW instead — and quietly settles for the embedded preview
+  // again if this build has no demosaicer, or the frame defeats it, or the one
+  // retry fails too. Nothing is reported: it is the same photograph either
+  // way, and a toast in the middle of a cull is worse than a softer zoom.
+  let develop = $derived(group ? developURL(group) : "");
+  let retries = $state(0);
+  let exhausted = $state(false);
+
+  let src = $derived(
+    app.zoom && develop !== "" && !exhausted ? develop + (retries > 0 ? `&retry=${retries}` : "") : url,
+  );
+
+  // Every frame is worth one fresh attempt, whatever the last one did.
+  $effect(() => {
+    develop;
+    retries = 0;
+    exhausted = false;
+  });
+
+  // A single retry covers the read that lost a race with a sleeping drive; a
+  // second failure means the tier is not going to work for this frame.
+  function onError() {
+    if (src === url) return; // the embedded preview itself failed — nothing left
+    if (retries === 0) {
+      retries = 1;
+      return;
+    }
+    exhausted = true;
+  }
+
   // 1:1 means one image pixel per screen pixel, so the factor is however much
   // the preview was shrunk to fit the stage.
   function measure() {
@@ -44,9 +76,9 @@
   }
 
   $effect(() => {
-    // Re-measure whenever the zoom is toggled or the frame changes.
+    // Re-measure whenever the zoom is toggled or the bytes on screen change.
     app.zoom;
-    url;
+    src;
     measure();
   });
 
@@ -119,9 +151,10 @@
   {#if group && url !== ""}
     <img
       bind:this={imgEl}
-      src={url}
+      {src}
       alt={group.stem}
       onload={measure}
+      onerror={onError}
       style:transform="scale({scale}) translate({app.panX}px, {app.panY}px)"
     />
   {:else if group}
