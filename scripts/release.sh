@@ -34,7 +34,9 @@ git checkout -b "$BRANCH"
 
 perl -pi -e "s/version: \"[0-9.]+\" # The application version/version: \"$VERSION\" # The application version/" build/config.yml
 perl -pi -e "s/\"file_version\": \"[0-9.]+\"/\"file_version\": \"$VERSION\"/; s/\"ProductVersion\": \"[0-9.]+\"/\"ProductVersion\": \"$VERSION\"/" build/windows/info.json
-perl -pi -e "s/version=\"[0-9.]+\"/version=\"$VERSION\"/" build/windows/wails.exe.manifest
+# Only the assemblyIdentity carries the app version — the file's XML
+# declaration also says version="..." and must stay 1.0.
+perl -pi -e "s/(assemblyIdentity[^>]*version=)\"[0-9.]+\"/\${1}\"$VERSION\"/" build/windows/wails.exe.manifest
 
 git commit -am "Release $TAG"
 git push -u origin "$BRANCH"
