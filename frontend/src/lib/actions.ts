@@ -199,41 +199,100 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   try {
     // Decisions from the folder being left have to land before it is replaced.
     await flush();
-    const folder = await LibraryService.OpenFolder(target);
+    const ticket = await LibraryService.OpenFolderStream(target);
     if (seq !== scanSeq) return;
-    app.setFolder(folder);
+    // The stream owns the state from here: frames and identities arrive as
+    // events carrying this token, and the done event ends the scan. The slow
+    // timer is handed over with the rest.
+    stream = { token: ticket.token, seq, dir: ticket.dir, announce, slow };
+    app.beginStreamedFolder(ticket.dir, ticket.network);
+    app.network[ticket.dir] = ticket.network;
     if (announce) {
       app.view = "grid";
       app.resetZoom();
     }
-    if (remember) rememberFolder(folder.dir);
-    if (announce && (folder.groups ?? []).length === 0) app.notify("no photos in that folder");
+    if (remember) rememberFolder(ticket.dir);
   } catch (err) {
+    clearTimeout(slow);
     if (seq !== scanSeq) return;
     app.error = message(err);
-  } finally {
-    clearTimeout(slow);
+    app.busy = false;
+    app.scanning = null;
+    app.scanSlow = false;
+    app.scanProgress = null;
+    app.scanProgressDir = null;
+  }
+}
+
+/**
+ * The stream the state currently belongs to. Events carrying any other token
+ * are a scan the user has already left and change nothing.
+ */
+let stream: { token: string; seq: number; dir: string; announce: boolean; slow: ReturnType<typeof setTimeout> } | null = null;
+
+/** A frame a caller wants focused as soon as its identity arrives. */
+let pendingFocus: { token: string; hash: string } | null = null;
+
+/** focusWhenHashed asks for hash to be focused once the stream identifies it. */
+function focusWhenHashed(hash: string) {
+  if (stream === null) return;
+  pendingFocus = { token: stream.token, hash };
+  tryPendingFocus();
+}
+
+function tryPendingFocus() {
+  if (pendingFocus === null) return;
+  const i = app.groups.findIndex((g) => g.hash === pendingFocus?.hash);
+  if (i >= 0) {
+    app.setFocus(i);
+    pendingFocus = null;
+  }
+}
+
+/**
+ * watchScanStream subscribes to the streamed open for the life of the app:
+ * frames paint the grid as the walk finds them, identities and decisions land
+ * on top, and the done event ends the scan. Call it once, at startup.
+ */
+export function watchScanStream() {
+  Events.On("scan:frames", (event) => {
+    const batch = event.data;
+    if (!batch || stream === null || batch.token !== stream.token) return;
+    app.appendFrames(batch.frames ?? []);
+  });
+  Events.On("scan:hashed", (event) => {
+    const batch = event.data;
+    if (!batch || stream === null || batch.token !== stream.token) return;
+    app.patchHashes(batch.frames ?? []);
+    tryPendingFocus();
+  });
+  Events.On("scan:done", (event) => {
+    const done = event.data;
+    if (!done || stream === null || done.token !== stream.token) return;
+    const s = stream;
+    stream = null;
+    clearTimeout(s.slow);
+    if (pendingFocus?.token === s.token) pendingFocus = null;
     // Only the newest scan clears the indicator; a superseded one leaving
     // would blank the state the live scan is still using.
-    if (seq === scanSeq) {
+    if (s.seq === scanSeq) {
       app.busy = false;
       app.scanning = null;
       app.scanSlow = false;
       app.scanProgress = null;
       app.scanProgressDir = null;
+      if (done.error !== "") app.error = done.error;
+      else if (s.announce && app.allGroups.length === 0) app.notify("no photos in that folder");
     }
-  }
+  });
 }
 
 export async function openFolder(dir: string, focusHash?: string) {
   await scan(dir, { remember: true, announce: true });
   // A caller that names a frame — a search result jumping into the grid — gets
-  // it focused. A stale arrival (the user switched folders mid-flight) simply
-  // misses the find and changes nothing.
-  if (focusHash !== undefined) {
-    const i = app.groups.findIndex((g) => g.hash === focusHash);
-    if (i >= 0) app.setFocus(i);
-  }
+  // it focused as soon as the stream identifies it. A stale request (the user
+  // switched folders mid-flight) is dropped with its stream.
+  if (focusHash !== undefined) focusWhenHashed(focusHash);
   // A folder the user has opened is one the sidebar should be able to show
   // them again, so it joins the catalogue unless a root already covers it.
   // Quiet and cheap: it registers the root and redraws the top of the tree,

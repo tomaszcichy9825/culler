@@ -61,6 +61,7 @@
     showSearchResults,
     undo,
     watchScanProgress,
+    watchScanStream,
   } from "./lib/actions";
   import { flush, setRating, setVerdict, toggleMask } from "./lib/decisions";
   import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
@@ -210,6 +211,7 @@
   // roots a previous version kept for itself before asking for a folder.
   void (async () => {
     watchScanProgress();
+    watchScanStream();
     await Promise.all([loadSettings(), migrateRoots()]);
     if (path !== "") await openFolder(path);
     if (app.folder) path = app.folder.dir;
@@ -534,7 +536,7 @@
           <MapCentre layout={shell.layout} />
         {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
-        {:else if app.scanning !== null}
+        {:else if app.scanning !== null && app.allGroups.length === 0}
           <Loader />
         {:else if app.folder === null}
           <ColdStart />
@@ -555,6 +557,12 @@
             cutRemoves={app.cutRemoves}
           />
         {:else}
+          {#if app.scanning !== null}
+            <div class="scan-strip" role="status">
+              <span class="scan-dot" aria-hidden="true"></span>
+              still scanning — {app.allGroups.length} frame{app.allGroups.length === 1 ? "" : "s"} so far
+            </div>
+          {/if}
           <Grid />
         {/if}
       </div>
@@ -762,6 +770,32 @@
 
   .gkey {
     color: var(--text-dim);
+  }
+
+  .scan-strip {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-chrome);
+  }
+
+  .scan-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: scan-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes scan-pulse {
+    50% {
+      opacity: 0.25;
+    }
   }
 
   .empty {
