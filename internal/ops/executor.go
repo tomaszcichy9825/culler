@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
@@ -37,13 +38,21 @@ type Executor struct {
 	// verification exists to catch, which is not something a test can
 	// otherwise bring about honestly.
 	Copier func(src, dst string) error
+
+	// Renamer relocates a file within a filesystem. nil means os.Rename; a
+	// test forces it to fail to exercise the cross-filesystem copy fallback,
+	// which is otherwise unreachable without a second volume.
+	Renamer func(src, dst string) error
 }
 
-var batchCounter uint64
+var batchCounter atomic.Uint64
 
+// newBatchID is unique across concurrent applies. The counter is the identity
+// undo keys on, so two batches must never share one: a monotonic atomic
+// bump makes the id distinct even when two applies land in the same
+// nanosecond.
 func newBatchID() string {
-	batchCounter++
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), batchCounter)
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), batchCounter.Add(1))
 }
 
 // Apply executes actions in order. A failed action is recorded in the batch
@@ -64,6 +73,13 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			rec.Err = err.Error()
 		} else {
 			rec.Outcome = journal.OutcomeOK
+			// A copy records the digest of what it wrote, so its undo can be
+			// sure it is deleting the copy it made and not a later replacement.
+			if a.Verb == VerbCopy && dst != "" {
+				if d, derr := contentDigest(dst); derr == nil {
+					rec.Digest = d
+				}
+			}
 		}
 		batch.Actions = append(batch.Actions, rec)
 	}
@@ -82,16 +98,16 @@ func (e *Executor) execute(a FileAction) (string, error) {
 	case VerbTrash:
 		return e.Trasher.Trash(a.Src)
 	case VerbMove:
-		dst, ok, err := e.clearTarget(a.Dst)
+		dst, ok, err := e.clearTarget(a.Src, a.Dst)
 		if err != nil || !ok {
 			return "", err
 		}
-		if err := platform.MoveFile(a.Src, dst); err != nil {
+		if err := e.move(a.Src, dst); err != nil {
 			return "", err
 		}
 		return dst, nil
 	case VerbCopy:
-		dst, ok, err := e.clearTarget(a.Dst)
+		dst, ok, err := e.clearTarget(a.Src, a.Dst)
 		if err != nil || !ok {
 			return "", err
 		}
@@ -112,8 +128,15 @@ func (e *Executor) execute(a FileAction) (string, error) {
 // clearTarget applies the collision policy and returns the path to write to.
 // It reports false when the policy says to leave the existing file alone. The
 // destination's parent is created either way: routing a frame into a dated
-// folder is an instruction to make the folder.
-func (e *Executor) clearTarget(dst string) (string, bool, error) {
+// folder is an instruction to make the folder. src is the file about to be
+// written from, so an operation that would land on its own source is caught
+// before anything is removed.
+func (e *Executor) clearTarget(src, dst string) (string, bool, error) {
+	if same, err := sameFile(src, dst); err != nil {
+		return "", false, err
+	} else if same {
+		return "", false, fmt.Errorf("refusing to overwrite %s with itself", dst)
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", false, err
 	}
@@ -128,9 +151,13 @@ func (e *Executor) clearTarget(dst string) (string, bool, error) {
 	case config.CollisionSkip:
 		return "", false, nil
 	case config.CollisionOverwrite:
-		// The user asked for this explicitly; nothing else in the app removes
-		// a file the user has not pointed at.
-		if err := os.Remove(dst); err != nil {
+		// The user asked to replace it, but replacing is not destroying: the
+		// displaced file goes to the trash so it is still recoverable, like
+		// every other deletion in the app.
+		if e.Trasher == nil {
+			return "", false, fmt.Errorf("overwrite needs a trash and has none")
+		}
+		if _, err := e.Trasher.Trash(dst); err != nil {
 			return "", false, err
 		}
 		return dst, true, nil
@@ -138,6 +165,43 @@ func (e *Executor) clearTarget(dst string) (string, bool, error) {
 		unique, err := platform.UniquePath(dst)
 		return unique, err == nil, err
 	}
+}
+
+// sameFile reports whether src and dst are the same file on disk, following
+// the paths through any links. A destination that does not exist yet is not
+// the source; that is the common case and not an error.
+func sameFile(src, dst string) (bool, error) {
+	si, err := os.Stat(src)
+	if err != nil {
+		return false, err
+	}
+	di, err := os.Stat(dst)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(si, di), nil
+}
+
+// move relocates a file. A same-filesystem rename is atomic and needs no
+// verification. Across filesystems a rename cannot happen, so MoveFile copies
+// then deletes the source — and with verification on the copy is proven intact
+// before the only other copy is removed, because this is the one path that can
+// destroy an original.
+func (e *Executor) move(src, dst string) error {
+	rename := e.Renamer
+	if rename == nil {
+		rename = os.Rename
+	}
+	if err := rename(src, dst); err == nil {
+		return nil
+	}
+	if err := e.copy(src, dst); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 // copy writes one file and, when verification is on, proves it landed intact
@@ -179,6 +243,31 @@ func verifyCopy(src, dst string) error {
 		return fmt.Errorf("verification failed: %s does not match %s", dst, src)
 	}
 	return nil
+}
+
+// removeIfOurCopy deletes path only if it still holds the bytes the copy
+// wrote, identified by the digest recorded at the time. A gone file is
+// nothing to undo. An empty digest is a pre-digest journal, removed as the old
+// undo did. A changed file is left alone with an error, so a replacement is
+// never destroyed.
+func removeIfOurCopy(path, digest string) error {
+	if digest == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	got, err := contentDigest(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if got != digest {
+		return fmt.Errorf("destination changed since it was copied: %s", path)
+	}
+	return os.Remove(path)
 }
 
 // contentDigest is a sha256 over every byte of a file.
@@ -238,9 +327,13 @@ func (e *Executor) Undo(b journal.Batch) error {
 				err = platform.MoveFile(a.Dst, a.Src)
 			}
 		case VerbCopy:
-			// the copy we created is the only thing removed; the source
-			// original is never touched
-			err = os.Remove(a.Dst)
+			// Remove only the copy we made. The digest recorded when it was
+			// written says what "the copy we made" is; if the file there no
+			// longer matches, the user has replaced or edited it and undo
+			// leaves it alone rather than deleting work it never created. A
+			// journal written before digests were recorded keeps the old
+			// behaviour of removing unconditionally.
+			err = removeIfOurCopy(a.Dst, a.Digest)
 			rec.Dst = ""
 		default:
 			err = fmt.Errorf("unknown verb %q", a.Verb)
