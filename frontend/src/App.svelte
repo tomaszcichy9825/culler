@@ -38,7 +38,7 @@
   import MapRight from "./components/map/MapRight.svelte";
   import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
   import RejectsDialog from "./components/RejectsDialog.svelte";
-  import { connectRejects } from "./lib/rejects.svelte";
+  import { connectRejects, watchRejectsProgress } from "./lib/rejects.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -76,10 +76,6 @@
 
   /** Bound but not built yet; they toast rather than doing nothing. */
   const laterActions: Record<string, string> = {
-    "copy-palette": "copy destinations come in v0.2",
-    "move-palette": "move destinations come in v0.2",
-    "filter-palette": "filters come in v0.2",
-    "command-palette": "the command palette comes in v0.2",
     redo: "nothing to redo",
   };
 
@@ -185,6 +181,7 @@
     Survey: async (dirs) => (await RejectsService.Survey(dirs)) as never,
     Empty: async (dirs) => (await RejectsService.Empty(dirs)) as never,
   });
+  void watchRejectsProgress();
   connectMap({
     Positions: async (dir) => (await MapService.Positions(dir)) as never,
   });
@@ -240,18 +237,31 @@
   // EXIF mode edits what the grid had selected (or focused). The panes are
   // mounted individually, so the shell owns the effect that keeps the rail
   // fed — the same one-per-frame path list the assembled mode used, JPEG
-  // preferred because that is the half a write can reach in place.
+  // preferred because that is the half a write can reach in place. The list
+  // is compared against what was last loaded so a streamed grid reassigning
+  // its array on every batch does not re-read the same frames again and
+  // again, and leaving the mode clears the rail so drafts do not linger.
+  let lastExifKey = "";
   $effect(() => {
-    if (shell.mode !== "exif") return;
-    const wanted = app.targets
+    if (shell.mode !== "exif") {
+      if (lastExifKey !== "") {
+        lastExifKey = "";
+        exifState.frames = [];
+        exifState.plan = null;
+      }
+      return;
+    }
+    const paths = app.targets
       .map((g) => (g.hasJpeg && g.jpegPath !== "" ? g.jpegPath : g.rawPath))
-      .filter((p) => p !== "")
-      .join("\n");
+      .filter((p) => p !== "");
+    const wanted = paths.join("\n");
+    if (wanted === lastExifKey) return;
+    lastExifKey = wanted;
     if (wanted === "") {
       exifState.frames = [];
       return;
     }
-    void exifState.load(wanted.split("\n"));
+    void exifState.load(paths);
   });
 
   // The filter narrows what the whole app sees: the grid, focus movement,
@@ -276,6 +286,10 @@
   function escape() {
     if (settings.open) {
       settings.open = false;
+      return;
+    }
+    if (exifState.plan !== null) {
+      exifState.plan = null;
       return;
     }
     if (library.storageOpen) {
@@ -455,9 +469,11 @@
     if (action === undefined) return;
     e.preventDefault();
 
-    // The plan panel and the overlay are modal in intent but not in focus:
-    // they swallow everything except the keys that dismiss them.
+    // The plan panels and the overlay are modal in intent but not in focus:
+    // they swallow everything except the keys that dismiss them. Without this
+    // a verdict key would fall through to the grid behind the dialog.
     if (app.plan && action !== "apply" && action !== "escape") return;
+    if (exifState.plan !== null && action !== "escape") return;
     if (app.overlay && action !== "keymap-overlay" && action !== "escape") return;
     run(action);
   }
@@ -536,34 +552,44 @@
           <MapCentre layout={shell.layout} />
         {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
-        {:else if app.scanning !== null && app.allGroups.length === 0}
-          <Loader />
-        {:else if app.folder === null}
+        {:else if app.folder === null && app.scanning === null}
           <ColdStart />
-        {:else if app.groups.length === 0}
+        {:else if app.allGroups.length === 0 && app.scanning !== null}
+          <!-- Scanning, nothing painted yet: the full loader until the first
+               batch of frames arrives. -->
+          <Loader />
+        {:else if app.allGroups.length === 0}
           <div class="empty">
-            <p class="where" title={app.folder.dir}>No photos in {app.folder.dir}</p>
+            <p class="where" title={app.folder?.dir}>No photos in {app.folder?.dir}</p>
           </div>
-        {:else if shell.layout === 1}
-          <LoupeFirst />
-        {:else if shell.layout === 2}
-          <TableView
-            groups={app.groups}
-            focusIndex={app.focusIndex}
-            onFocus={(i) => (app.focusIndex = i)}
-            onActivate={() => (app.view = "loupe")}
-            isSelected={(g) => app.selection.has(groupKey(g))}
-            preview={false}
-            cutRemoves={app.cutRemoves}
-          />
         {:else}
+          <!-- Frames exist (or are arriving). The strip shows above whichever
+               layout is up while the walk is still running. -->
           {#if app.scanning !== null}
             <div class="scan-strip" role="status">
               <span class="scan-dot" aria-hidden="true"></span>
               still scanning — {app.allGroups.length} frame{app.allGroups.length === 1 ? "" : "s"} so far
             </div>
           {/if}
-          <Grid />
+          {#if app.groups.length === 0}
+            <div class="empty">
+              <p class="hint">No frames match the filter. Press F to change it.</p>
+            </div>
+          {:else if shell.layout === 1}
+            <LoupeFirst />
+          {:else if shell.layout === 2}
+            <TableView
+              groups={app.groups}
+              focusIndex={app.focusIndex}
+              onFocus={(i) => (app.focusIndex = i)}
+              onActivate={() => (app.view = "loupe")}
+              isSelected={(g) => app.selection.has(groupKey(g))}
+              preview={false}
+              cutRemoves={app.cutRemoves}
+            />
+          {:else}
+            <Grid />
+          {/if}
         {/if}
       </div>
     </section>
@@ -591,12 +617,14 @@
   {/if}
 
   {#if app.compare !== null}
-    <CompareView
-      groups={app.compare}
-      onverdict={(frames, v) => setVerdictFor(frames, v)}
-      onexit={() => (app.compare = null)}
-      cutRemoves={app.cutRemoves}
-    />
+    <div class="overlay-fill">
+      <CompareView
+        groups={app.compare}
+        onverdict={(frames, v) => setVerdictFor(frames, v)}
+        onexit={() => (app.compare = null)}
+        cutRemoves={app.cutRemoves}
+      />
+    </div>
   {/if}
 
   {#if settings.open}
@@ -608,7 +636,9 @@
   {/if}
 
   <Palettes />
-  <WritePlanDialog />
+  {#if shell.mode === "exif"}
+    <WritePlanDialog />
+  {/if}
   <RejectsDialog />
 
   <ApplyBar />
@@ -622,12 +652,24 @@
 
 <style>
   .app {
+    /* The containing block for every absolute overlay — the loupe, compare,
+       settings — so `inset: 0` covers the window and not the viewport. */
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
     background: var(--bg-window);
     --wails-draggable: no-drag;
+  }
+
+  /* Compare's body is written as a pane; this makes it cover the shell like
+     every other overlay rather than splitting the window in half. */
+  .overlay-fill {
+    position: absolute;
+    inset: 0;
+    z-index: 45;
+    display: flex;
   }
 
   .error {

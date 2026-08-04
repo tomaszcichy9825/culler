@@ -15,13 +15,15 @@ import { ApplyService, ConfigService, LibraryService, XMPExportService } from ".
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
 import { exifState } from "./exif.svelte";
 import { frameToGroup, library } from "./library.svelte";
+import type { GroupDTO } from "./bindings";
 import type { CatalogFrame } from "./library.svelte";
 import { palette } from "./palette.svelte";
 import { rejects } from "./rejects.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
-import { app, DEFAULT_SLOW_SCAN_SECONDS, loupe, picker, tree } from "./state.svelte";
+import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, loupe, picker, tree } from "./state.svelte";
+import type { HashPatch } from "./state.svelte";
 import { MAX_RATING } from "./verdict";
 import type { Half } from "./verdict";
 
@@ -134,8 +136,48 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
  * Failure is survivable: the stock bindings and defaults apply and the user is
  * told.
  */
+/**
+ * The stock bindings, mirroring the backend's DefaultKeymap. They are the
+ * floor: when the config cannot be read the app is still fully usable rather
+ * than left with keys that only change modes.
+ */
+const DEFAULT_KEYMAP: Record<string, string[]> = {
+  "focus-left": ["ArrowLeft"],
+  "focus-right": ["ArrowRight"],
+  "focus-up": ["ArrowUp"],
+  "focus-down": ["ArrowDown"],
+  "cycle-layout": ["Tab"],
+  "toggle-loupe": ["space"],
+  "toggle-select": ["s"],
+  "select-all": ["mod+a"],
+  escape: ["Escape"],
+  "verdict-keep": ["k"],
+  "verdict-cut": ["x"],
+  "mask-toggle-raw": ["r"],
+  "mask-toggle-jpeg": ["j"],
+  "rate-1": ["1"],
+  "rate-2": ["2"],
+  "rate-3": ["3"],
+  "rate-4": ["4"],
+  "rate-5": ["5"],
+  "rate-clear": ["0"],
+  "copy-palette": ["c"],
+  "move-palette": ["m"],
+  "filter-palette": ["f"],
+  zoom: ["z"],
+  apply: ["Enter"],
+  undo: ["mod+z"],
+  redo: ["shift+mod+z"],
+  "command-palette": ["mod+k"],
+  search: ["/"],
+  "keymap-overlay": ["?"],
+  "open-settings": ["mod+,"],
+  "enter-compare": ["shift+c"],
+  "write-metadata": ["mod+s"],
+};
+
 export async function loadSettings() {
-  const keymap: Record<string, string[]> = {};
+  const keymap: Record<string, string[]> = { ...DEFAULT_KEYMAP };
   let slowScanSeconds = DEFAULT_SLOW_SCAN_SECONDS;
   try {
     const cfg = await ConfigService.Get();
@@ -200,11 +242,32 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
     // Decisions from the folder being left have to land before it is replaced.
     await flush();
     const ticket = await LibraryService.OpenFolderStream(target);
-    if (seq !== scanSeq) return;
+    // Two guards, because two clocks disagree. scanSeq is this side's order of
+    // intent; ticket.seq is the backend's order of begin(), which is what
+    // actually decides whose stream it cancelled. A ticket the backend has
+    // already superseded would install a token it will never emit against, so
+    // it is dropped even if it is still the newest this side asked for.
+    if (seq !== scanSeq || ticket.seq < installedSeq) {
+      clearTimeout(slow);
+      return;
+    }
+    installedSeq = ticket.seq;
+    clearTimeout(watchdog);
+    // A stream that goes silent — a scan the backend cancelled without a done,
+    // or one that stalled — must not leave the UI busy forever.
+    watchdog = setTimeout(() => {
+      if (stream?.token === ticket.token && seq === scanSeq) {
+        stream = null;
+        app.busy = false;
+        app.scanning = null;
+        app.scanSlow = false;
+        app.notify("the scan stopped responding — try opening the folder again", "error");
+      }
+    }, SCAN_WATCHDOG_MS);
     // The stream owns the state from here: frames and identities arrive as
     // events carrying this token, and the done event ends the scan. The slow
     // timer is handed over with the rest.
-    stream = { token: ticket.token, seq, dir: ticket.dir, announce, slow };
+    stream = { token: ticket.token, seq, dir: ticket.dir, announce, slow, watchdog };
     app.beginStreamedFolder(ticket.dir, ticket.network);
     app.network[ticket.dir] = ticket.network;
     if (announce) {
@@ -224,29 +287,64 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   }
 }
 
+/** The highest backend begin-sequence installed, so a superseded one is dropped. */
+let installedSeq = 0;
+/** Cleared and re-armed on every open; fires if a stream goes silent. */
+let watchdog: ReturnType<typeof setTimeout> | undefined;
+const SCAN_WATCHDOG_MS = 60_000;
+
 /**
  * The stream the state currently belongs to. Events carrying any other token
  * are a scan the user has already left and change nothing.
  */
-let stream: { token: string; seq: number; dir: string; announce: boolean; slow: ReturnType<typeof setTimeout> } | null = null;
+let stream: {
+  token: string;
+  seq: number;
+  dir: string;
+  announce: boolean;
+  slow: ReturnType<typeof setTimeout>;
+  watchdog: ReturnType<typeof setTimeout>;
+} | null = null;
 
-/** A frame a caller wants focused as soon as its identity arrives. */
+/** A frame a caller wants focused once the stream that owns it identifies it. */
 let pendingFocus: { token: string; hash: string } | null = null;
 
-/** focusWhenHashed asks for hash to be focused once the stream identifies it. */
+/** focusWhenHashed asks for hash to be focused, bound to the current stream. */
 function focusWhenHashed(hash: string) {
   if (stream === null) return;
   pendingFocus = { token: stream.token, hash };
   tryPendingFocus();
 }
 
+/**
+ * tryPendingFocus focuses the awaited frame once it has arrived and been
+ * identified — but only while the stream that requested it is still the one
+ * on screen, and searching the whole folder rather than a filtered view so a
+ * live filter cannot hide the target.
+ */
 function tryPendingFocus() {
-  if (pendingFocus === null) return;
-  const i = app.groups.findIndex((g) => g.hash === pendingFocus?.hash);
+  if (pendingFocus === null || stream === null || pendingFocus.token !== stream.token) return;
+  const i = app.allGroups.findIndex((g) => g.hash !== "" && g.hash === pendingFocus?.hash);
   if (i >= 0) {
     app.setFocus(i);
     pendingFocus = null;
   }
+}
+
+/**
+ * streamFrames is the list the running scan fills. It is the grid's own list,
+ * unless a search has taken the grid over — then the folder's frames are held
+ * in the search buffer and the stream keeps filling that, so the frames it
+ * finds are all there when the search closes.
+ */
+function streamFrames(frames: GroupDTO[]) {
+  if (library.searchOpen) preSearchGroups = [...preSearchGroups, ...frames];
+  else app.appendFrames(frames);
+}
+
+function streamHashes(patches: HashPatch[]) {
+  if (library.searchOpen) applyHashPatches(preSearchGroups, patches);
+  else app.patchHashes(patches);
 }
 
 /**
@@ -258,12 +356,12 @@ export function watchScanStream() {
   Events.On("scan:frames", (event) => {
     const batch = event.data;
     if (!batch || stream === null || batch.token !== stream.token) return;
-    app.appendFrames(batch.frames ?? []);
+    streamFrames(batch.frames ?? []);
   });
   Events.On("scan:hashed", (event) => {
     const batch = event.data;
     if (!batch || stream === null || batch.token !== stream.token) return;
-    app.patchHashes(batch.frames ?? []);
+    streamHashes(batch.frames ?? []);
     tryPendingFocus();
   });
   Events.On("scan:done", (event) => {
@@ -272,6 +370,7 @@ export function watchScanStream() {
     const s = stream;
     stream = null;
     clearTimeout(s.slow);
+    clearTimeout(s.watchdog);
     if (pendingFocus?.token === s.token) pendingFocus = null;
     // Only the newest scan clears the indicator; a superseded one leaving
     // would blank the state the live scan is still using.
@@ -281,8 +380,9 @@ export function watchScanStream() {
       app.scanSlow = false;
       app.scanProgress = null;
       app.scanProgressDir = null;
+      const count = library.searchOpen ? preSearchGroups.length : app.allGroups.length;
       if (done.error !== "") app.error = done.error;
-      else if (s.announce && app.allGroups.length === 0) app.notify("no photos in that folder");
+      else if (s.announce && count === 0) app.notify("no photos in that folder");
     }
   });
 }
@@ -447,6 +547,8 @@ export async function copyPath() {
  * closing it restores the folder exactly once rather than on every pass.
  */
 let searchWasOpen = false;
+/** The folder's frames set aside while search results occupy the grid. */
+let preSearchGroups: GroupDTO[] = [];
 
 /**
  * showSearchResults puts what the index answered onto the grid, and takes it
@@ -460,10 +562,16 @@ let searchWasOpen = false;
  */
 export function showSearchResults(open: boolean, results: CatalogFrame[]) {
   if (open) {
+    // The folder's frames are set aside while the results take the grid.
+    // A streamed folder never keeps a second copy in folder.groups, so the
+    // list itself is what has to be restored — there is nowhere else to read
+    // it back from.
+    if (!searchWasOpen) preSearchGroups = app.allGroups;
     app.allGroups = results.map(frameToGroup);
     app.focusIndex = Math.max(0, Math.min(app.focusIndex, results.length - 1));
   } else if (searchWasOpen) {
-    app.allGroups = app.folder?.groups ?? [];
+    app.allGroups = preSearchGroups;
+    preSearchGroups = [];
     app.focusIndex = 0;
   }
   searchWasOpen = open;
@@ -631,6 +739,16 @@ function hasFrames(): boolean {
   return app.groups.length > 0;
 }
 
+/**
+ * culling is true only when the grid is on screen with frames in it. The
+ * decision keys, the loupe and compare all act on that grid, so running them
+ * from EXIF or MAP or IMPORT — where the same frames are not shown — would
+ * change state the user cannot see.
+ */
+function culling(): boolean {
+  return shell.mode === "cull" && app.groups.length > 0;
+}
+
 function ratingActions(): Action[] {
   const rows: Action[] = [];
   for (let n = 1; n <= MAX_RATING; n++) {
@@ -640,7 +758,7 @@ function ratingActions(): Action[] {
       group: RATING,
       icon: "★",
       note: "again clears it",
-      when: hasFrames,
+      when: culling,
       run: () => setRating(n),
     });
   }
@@ -655,7 +773,7 @@ function maskAction(half: Half): Action {
     group: VERDICT,
     icon: half === "r" ? "R" : "J",
     note: "implies a keep",
-    when: hasFrames,
+    when: culling,
     run: () => toggleMask(half),
   };
 }
@@ -733,7 +851,7 @@ export const ACTIONS: Action[] = [
     group: VERDICT,
     icon: "✓",
     note: "again clears it",
-    when: hasFrames,
+    when: culling,
     run: () => setVerdict("keep"),
   },
   {
@@ -742,26 +860,26 @@ export const ACTIONS: Action[] = [
     group: VERDICT,
     icon: "✕",
     note: "again clears it",
-    when: hasFrames,
+    when: culling,
     run: () => setVerdict("cut"),
   },
   maskAction("r"),
   maskAction("j"),
 
   ...ratingActions(),
-  { id: "rate-clear", label: "clear the rating", group: RATING, icon: "☆", when: hasFrames, run: () => setRating(0) },
+  { id: "rate-clear", label: "clear the rating", group: RATING, icon: "☆", when: culling, run: () => setRating(0) },
 
-  { id: "toggle-select", label: "toggle selection", group: SELECT, icon: "▣", when: hasFrames, run: () => app.toggleSelect() },
+  { id: "toggle-select", label: "toggle selection", group: SELECT, icon: "▣", when: culling, run: () => app.toggleSelect() },
   {
     id: "toggle-loupe",
     label: "loupe the focused frame",
     group: VIEW,
     icon: "◎",
     note: "space closes it again",
-    when: hasFrames,
+    when: culling,
     run: () => (app.view = app.view === "loupe" ? "grid" : "loupe"),
   },
-  { id: "select-all", label: "select every frame", group: SELECT, icon: "▦", when: hasFrames, run: () => app.selectAll() },
+  { id: "select-all", label: "select every frame", group: SELECT, icon: "▦", when: culling, run: () => app.selectAll() },
   {
     id: "escape",
     label: "back out",
@@ -927,7 +1045,7 @@ export const ACTIONS: Action[] = [
     group: VIEW,
     icon: "⇄",
     note: "the selection, or this frame and the next",
-    when: () => app.groups.length >= 2,
+    when: () => shell.mode === "cull" && app.groups.length >= 2,
     run: enterCompare,
   },
 ];
