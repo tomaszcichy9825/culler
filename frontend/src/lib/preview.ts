@@ -21,6 +21,19 @@ export function previewURL(g: GroupDTO, size: "grid" | "full" = "full"): string 
   return "";
 }
 
+/**
+ * developURL is tier 3: the RAW demosaiced at full resolution, which is the
+ * only thing that puts real detail under a 1:1 zoom on a frame that has no
+ * JPEG. It costs seconds and it only exists in a build made with -tags libraw,
+ * so it is strictly an upgrade over the embedded preview and never a
+ * requirement — an empty string means don't bother asking.
+ */
+export function developURL(g: GroupDTO): string {
+  if (g.hasJpeg || !g.hasRaw || g.rawPath === "") return "";
+  const cache = g.hash !== "" ? `&hash=${encodeURIComponent(g.hash)}` : "";
+  return `/preview?path=${encodeURIComponent(g.rawPath)}&tier=develop${cache}`;
+}
+
 /** kindBadge is the one-letter marker for what files a frame is made of. */
 export function kindBadge(kind: string): string {
   switch (kind) {

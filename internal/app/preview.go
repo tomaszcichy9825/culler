@@ -15,6 +15,7 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/preview"
+	"github.com/tomaszcichy9825/culler/internal/rawdev"
 	"github.com/tomaszcichy9825/culler/internal/thumbs"
 )
 
@@ -32,7 +33,21 @@ const (
 	// TierEmbedded is the full-size preview embedded in a RAW, which is what
 	// makes RAW-only frames viewable without a demosaicer.
 	TierEmbedded = "embedded"
+	// TierDevelop is the demosaiced RAW itself, for 1:1 zoom on a RAW-only
+	// frame where the embedded preview runs out of pixels. It costs seconds
+	// rather than milliseconds, it is only ever asked for on demand, and it
+	// exists at all only in a build made with -tags libraw.
+	TierDevelop = "develop"
 )
+
+// SizeDevelop is the cache bucket a developed frame is filed under. It is a
+// ceiling, not a target: thumbs.Store leaves any image already inside it at
+// its own resolution, which is exactly what 1:1 zoom needs, and only the
+// largest medium-format sensors are shrunk at all. Reusing the store buys
+// atomic writes, LRU eviction and a shared size cap for free; the price is one
+// decode and one re-encode of a full-resolution JPEG on the way in, which is
+// small beside the demosaic that produced it.
+const SizeDevelop = thumbs.Size(8192)
 
 // previewCacheControl is long because a preview is requested many times per
 // session while the file it came from does not change. An apply replaces the
@@ -125,6 +140,11 @@ func (s *PreviewService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tier = TierJPEG
 	}
 
+	if tier == TierDevelop {
+		s.serveDevelop(w, r, query.Get("path"), query.Get("hash"))
+		return
+	}
+
 	// A grid-size request with a content hash is answered from the local
 	// thumb cache before the source is even stat'd: a hit costs one local
 	// disk read no matter how slow — or how gone — the folder's volume is,
@@ -189,6 +209,69 @@ func (s *PreviewService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveExtracted(w, r, path, info, tier)
 }
 
+// serveDevelop demosaics the RAW and serves the result, filed in the
+// thumbnail cache so the seconds it costs are paid once per frame rather than
+// once per zoom. It resolves the request itself rather than sharing the grid
+// path above: a develop is never a grid tile, and the cache bucket it reads
+// and writes is a different one.
+//
+// Failure here is not fatal. The loupe falls back to the embedded preview on
+// any non-success, so the only thing the status has to be is unambiguous.
+func (s *PreviewService) serveDevelop(w http.ResponseWriter, r *http.Request, reqPath, key string) {
+	path, info, status, err := resolvePreview(s.app.Config(), reqPath, TierDevelop)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	// The demosaicer is a build-time choice. Checking it after the request has
+	// been validated rather than before keeps every rejection identical across
+	// the two build variants, so only a request that would genuinely have been
+	// served ever sees a 501. The loupe reads it as its cue to fall back to
+	// the embedded preview, silently.
+	if !rawdev.Available() {
+		http.Error(w, rawdev.ErrUnavailable.Error(), http.StatusNotImplemented)
+		return
+	}
+
+	store := s.thumbStore()
+	cacheable := store != nil && key != ""
+	if cacheable {
+		if cached, ok := store.Path(key, SizeDevelop); ok {
+			store.Touch(key, SizeDevelop)
+			w.Header().Set("Cache-Control", previewCacheControl)
+			w.Header().Set("Content-Type", "image/jpeg")
+			http.ServeFile(w, r, cached)
+			return
+		}
+	}
+
+	release, ok := s.acquire(r, path)
+	if !ok {
+		return // client gone; nothing to write
+	}
+	defer release()
+
+	data, err := rawdev.Develop(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Cache-Control", previewCacheControl)
+	w.Header().Set("Content-Type", "image/jpeg")
+	if cacheable {
+		// Upright already: the demosaicer applies the camera's flip, and the
+		// bytes it returns carry no EXIF for the store to read one from.
+		if cached, err := store.PutOriented(key, SizeDevelop, data, 1); err == nil {
+			http.ServeFile(w, r, cached)
+			return
+		}
+		// Uncacheable — a full volume, say. The develop itself is still good.
+	}
+	http.ServeContent(w, r, filepath.Base(path)+".jpg", info.ModTime(), bytes.NewReader(data))
+}
+
 // thumbStore lazily opens the on-disk thumbnail cache in the OS cache dir.
 // A machine where that fails just serves previews uncached.
 func (s *PreviewService) thumbStore() *thumbs.Store {
@@ -243,7 +326,7 @@ func allowedExt(cfg config.Config, path, tier string) bool {
 	switch tier {
 	case TierJPEG, TierThumb:
 		allowed = cfg.JpegExts
-	case TierEmbedded:
+	case TierEmbedded, TierDevelop:
 		allowed = cfg.RawExts
 	default:
 		return false
@@ -271,7 +354,7 @@ func resolvePreview(cfg config.Config, path, tier string) (string, os.FileInfo, 
 	switch tier {
 	case TierJPEG, TierThumb:
 		allowed = cfg.JpegExts
-	case TierEmbedded:
+	case TierEmbedded, TierDevelop:
 		allowed = cfg.RawExts
 	default:
 		return "", nil, http.StatusBadRequest, fmt.Errorf("unknown tier %q", tier)
