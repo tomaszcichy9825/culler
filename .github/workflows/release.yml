@@ -104,34 +104,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      # GitHub's own note generator lists merged PRs, and this repo commits
-      # straight to main — so the notes are built from commit subjects between
-      # the previous tag and this one instead.
-      - name: Write release notes
-        run: |
-          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
-          {
-            echo "## What's changed"
-            echo
-            if [ -n "$PREV" ]; then
-              git log --format='- %s' "$PREV..${GITHUB_REF_NAME}"
-              echo
-              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
-            else
-              git log --format='- %s' "${GITHUB_REF_NAME}"
-              echo
-              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}"
-            fi
-          } > notes.md
+      # Notes come from merged PR titles — main is PR-only.
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
           files: dist/*
-          body_path: notes.md
+          generate_release_notes: true

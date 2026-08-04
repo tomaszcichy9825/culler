@@ -17,12 +17,15 @@ Ground rules:
 - Pure Go by default; cgo only behind a build tag and only after the benchmark gate in
   DESIGN.md §5 fails.
 - Public repo, personal GitHub account (tomaszcichy9825) only.
+- main is protected: every change lands through a pull request with CI green.
+  Branch, PR, merge — never push to main directly. PR titles become the
+  release notes, so write them like changelog lines.
 - Project board: https://github.com/users/tomaszcichy9825/projects/5
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **culler** (5469 symbols, 12666 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **culler** (5469 symbols, 12676 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
