@@ -87,6 +87,7 @@ function stockConfig(): Config {
       libraryRoot: "~/Pictures",
       moveOnImport: false,
       verifyCopies: true,
+      xmpExport: false,
       localReadSlots: 16,
       networkReadSlots: 4,
       networkHashWorkers: 4,

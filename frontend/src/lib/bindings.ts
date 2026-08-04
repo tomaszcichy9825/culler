@@ -11,6 +11,7 @@ export {
   LibraryService,
   MapService,
   RejectsService,
+  XMPExportService,
 } from "../../bindings/github.com/tomaszcichy9825/culler/internal/app/index.js";
 
 export type {

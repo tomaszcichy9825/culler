@@ -31,6 +31,7 @@ func main() {
 	importer := app.NewImportService(backend, catalogue)
 	mapper := app.NewMapService(backend)
 	rejects := app.NewRejectsService(backend)
+	sidecars := app.NewXMPExportService(backend)
 	settings := app.NewConfigService(backend)
 	previews := app.NewPreviewService(backend)
 
@@ -47,6 +48,7 @@ func main() {
 			application.NewService(importer),
 			application.NewService(mapper),
 			application.NewService(rejects),
+			application.NewService(sidecars),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

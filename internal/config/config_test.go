@@ -502,3 +502,38 @@ func TestLoadCanTurnVerificationOff(t *testing.T) {
 		t.Errorf("the untouched fields lost their defaults: %q", c.Behaviour.LibraryRoot)
 	}
 }
+
+// The sidecar export is off until the user says otherwise: it is an interop
+// export, not the decision store, and turning it on puts a file beside every
+// decided photograph.
+func TestXMPExportIsOffByDefault(t *testing.T) {
+	c := Default()
+	if c.Behaviour.XMPExport {
+		t.Error("XMP sidecar export must ship off")
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the defaults must validate: %v", err)
+	}
+	// A bool has no invalid value, so the setting adds no rule of its own —
+	// on has to validate exactly as cleanly as off.
+	c.Behaviour.XMPExport = true
+	if err := c.Validate(); err != nil {
+		t.Errorf("turning the export on must not fail validation: %v", err)
+	}
+}
+
+func TestLoadCanTurnXMPExportOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeFile(t, path, `{"behaviour": {"xmpExport": true}}`)
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Behaviour.XMPExport {
+		t.Error("xmpExport: true was ignored")
+	}
+	if c.Behaviour.TrashMode != Default().Behaviour.TrashMode {
+		t.Errorf("the untouched fields lost their defaults: %q", c.Behaviour.TrashMode)
+	}
+}
