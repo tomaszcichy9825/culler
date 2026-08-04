@@ -10,6 +10,7 @@ export {
   LibraryIndexService,
   LibraryService,
   MapService,
+  RejectsService,
 } from "../../bindings/github.com/tomaszcichy9825/culler/internal/app/index.js";
 
 export type {

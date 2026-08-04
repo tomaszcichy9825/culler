@@ -30,6 +30,7 @@ func main() {
 	catalogue := app.NewLibraryIndexService(backend)
 	importer := app.NewImportService(backend, catalogue)
 	mapper := app.NewMapService(backend)
+	rejects := app.NewRejectsService(backend)
 	settings := app.NewConfigService(backend)
 	previews := app.NewPreviewService(backend)
 
@@ -45,6 +46,7 @@ func main() {
 			application.NewService(catalogue),
 			application.NewService(importer),
 			application.NewService(mapper),
+			application.NewService(rejects),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

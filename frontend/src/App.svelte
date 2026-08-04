@@ -26,7 +26,7 @@
   import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
   import { runAction, openFolder as openFolderAction } from "./lib/actions";
-  import { ExifService, ImportService, LibraryIndexService, MapService } from "./lib/bindings";
+  import { ExifService, ImportService, LibraryIndexService, MapService, RejectsService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
   import ImportCentre from "./components/import/ImportCentre.svelte";
@@ -37,6 +37,8 @@
   import MapLeft from "./components/map/MapLeft.svelte";
   import MapRight from "./components/map/MapRight.svelte";
   import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
+  import RejectsDialog from "./components/RejectsDialog.svelte";
+  import { connectRejects } from "./lib/rejects.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -177,6 +179,10 @@
     // folder: the grid has to be the folder's again before it loads.
     library.closeSearch();
     void openFolderAction(dir, focusHash);
+  });
+  connectRejects({
+    Survey: async (dirs) => (await RejectsService.Survey(dirs)) as never,
+    Empty: async (dirs) => (await RejectsService.Empty(dirs)) as never,
   });
   connectMap({
     Positions: async (dir) => (await MapService.Positions(dir)) as never,
@@ -595,6 +601,7 @@
 
   <Palettes />
   <WritePlanDialog />
+  <RejectsDialog />
 
   <ApplyBar />
   <StatusBar />
