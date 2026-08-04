@@ -28,6 +28,11 @@ type Action struct {
 	Dst     string `json:"dst,omitempty"`
 	Outcome string `json:"outcome"`
 	Err     string `json:"err,omitempty"`
+	// Digest is the sha256 of a copy's destination as it was written, so undo
+	// can tell the copy it made from a file the user has since changed and
+	// refuse to delete the latter. Empty for non-copies and for journals
+	// written before it was recorded.
+	Digest string `json:"digest,omitempty"`
 }
 
 // Batch is the journal record for one applied operation.
