@@ -40,11 +40,11 @@ jobs:
 
       - name: Install NSIS (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
           choco install nsis -y --no-progress
-          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
-          echo "/c/Program Files (x86)/NSIS/Bin" >> "$GITHUB_PATH"
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS\Bin"
 
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
