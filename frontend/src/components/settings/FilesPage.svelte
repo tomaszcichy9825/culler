@@ -9,6 +9,7 @@
   import { settings } from "../../lib/settings.svelte";
   import Aside from "./Aside.svelte";
   import ChipList from "./ChipList.svelte";
+  import Choice from "./Choice.svelte";
   import ControlChip from "./ControlChip.svelte";
   import PageShell from "./PageShell.svelte";
   import SettingGroup from "./SettingGroup.svelte";
@@ -103,6 +104,25 @@
           wired={false}
         >
           <ControlChip label="purge" disabled title="No backend call clears the cache yet" />
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup title="Exports" hint="run from the palette">
+        <SettingRow
+          name="XMP sidecar export"
+          desc="Write each frame's rating and a colour label — green for a keep, red for a cut — into a .xmp beside it, for Lightroom and Bridge. Turning this on adds the export to the command palette; it never runs on its own, and a sidecar another tool wrote keeps everything else it holds."
+          field="behaviour.xmpExport"
+          terms="xmp sidecar lightroom bridge adobe label rating export interop"
+        >
+          <Choice
+            label="XMP sidecar export"
+            value={draft.behaviour.xmpExport ? "on" : "off"}
+            options={[
+              { value: "on", label: "on" },
+              { value: "off", label: "off" },
+            ]}
+            onchange={(v) => settings.patch({ xmpExport: v === "on" })}
+          />
         </SettingRow>
       </SettingGroup>
     {/snippet}

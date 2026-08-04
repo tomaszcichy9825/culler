@@ -11,7 +11,7 @@ import { tick } from "svelte";
 
 import { Clipboard, Events } from "@wailsio/runtime";
 
-import { ApplyService, ConfigService, LibraryService } from "./bindings";
+import { ApplyService, ConfigService, LibraryService, XMPExportService } from "./bindings";
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
 import { exifState } from "./exif.svelte";
 import { frameToGroup, library } from "./library.svelte";
@@ -818,6 +818,25 @@ export const ACTIONS: Action[] = [
     run: () => palette.toggle("filter"),
   },
   { id: "keymap-overlay", label: "keyboard shortcuts", group: APP, icon: "?", run: () => (app.overlay = !app.overlay) },
+  {
+    id: "export-xmp",
+    label: "export XMP sidecars",
+    group: FILES,
+    icon: "✧",
+    note: "verdicts and ratings, for Lightroom and Bridge",
+    when: () => app.folder !== null,
+    run: () =>
+      void (async () => {
+        try {
+          const r = await XMPExportService.ExportFolder(app.folder?.dir ?? "");
+          const cleared = r.cleared > 0 ? `, cleared ${r.cleared}` : "";
+          const failed = r.failed > 0 ? ` — ${r.failed} failed` : "";
+          app.notify(`wrote ${r.written} sidecar${r.written === 1 ? "" : "s"}${cleared}${failed}`, r.failed > 0 ? "error" : undefined);
+        } catch (err) {
+          app.notify(message(err), "error");
+        }
+      })(),
+  },
   {
     id: "empty-rejects",
     label: "empty rejects…",

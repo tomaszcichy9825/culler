@@ -78,6 +78,14 @@ type Behaviour struct {
 	MoveOnImport bool   `json:"moveOnImport"`
 	VerifyCopies bool   `json:"verifyCopies"`
 
+	// XMPExport turns on writing verdicts and ratings to XMP sidecars beside
+	// the frames, for Lightroom and Bridge. Off, because the sidecar is an
+	// export and not the source of truth, and because turning it on puts a
+	// file next to every decided photograph — see docs/DESIGN.md §3.3. It
+	// gates an action the user still has to invoke; nothing is written to a
+	// sidecar merely because this is true.
+	XMPExport bool `json:"xmpExport"`
+
 	// Concurrency limits for slow sources. Local disks tolerate parallel
 	// reads; network shares stall under them, so those caps stay low.
 	LocalReadSlots      int `json:"localReadSlots"`      // concurrent preview reads, local volumes
@@ -110,6 +118,7 @@ func Default() Config {
 			LibraryRoot:          "~/Pictures",
 			MoveOnImport:         false,
 			VerifyCopies:         true,
+			XMPExport:            false,
 			LocalReadSlots:       16,
 			NetworkReadSlots:     4,
 			NetworkHashWorkers:   4,
