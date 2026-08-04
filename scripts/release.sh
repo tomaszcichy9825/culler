@@ -20,8 +20,10 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# --no-tags: draft releases park untagged-* refs on the remote; they are
+# GitHub's business, not this clone's.
 git checkout main
-git pull --ff-only
+git pull --ff-only --no-tags
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "$TAG already exists" >&2
   exit 1
@@ -38,13 +40,21 @@ git commit -am "Release $TAG"
 git push -u origin "$BRANCH"
 gh pr create --title "Release $TAG" --body "Version bump for $TAG. Tag follows the merge."
 
+# CI takes a moment to register its checks on a fresh PR; watching too early
+# reports "no checks" and dies. Wait for them to exist, then watch — a real
+# check failure still fails the script.
 echo "waiting for checks…"
+for _ in $(seq 1 30); do
+  count=$(gh pr checks --json state --jq 'length' 2>/dev/null || echo 0)
+  [ "$count" -gt 0 ] && break
+  sleep 10
+done
 gh pr checks --watch --interval 20
 
 # Plain merge, never --auto: the tag must land on the exact merge commit.
 gh pr merge --squash --delete-branch
 git checkout main
-git pull --ff-only
+git pull --ff-only --no-tags
 
 git tag -a "$TAG" -m "culler $TAG"
 git push origin "$TAG"
