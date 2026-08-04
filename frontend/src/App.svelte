@@ -26,13 +26,17 @@
   import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
   import { runAction, openFolder as openFolderAction } from "./lib/actions";
-  import { ExifService, ImportService, LibraryIndexService } from "./lib/bindings";
+  import { ExifService, ImportService, LibraryIndexService, MapService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
   import ImportCentre from "./components/import/ImportCentre.svelte";
   import ImportLeft from "./components/import/ImportLeft.svelte";
   import ImportRight from "./components/import/ImportRight.svelte";
   import { connectImport, onOpenFolder as onImportOpen, watchImportProgress } from "./lib/import.svelte";
+  import MapCentre from "./components/map/MapCentre.svelte";
+  import MapLeft from "./components/map/MapLeft.svelte";
+  import MapRight from "./components/map/MapRight.svelte";
+  import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -173,6 +177,15 @@
     // folder: the grid has to be the folder's again before it loads.
     library.closeSearch();
     void openFolderAction(dir, focusHash);
+  });
+  connectMap({
+    Positions: async (dir) => (await MapService.Positions(dir)) as never,
+  });
+  void watchMapProgress();
+  onOpenFrame((dir, hash) => {
+    shell.setMode("cull");
+    library.closeSearch();
+    void openFolderAction(dir, hash);
   });
   connectImport({
     DetectCards: async () => ((await ImportService.DetectCards()) ?? []) as never,
@@ -490,6 +503,8 @@
           <FramesRail />
         {:else if shell.mode === "import"}
           <ImportLeft />
+        {:else if shell.mode === "map"}
+          <MapLeft layout={shell.layout} />
         {:else}
           {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
         {/if}
@@ -509,6 +524,8 @@
               void openFolderAction(dir);
             }}
           />
+        {:else if shell.mode === "map"}
+          <MapCentre layout={shell.layout} />
         {:else if shell.mode !== "cull"}
           {@render ghost(shell.spec.label, `${shell.layoutLabel} comes later`, "⌃1", "back to cull")}
         {:else if app.scanning !== null}
@@ -546,6 +563,8 @@
           <TargetsPane />
         {:else if shell.mode === "import"}
           <ImportRight />
+        {:else if shell.mode === "map"}
+          <MapRight />
         {:else}
           {@render ghost(shell.spec.panes.right, "this pane comes later", "⌃1", "back to cull")}
         {/if}
