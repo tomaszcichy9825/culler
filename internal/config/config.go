@@ -78,7 +78,7 @@ type Behaviour struct {
 	MoveOnImport bool   `json:"moveOnImport"`
 	VerifyCopies bool   `json:"verifyCopies"`
 
-	// XMPExport turns on writing verdicts and ratings to XMP sidecars beside
+	// XMPExport, when on, writes verdicts and ratings to XMP sidecars automatically
 	// the frames, for Lightroom and Bridge. Off, because the sidecar is an
 	// export and not the source of truth, and because turning it on puts a
 	// file next to every decided photograph — see docs/DESIGN.md §3.3. It

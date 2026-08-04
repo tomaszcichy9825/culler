@@ -109,13 +109,13 @@
 
       <SettingGroup title="Exports" hint="run from the palette">
         <SettingRow
-          name="XMP sidecar export"
-          desc="Write each frame's rating and a colour label — green for a keep, red for a cut — into a .xmp beside it, for Lightroom and Bridge. Turning this on adds the export to the command palette; it never runs on its own, and a sidecar another tool wrote keeps everything else it holds."
+          name="Auto-write XMP sidecars on apply"
+          desc="After each apply, write every surviving frame's rating and a colour label — green for a keep, red for a cut — into a .xmp beside it, for Lightroom and Bridge. You can always write them by hand with the Write XMP button or the command palette; this only decides whether an apply does it for you. A sidecar another tool wrote keeps everything else it holds."
           field="behaviour.xmpExport"
           terms="xmp sidecar lightroom bridge adobe label rating export interop"
         >
           <Choice
-            label="XMP sidecar export"
+            label="Auto-write XMP on apply"
             value={draft.behaviour.xmpExport ? "on" : "off"}
             options={[
               { value: "on", label: "on" },

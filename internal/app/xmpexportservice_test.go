@@ -63,23 +63,25 @@ func decideFrame(t *testing.T, a *App, dir, path, stem string, v decide.Verdict,
 	}
 }
 
-func TestExportFolderRefusesWhileTheSettingIsOff(t *testing.T) {
+func TestExportFolderIsExplicitAndNeedsNoSetting(t *testing.T) {
 	a := testApp(t)
 	if a.Config().Behaviour.XMPExport {
-		t.Fatal("the fixture must start with the export off")
+		t.Fatal("the fixture must start with the auto-export setting off")
 	}
 	dir := exportCard(t)
 	decideFrame(t, a, dir, filepath.Join(dir, "DSCF0001.JPG"), "DSCF0001", decide.Keep, 4)
 
-	_, err := NewXMPExportService(a).ExportFolder(dir)
-	if err == nil {
-		t.Fatal("want a refusal while the setting is off")
+	// The call is the consent: a manual export writes even with the setting
+	// off, because the setting only governs whether an apply does it too.
+	res, err := NewXMPExportService(a).ExportFolder(dir)
+	if err != nil {
+		t.Fatalf("an explicit export must run regardless of the setting: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Settings") {
-		t.Errorf("the refusal must say where the switch is, got %q", err)
+	if res.Written == 0 {
+		t.Error("a kept, rated frame should have produced a sidecar")
 	}
-	if exists(t, filepath.Join(dir, "DSCF0001.RAF.xmp")) {
-		t.Error("a refused export must not have written anything")
+	if !exists(t, filepath.Join(dir, "DSCF0001.RAF.xmp")) {
+		t.Error("the sidecar was not written")
 	}
 }
 
@@ -236,7 +238,7 @@ func TestExportFolderNeedsAFolder(t *testing.T) {
 
 // The service reads the running configuration, not the one it was built with,
 // so turning the setting off stops the next call.
-func TestExportFolderFollowsTheRunningSetting(t *testing.T) {
+func TestExportFolderRunsRegardlessOfTheSetting(t *testing.T) {
 	a := exportApp(t)
 	dir := exportCard(t)
 	s := NewXMPExportService(a)
@@ -249,8 +251,10 @@ func TestExportFolderFollowsTheRunningSetting(t *testing.T) {
 	if err := a.setConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ExportFolder(dir); err == nil {
-		t.Error("turning the setting off must stop the export")
+	// The setting is off, but an explicit export still runs — it only ever
+	// gated the automatic one.
+	if _, err := s.ExportFolder(dir); err != nil {
+		t.Errorf("an explicit export must run with the setting off: %v", err)
 	}
 	if a.Config().Behaviour.CollisionPolicy != config.CollisionRenameSuffix {
 		t.Error("the rest of the configuration was disturbed")
