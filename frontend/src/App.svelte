@@ -13,7 +13,7 @@
   import KeymapOverlay from "./components/KeymapOverlay.svelte";
   import Loader from "./components/Loader.svelte";
   import ColdStart from "./components/ColdStart.svelte";
-  import CompareView from "./components/CompareView.svelte";
+  import CompareView, { compare as compareApi } from "./components/CompareView.svelte";
   import EditorPane from "./components/exif/EditorPane.svelte";
   import FramesRail from "./components/exif/FramesRail.svelte";
   import TargetsPane from "./components/exif/TargetsPane.svelte";
@@ -458,11 +458,66 @@
     }
   }
 
+  /**
+   * handleCompareKey drives the compare overlay's own keys. Returns true when
+   * it claimed the event. The keys are the ones the design draws on the
+   * compare screen: switch side, this-one-wins, verdicts, pan lock, zoom,
+   * arrow panning, and two ways out.
+   */
+  function handleCompareKey(e: KeyboardEvent): boolean {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false;
+    switch (e.key) {
+      case "Tab":
+        compareApi.switchSide();
+        return true;
+      case "w":
+        compareApi.wins();
+        return true;
+      case "k":
+        compareApi.verdict("keep");
+        return true;
+      case "x":
+        compareApi.verdict("cut");
+        return true;
+      case "l":
+        compareApi.togglePanLock();
+        return true;
+      case "z":
+        compareApi.toggleZoom();
+        return true;
+      case "ArrowLeft":
+        compareApi.pan(-PAN_STEP, 0);
+        return true;
+      case "ArrowRight":
+        compareApi.pan(PAN_STEP, 0);
+        return true;
+      case "ArrowUp":
+        compareApi.pan(0, -PAN_STEP);
+        return true;
+      case "ArrowDown":
+        compareApi.pan(0, PAN_STEP);
+        return true;
+      case "c":
+      case "Escape":
+        compareApi.exit();
+        return true;
+    }
+    // Everything else is swallowed rather than reaching the hidden grid.
+    return true;
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (ownsKeys(e.target)) {
       // The path box and the tree run their own keyboards; Esc is the way back
       // out of both, and Tab is left alone so they stay reachable by tabbing.
       if (e.key === "Escape") (e.target as HTMLElement).blur();
+      return;
+    }
+    // Compare owns the keyboard while it is up: its keys are its own, not the
+    // grid's underneath. Anything it does not claim is swallowed rather than
+    // leaking through to a grid the user cannot see.
+    if (app.compare !== null && handleCompareKey(e)) {
+      e.preventDefault();
       return;
     }
     const action = lookup.get(eventSignature(e));
