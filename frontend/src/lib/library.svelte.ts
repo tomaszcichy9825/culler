@@ -396,6 +396,19 @@ class LibraryState {
     else this.openSearch();
   }
 
+  /**
+   * openSession shows a session's frames — which may span several folders —
+   * as index results: a search over the session's time range. Opening the
+   * session's first folder would silently drop the rest of the shoot.
+   */
+  openSession(s: CatalogSession) {
+    this.openSearch();
+    // The backend's To is exclusive; a second past the last frame keeps it in.
+    const past = new Date(new Date(s.end).getTime() + 1000).toISOString();
+    this.facets = { ...NO_FACETS, from: s.start, to: past };
+    void this.search();
+  }
+
   /** setFacet flips one chip. Passing the value it already holds clears it. */
   setFacet<K extends keyof CatalogFacets>(key: K, value: CatalogFacets[K]) {
     const cleared = key === "minRating" ? 0 : "";

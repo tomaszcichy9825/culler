@@ -33,7 +33,7 @@ export interface ModeSpec {
 export const MODES: ModeSpec[] = [
   {
     id: "cull",
-    label: "CULL",
+    label: "PHOTOS",
     layouts: ["contact sheet", "loupe-first", "table"],
     panes: { left: "SOURCES", centre: "GRID", right: "INSPECTOR" },
   },

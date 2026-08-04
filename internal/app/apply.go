@@ -526,7 +526,13 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 		outcomes[a.Src] = a.Outcome
 	}
 
+	// A keep is a judgement, not an instruction: applying it costs nothing
+	// on disk, so the verdict survives the apply — and the next open, and
+	// the catalogue — like a rating does. What an apply consumes is the
+	// work it performed: a cut frame's decision goes with its files, and a
+	// routed frame's destination is cleared once the copy has landed.
 	var cleared []decide.VerdictItem
+	var routed []decide.DestinationItem
 	var pruned []string
 	for _, it := range items {
 		done := true
@@ -543,9 +549,15 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 		if !done {
 			continue
 		}
-		cleared = append(cleared, decide.VerdictItem{
-			Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Verdict: decide.Undecided,
-		})
+		if it.record.Verdict == decide.Cut || removed {
+			cleared = append(cleared, decide.VerdictItem{
+				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Verdict: decide.Undecided,
+			})
+		} else if it.record.Destination != "" {
+			routed = append(routed, decide.DestinationItem{
+				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Destination: "",
+			})
+		}
 		if removed {
 			pruned = append(pruned, it.hash)
 		}
@@ -558,12 +570,20 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 		_ = NewLibraryIndexService(s.app).PruneApplied(pruned)
 	}
 
-	if len(cleared) == 0 {
+	if len(cleared) == 0 && len(routed) == 0 {
 		return nil
 	}
 	store, err := s.app.decisions()
 	if err != nil {
 		return err
+	}
+	if len(routed) > 0 {
+		if err := store.SetDestinationBatch(routed); err != nil {
+			return err
+		}
+	}
+	if len(cleared) == 0 {
+		return nil
 	}
 	return store.SetVerdictBatch(cleared)
 }

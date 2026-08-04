@@ -285,11 +285,13 @@ func TestApplyImportsAndLeavesTheCardIntact(t *testing.T) {
 		}
 	}
 
-	// The decision is carried out, so it goes.
+	// The copy consumes the destination; the keep is a judgement and stays.
 	if r, ok, err := store.Get(groups[0].Hash); err != nil {
 		t.Fatal(err)
-	} else if ok {
-		t.Errorf("an imported frame kept its decision: %+v", r)
+	} else if !ok || r.Verdict != decide.Keep {
+		t.Errorf("a keep must survive its import: %v %+v", ok, r)
+	} else if r.Destination != "" {
+		t.Errorf("the destination must be consumed by the copy, got %q", r.Destination)
 	}
 }
 

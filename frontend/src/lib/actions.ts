@@ -631,7 +631,12 @@ function paneAction(pane: Pane): Action {
     group: PANES,
     icon: "▥",
     note: () => shell.spec.panes[pane],
-    run: () => shell.focusPane(pane),
+    run: () => {
+      shell.focusPane(pane);
+      // The pane treatment alone changes nothing for the keyboard: focusing
+      // the left pane hands the arrows to the folder tree.
+      if (pane === "left" && shell.mode === "cull") void focusTree();
+    },
   };
 }
 

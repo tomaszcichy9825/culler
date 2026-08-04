@@ -460,8 +460,11 @@ func TestExecuteClearsWhatItImportedAndLeavesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok && rec.Verdict != decide.Undecided {
-		t.Errorf("the imported frame kept its verdict %q", rec.Verdict)
+	if !ok || rec.Verdict != decide.Keep {
+		t.Errorf("a keep survives its import — the judgement is not consumed by the copy: %v %q", ok, rec.Verdict)
+	}
+	if rec.Destination != "" {
+		t.Errorf("the destination is consumed once the copy lands, got %q", rec.Destination)
 	}
 	if _, ok, err := store.Get(untouched.Hash); err != nil || ok {
 		t.Errorf("a frame nobody routed gained a record: %v %v", ok, err)

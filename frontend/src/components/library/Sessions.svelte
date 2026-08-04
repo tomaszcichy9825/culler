@@ -56,7 +56,7 @@
       case "Enter":
       case " ":
         e.preventDefault();
-        library.openDir(session.dir);
+        library.openSession(session);
         break;
       case "Escape":
         e.preventDefault();
@@ -87,7 +87,7 @@
       onfocus={() => library.focusSession(i)}
       onclick={() => {
         library.focusSession(i);
-        library.openDir(session.dir);
+        library.openSession(session);
       }}
     >
       <span class="label">{sessionLabel(session)}</span>

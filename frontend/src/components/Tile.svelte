@@ -152,6 +152,30 @@
     opacity: 1;
   }
 
+  /* Selection has to read from across the room: a wash over the whole
+     thumbnail and a filled corner tick, not just a border. */
+  .tile.selected .thumb::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--accent-wash-18, rgba(97, 175, 239, 0.18));
+    pointer-events: none;
+  }
+
+  .tile.selected .footer::before {
+    content: "✓";
+    display: inline-grid;
+    place-items: center;
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 9px;
+    font-weight: 700;
+    flex: 0 0 auto;
+  }
+
   .tile.selected {
     box-shadow: inset 0 0 0 2px var(--accent);
     border-color: var(--border-selected);

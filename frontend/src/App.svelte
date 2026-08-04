@@ -216,6 +216,23 @@
     untrack(() => showSearchResults(open, results));
   });
 
+  // EXIF mode edits what the grid had selected (or focused). The panes are
+  // mounted individually, so the shell owns the effect that keeps the rail
+  // fed — the same one-per-frame path list the assembled mode used, JPEG
+  // preferred because that is the half a write can reach in place.
+  $effect(() => {
+    if (shell.mode !== "exif") return;
+    const wanted = app.targets
+      .map((g) => (g.hasJpeg && g.jpegPath !== "" ? g.jpegPath : g.rawPath))
+      .filter((p) => p !== "")
+      .join("\n");
+    if (wanted === "") {
+      exifState.frames = [];
+      return;
+    }
+    void exifState.load(wanted.split("\n"));
+  });
+
   // The filter narrows what the whole app sees: the grid, focus movement,
   // selection targets and the apply flow all read app.groups, so applying it
   // here keeps every one of them consistent. Focus follows the frame it was
