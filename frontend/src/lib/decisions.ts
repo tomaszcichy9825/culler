@@ -93,15 +93,12 @@ export function flush(): Promise<void> {
 
 /**
  * targets resolves what a key applies to, or null when it applies to nothing:
- * a selection wins, otherwise the focused frame alone. While a scan is running
- * the grid is behind the loader, so a verdict key would be marking frames the
- * user cannot see.
+ * a selection wins, otherwise the focused frame alone. Judging during a scan
+ * is the point of streaming, so it is allowed — a frame the walk has not
+ * identified yet simply has no hash, and record() skips it and says so rather
+ * than the whole keystroke being refused.
  */
 function targets(): GroupDTO[] | null {
-  if (app.scanning !== null) {
-    app.notify("still scanning — hold on");
-    return null;
-  }
   const chosen = app.targets;
   return chosen.length === 0 ? null : chosen;
 }
