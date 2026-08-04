@@ -29,6 +29,7 @@ func main() {
 	metadata := app.NewExifService(backend)
 	catalogue := app.NewLibraryIndexService(backend)
 	importer := app.NewImportService(backend, catalogue)
+	mapper := app.NewMapService(backend)
 	settings := app.NewConfigService(backend)
 	previews := app.NewPreviewService(backend)
 
@@ -43,6 +44,7 @@ func main() {
 			application.NewService(metadata),
 			application.NewService(catalogue),
 			application.NewService(importer),
+			application.NewService(mapper),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
