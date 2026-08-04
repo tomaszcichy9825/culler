@@ -31,14 +31,23 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
-
+      # The webview headers must exist before the wails3 CLI compiles.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install nsis -y --no-progress
+          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
+          echo "/c/Program Files (x86)/NSIS/Bin" >> "$GITHUB_PATH"
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.2
 
       - name: Package
         run: wails3 package
@@ -46,13 +55,18 @@ jobs:
       # Unsigned for now. When APPLE_CERT_P12 / APPLE_CERT_PASSWORD /
       # APPLE_NOTARY_* secrets exist, add codesign + notarytool steps here
       # before the DMG is created.
+      #
+      # The DMG stages OUTSIDE dist: the staging folder holds an /Applications
+      # symlink, and the artefact upload would follow it into the runner's
+      # entire Applications directory.
       - name: Create DMG (macOS)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dist/dmg
-          cp -R bin/culler.app dist/dmg/
-          ln -s /Applications dist/dmg/Applications
-          hdiutil create -volname culler -srcfolder dist/dmg -ov -format UDZO \
+          STAGE="$RUNNER_TEMP/dmg"
+          mkdir -p "$STAGE" dist
+          cp -R bin/culler.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname culler -srcfolder "$STAGE" -ov -format UDZO \
             "dist/culler-${GITHUB_REF_NAME}-macos-arm64.dmg"
 
       - name: Collect artefacts (Windows)
