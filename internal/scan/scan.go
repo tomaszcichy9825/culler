@@ -109,35 +109,128 @@ func stemKey(name string, cfg Config) (key, stem string) {
 	return strings.ToLower(base), base
 }
 
+// fileSlot is one candidate for a group's primary file, kept with the name and
+// class priority that decide which candidate wins.
+type fileSlot struct {
+	file     FileRef
+	name     string
+	priority int
+}
+
+// stemBucket collects the files that share a stem before they become a group.
+type stemBucket struct {
+	stem     string
+	raws     []fileSlot
+	jpegs    []fileSlot
+	sidecars []FileRef
+}
+
+// noteStem keeps the lowest case-preserved spelling of the stem, so a bucket
+// built from "dscf1234.raf" and "DSCF1234.JPG" is named the same whichever
+// order the directory hands the two files over in.
+func (b *stemBucket) noteStem(stem string) {
+	if b.stem == "" || stem < b.stem {
+		b.stem = stem
+	}
+}
+
+// add files the slot under the class its extension put it in.
+func (b *stemBucket) add(class string, s fileSlot) {
+	switch class {
+	case "raw":
+		b.raws = append(b.raws, s)
+	case "jpeg":
+		b.jpegs = append(b.jpegs, s)
+	case "sidecar":
+		b.sidecars = append(b.sidecars, s.file)
+	}
+}
+
+// pickPrimary chooses a group's primary file from the candidates of one class
+// and warns about the ones it passed over. Candidates are ordered by the
+// configured extension priority, then by name so that the warning reads the
+// same however the directory was walked.
+func pickPrimary(slots []fileSlot) (*FileRef, []string) {
+	if len(slots) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(slots, func(i, j int) bool {
+		if slots[i].priority != slots[j].priority {
+			return slots[i].priority < slots[j].priority
+		}
+		return slots[i].name < slots[j].name
+	})
+	var warns []string
+	if len(slots) > 1 {
+		var names []string
+		for _, s := range slots[1:] {
+			names = append(names, s.name)
+		}
+		warns = append(warns, "duplicate files for this frame, using "+slots[0].name+
+			" (also present: "+strings.Join(names, ", ")+")")
+	}
+	f := slots[0].file
+	return &f, warns
+}
+
+// group turns a bucket into a PhotoGroup. A bucket holding only sidecars has
+// no frame to describe and reports false.
+func (b *stemBucket) group(dir string) (PhotoGroup, bool) {
+	raw, rawWarns := pickPrimary(b.raws)
+	jpeg, jpegWarns := pickPrimary(b.jpegs)
+	if raw == nil && jpeg == nil {
+		return PhotoGroup{}, false // sidecar with no parent image; leave it alone
+	}
+	sidecars := b.sidecars
+	sort.Slice(sidecars, func(i, j int) bool { return sidecars[i].Path < sidecars[j].Path })
+	g := PhotoGroup{
+		Dir:      dir,
+		Stem:     b.stem,
+		Raw:      raw,
+		Jpeg:     jpeg,
+		Sidecars: sidecars,
+		Warnings: append(rawWarns, jpegWarns...),
+	}
+	switch {
+	case raw != nil && jpeg != nil:
+		g.Kind = KindPaired
+	case raw != nil:
+		g.Kind = KindRAWOnly
+	default:
+		g.Kind = KindJPEGOnly
+	}
+	// EXIF DateTimeOriginal comes later with the preview pipeline; mtime of
+	// the primary file is the fallback either way.
+	if jpeg != nil {
+		g.Shot = jpeg.ModTime
+	} else {
+		g.Shot = raw.ModTime
+	}
+	return g, true
+}
+
 // ScanDir reads one directory (non-recursive — groups are never merged across
 // directories) and returns its PhotoGroups sorted by stem. Unrecognised
 // extensions are ignored, never touched.
+//
+// It walks the whole directory before returning anything. Callers that paint
+// frames as they arrive want ScanDirStream instead.
 func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	type slot struct {
-		file     FileRef
-		name     string
-		priority int
-	}
-	type bucket struct {
-		stem     string
-		raws     []slot
-		jpegs    []slot
-		sidecars []FileRef
-	}
-	buckets := make(map[string]*bucket)
+	buckets := make(map[string]*stemBucket)
 
-	get := func(name string) *bucket {
+	get := func(name string) *stemBucket {
 		key, stem := stemKey(name, cfg)
 		b, ok := buckets[key]
 		if !ok {
-			b = &bucket{stem: stem}
+			b = &stemBucket{}
 			buckets[key] = b
 		}
+		b.noteStem(stem)
 		return b
 	}
 
@@ -167,65 +260,14 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 			ModTime: info.ModTime(),
 		}
 		b := get(name)
-		switch class {
-		case "raw":
-			b.raws = append(b.raws, slot{ref, name, prio})
-		case "jpeg":
-			b.jpegs = append(b.jpegs, slot{ref, name, prio})
-		case "sidecar":
-			b.sidecars = append(b.sidecars, ref)
-		}
-	}
-
-	pick := func(slots []slot) (*FileRef, []string) {
-		if len(slots) == 0 {
-			return nil, nil
-		}
-		sort.SliceStable(slots, func(i, j int) bool { return slots[i].priority < slots[j].priority })
-		var warns []string
-		if len(slots) > 1 {
-			var names []string
-			for _, s := range slots[1:] {
-				names = append(names, s.name)
-			}
-			warns = append(warns, "duplicate files for this frame, using "+slots[0].name+
-				" (also present: "+strings.Join(names, ", ")+")")
-		}
-		f := slots[0].file
-		return &f, warns
+		b.add(class, fileSlot{ref, name, prio})
 	}
 
 	var groups []PhotoGroup
 	for _, b := range buckets {
-		raw, rawWarns := pick(b.raws)
-		jpeg, jpegWarns := pick(b.jpegs)
-		if raw == nil && jpeg == nil {
-			continue // sidecar with no parent image; leave it alone
+		if g, ok := b.group(dir); ok {
+			groups = append(groups, g)
 		}
-		g := PhotoGroup{
-			Dir:      dir,
-			Stem:     b.stem,
-			Raw:      raw,
-			Jpeg:     jpeg,
-			Sidecars: b.sidecars,
-			Warnings: append(rawWarns, jpegWarns...),
-		}
-		switch {
-		case raw != nil && jpeg != nil:
-			g.Kind = KindPaired
-		case raw != nil:
-			g.Kind = KindRAWOnly
-		default:
-			g.Kind = KindJPEGOnly
-		}
-		// EXIF DateTimeOriginal comes later with the preview pipeline; mtime
-		// of the primary file is the fallback either way.
-		if jpeg != nil {
-			g.Shot = jpeg.ModTime
-		} else {
-			g.Shot = raw.ModTime
-		}
-		groups = append(groups, g)
 	}
 
 	sort.Slice(groups, func(i, j int) bool {

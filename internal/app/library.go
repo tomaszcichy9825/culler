@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -52,26 +53,36 @@ type GroupDTO struct {
 // LibraryService opens folders for the grid.
 type LibraryService struct {
 	app *App
+
+	// The streamed open reaches the outside world through these, so it can be
+	// exercised without a running Wails application or a real card. Production
+	// values are set in NewLibraryService.
+	emit   func(name string, data any)
+	hashFn func(path string) (string, error)
+	// workers overrides the identity-hash concurrency; zero takes the cap that
+	// suits the volume the folder is on.
+	workers int
+	// batch bounds how many frames one emitted batch carries.
+	batch streamBatching
+
+	// mu guards the open currently in flight. Only the newest open is allowed
+	// to emit, so a folder switch cannot have a slow scan land on top of it.
+	mu     sync.Mutex
+	seq    int64
+	cancel context.CancelFunc
 }
 
 // NewLibraryService binds the service to the shared state.
 func NewLibraryService(a *App) *LibraryService {
-	return &LibraryService{app: a}
+	return &LibraryService{app: a, emit: emitEvent, hashFn: hash.Content}
 }
 
 // OpenFolder scans dir and returns its frames with the decision recorded for
 // each. The path may be relative or start with ~.
 func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
-	resolved, err := expandPath(dir)
+	resolved, err := resolveFolder(dir)
 	if err != nil {
 		return FolderDTO{}, err
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return FolderDTO{}, fmt.Errorf("open folder: %w", err)
-	}
-	if !info.IsDir() {
-		return FolderDTO{}, fmt.Errorf("%s is not a folder", resolved)
 	}
 
 	network := platform.IsNetwork(resolved)
@@ -109,26 +120,37 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 	return out, nil
 }
 
-// groupDTO flattens one group. A frame whose primary file could not be
-// hashed still shows up — it can be moved and deleted like any other — but it
-// carries a warning, because without an identity its decision cannot be
-// remembered across a reopen.
-func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
+// resolveFolder turns what the user typed into an absolute directory. It is
+// the one filesystem call a folder open makes before it commits to anything.
+func resolveFolder(dir string) (string, error) {
+	resolved, err := expandPath(dir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("open folder: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a folder", resolved)
+	}
+	return resolved, nil
+}
+
+// frameDTO flattens what the walk alone knows about a group: everything
+// except the frame's identity and whatever has been recorded against it. It is
+// what the grid paints from while the hashes are still being read.
+func frameDTO(g scan.PhotoGroup) GroupDTO {
 	dto := GroupDTO{
-		Dir:         g.Dir,
-		Stem:        g.Stem,
-		Kind:        g.Kind.String(),
-		HasRaw:      g.Raw != nil,
-		HasJpeg:     g.Jpeg != nil,
-		Sidecars:    len(g.Sidecars),
-		Shot:        g.Shot.Format(time.RFC3339),
-		Warnings:    append([]string{}, g.Warnings...),
-		Verdict:     string(rec.Verdict),
-		Mask:        string(rec.Mask),
-		Rating:      rec.Rating,
-		Destination: rec.Destination,
-		Hash:        hash,
-		Decision:    legacyDecision(rec),
+		Dir:      g.Dir,
+		Stem:     g.Stem,
+		Kind:     g.Kind.String(),
+		HasRaw:   g.Raw != nil,
+		HasJpeg:  g.Jpeg != nil,
+		Sidecars: len(g.Sidecars),
+		Shot:     g.Shot.Format(time.RFC3339),
+		Warnings: append([]string{}, g.Warnings...),
+		Decision: legacyDecision(decide.Record{}),
 	}
 	if g.Raw != nil {
 		dto.RawPath = g.Raw.Path
@@ -136,9 +158,44 @@ func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
 	if g.Jpeg != nil {
 		dto.JpegPath = g.Jpeg.Path
 	}
-	if hash == "" {
-		dto.Warnings = append(dto.Warnings, "could not read this frame's primary file; its decision will not be remembered")
+	return dto
+}
+
+// frameIdentity is the half of a frame that only exists once its primary file
+// has been read: the hash and what the store remembers under it. A frame whose
+// primary file could not be hashed still shows up — it can be moved and
+// deleted like any other — but it carries a warning, because without an
+// identity its decision cannot be remembered across a reopen.
+func frameIdentity(g scan.PhotoGroup, hash string, rec decide.Record) FrameHash {
+	id := FrameHash{
+		Dir:         g.Dir,
+		Stem:        g.Stem,
+		Hash:        hash,
+		Verdict:     string(rec.Verdict),
+		Mask:        string(rec.Mask),
+		Rating:      rec.Rating,
+		Destination: rec.Destination,
+		Decision:    legacyDecision(rec),
+		Warnings:    append([]string{}, g.Warnings...),
 	}
+	if hash == "" {
+		id.Warnings = append(id.Warnings, "could not read this frame's primary file; its decision will not be remembered")
+	}
+	return id
+}
+
+// groupDTO flattens one group with its identity already resolved, which is
+// what the unstreamed open hands back.
+func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
+	dto := frameDTO(g)
+	id := frameIdentity(g, hash, rec)
+	dto.Hash = id.Hash
+	dto.Verdict = id.Verdict
+	dto.Mask = id.Mask
+	dto.Rating = id.Rating
+	dto.Destination = id.Destination
+	dto.Decision = id.Decision
+	dto.Warnings = id.Warnings
 	return dto
 }
 
