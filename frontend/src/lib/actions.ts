@@ -911,7 +911,10 @@ export const ACTIONS: Action[] = [
     group: FILES,
     icon: "▶",
     note: () => (app.plan ? "confirm the plan on screen" : `${app.pending.length} frame(s) pending`),
-    when: () => app.folder !== null,
+    // Not while search results hold the grid: their frames belong to other
+    // folders, so an apply here would plan foreign hashes against this one.
+    // The keyboard's Enter opens the focused result instead (handled in App).
+    when: () => app.folder !== null && !library.searchOpen,
     run: () => {
       if (app.plan) void confirmApply();
       else void requestApply();
