@@ -588,10 +588,12 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	return store.SetVerdictBatch(cleared)
 }
 
-// pickUndoTarget returns the most recent batch that is neither an undo itself
-// nor already undone. Undo walks backwards through real work only, so
-// pressing undo twice reverses the two batches before it rather than
-// reversing its own reversal.
+// pickUndoTarget returns the most recent batch that is neither an undo itself,
+// nor already undone, nor a batch that destroyed files. Undo walks backwards
+// through reversible work only, so pressing undo twice reverses the two
+// batches before it rather than reversing its own reversal — and an
+// empty-rejects batch is stepped over to the last batch that can still come
+// back, rather than stopping undo dead at a record nothing can act on.
 func pickUndoTarget(batches []journal.Batch) (journal.Batch, bool) {
 	undone := make(map[string]bool)
 	for _, b := range batches {
@@ -601,11 +603,23 @@ func pickUndoTarget(batches []journal.Batch) (journal.Batch, bool) {
 	}
 	for i := len(batches) - 1; i >= 0; i-- {
 		b := batches[i]
-		if b.UndoOf == "" && !undone[b.ID] {
+		if b.UndoOf == "" && !undone[b.ID] && !destroyed(b) {
 			return b, true
 		}
 	}
 	return journal.Batch{}, false
+}
+
+// destroyed reports whether a batch permanently deleted anything. The verb is
+// the fact the journal recorded, so this holds for journals written before the
+// command existed and for anything else that ever destroys.
+func destroyed(b journal.Batch) bool {
+	for _, a := range b.Actions {
+		if ops.Verb(a.Verb) == ops.VerbDestroy {
+			return true
+		}
+	}
+	return false
 }
 
 // batchDTO flattens an executed batch for the frontend.
