@@ -43,6 +43,22 @@ func (t DirTrasher) Trash(path string) (string, error) {
 	return dst, nil
 }
 
+// PerFolderTrasher trashes each file into a folder named Name sitting beside
+// it, so a file at /card/a/DSCF1.RAF goes to /card/a/Name/. It backs the
+// _Rejected mode when one apply spans several folders: a single DirTrasher has
+// one fixed bin, but a cross-folder cull has to keep each folder's rejects with
+// that folder. Scans are flat, so a file's parent is always its cull folder.
+type PerFolderTrasher struct {
+	Name string
+}
+
+// Trash moves path into a Name folder beside it, delegating to DirTrasher so
+// collision numbering matches the single-folder path exactly.
+func (t PerFolderTrasher) Trash(path string) (string, error) {
+	bin := filepath.Join(filepath.Dir(path), t.Name)
+	return DirTrasher{Dir: bin}.Trash(path)
+}
+
 // UniquePath returns path if nothing exists there, otherwise the first
 // "name-2.ext", "name-3.ext", … that is free.
 func UniquePath(path string) (string, error) {

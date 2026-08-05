@@ -72,3 +72,44 @@ func TestDirTrasherMissingSource(t *testing.T) {
 		t.Fatal("want error for missing source")
 	}
 }
+
+func TestPerFolderTrasherRoutesByParent(t *testing.T) {
+	// Two files under different folders. A per-folder trasher must send each
+	// one to a _Rejected inside its own folder, not to a shared bin, so a
+	// cross-folder batch keeps every card's rejects with that card.
+	folderA, folderB := t.TempDir(), t.TempDir()
+	pa := filepath.Join(folderA, "DSCF0001.RAF")
+	pb := filepath.Join(folderB, "DSCF0002.RAF")
+	write(t, pa, "a")
+	write(t, pb, "b")
+
+	tr := PerFolderTrasher{Name: "_Rejected"}
+	ra, err := tr.Trash(pa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := tr.Trash(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if wantDir := filepath.Join(folderA, "_Rejected"); filepath.Dir(ra) != wantDir {
+		t.Errorf("file A landed in %s, want under %s", ra, wantDir)
+	}
+	if wantDir := filepath.Join(folderB, "_Rejected"); filepath.Dir(rb) != wantDir {
+		t.Errorf("file B landed in %s, want under %s", rb, wantDir)
+	}
+	if got, _ := os.ReadFile(ra); string(got) != "a" {
+		t.Errorf("file A content changed in transit")
+	}
+	if got, _ := os.ReadFile(rb); string(got) != "b" {
+		t.Errorf("file B content changed in transit")
+	}
+}
+
+func TestPerFolderTrasherMissingSource(t *testing.T) {
+	tr := PerFolderTrasher{Name: "_Rejected"}
+	if _, err := tr.Trash(filepath.Join(t.TempDir(), "nope.jpg")); err == nil {
+		t.Fatal("want error for missing source")
+	}
+}

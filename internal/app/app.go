@@ -144,6 +144,22 @@ func (a *App) trasher(dir string) (platform.Trasher, error) {
 	return platform.SystemTrasher()
 }
 
+// scopeTrasher is the trasher for an apply that may span several folders. In
+// rejected-folder mode a single fixed bin will not do — each folder keeps its
+// own _Rejected — so it routes by the file's parent. The machine trash already
+// serves every folder, so that mode is unchanged.
+func (a *App) scopeTrasher() (platform.Trasher, error) {
+	cfg := a.Config()
+	if cfg.Behaviour.TrashMode == config.TrashRejectedFolder {
+		name := cfg.Behaviour.RejectedFolderName
+		if name == "" {
+			name = config.Default().Behaviour.RejectedFolderName
+		}
+		return platform.PerFolderTrasher{Name: name}, nil
+	}
+	return platform.SystemTrasher()
+}
+
 // Close releases the store and the journal. It is safe to call on an App
 // whose lazy state was never opened.
 func (a *App) Close() error {
