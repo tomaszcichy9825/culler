@@ -77,6 +77,14 @@ func NewApplyService(a *App) *ApplyService {
 	return &ApplyService{app: a}
 }
 
+// FrameRef identifies one frame to apply: the folder it lives in and its
+// content hash. A scope is a list of these, and it may name frames in several
+// folders — a session spans whatever folders its shots were taken across.
+type FrameRef struct {
+	Dir  string `json:"dir"`
+	Hash string `json:"hash"`
+}
+
 // Plan reports what applying the decisions on hashes would do to dir. It has
 // no side effects: nothing is trashed, moved or cleared. Passing no hashes
 // plans every decided frame in the folder.
@@ -85,6 +93,22 @@ func (s *ApplyService) Plan(dir string, hashes []string) (PlanDTO, error) {
 	if err != nil {
 		return PlanDTO{}, err
 	}
+	return s.planItems(items)
+}
+
+// PlanScope reports what applying the named frames would do, across whatever
+// folders they live in. It is Plan generalised to a session: a scope is a set
+// of frames, not a single folder.
+func (s *ApplyService) PlanScope(refs []FrameRef) (PlanDTO, error) {
+	items, err := s.collectScope(refs)
+	if err != nil {
+		return PlanDTO{}, err
+	}
+	return s.planItems(items)
+}
+
+// planItems builds the read-only plan for a set of collected frames.
+func (s *ApplyService) planItems(items []planned) (PlanDTO, error) {
 	rules, err := planRules(s.app.Config())
 	if err != nil {
 		return PlanDTO{}, err
@@ -104,6 +128,34 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 	if err != nil {
 		return BatchDTO{}, err
 	}
+	trasher, err := s.app.trasher(dir)
+	if err != nil {
+		return BatchDTO{}, err
+	}
+	return s.run(items, trasher, []string{dir})
+}
+
+// ApplyScope executes the plan for a set of frames spanning any number of
+// folders, as a single journal batch. One batch is the point: a session cull
+// touches many folders, and undo has to reverse the whole session at once, not
+// just the last folder it happened to write. Rejects still go to each folder's
+// own _Rejected, because the scope trasher routes by the file's parent.
+func (s *ApplyService) ApplyScope(refs []FrameRef) (BatchDTO, error) {
+	items, err := s.collectScope(refs)
+	if err != nil {
+		return BatchDTO{}, err
+	}
+	trasher, err := s.app.scopeTrasher()
+	if err != nil {
+		return BatchDTO{}, err
+	}
+	return s.run(items, trasher, distinctDirs(refs))
+}
+
+// run plans the collected frames, executes them as one batch through trasher,
+// and clears the decisions the batch carried out. exportDirs are the folders an
+// auto-export refreshes after the files have moved.
+func (s *ApplyService) run(items []planned, trasher platform.Trasher, exportDirs []string) (BatchDTO, error) {
 	cfg := s.app.Config()
 	rules, err := planRules(cfg)
 	if err != nil {
@@ -116,10 +168,6 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 
 	var batch journal.Batch
 	if len(p.actions) > 0 {
-		trasher, err := s.app.trasher(dir)
-		if err != nil {
-			return BatchDTO{}, err
-		}
 		jrnl, err := s.app.openJournal()
 		if err != nil {
 			return BatchDTO{}, err
@@ -147,7 +195,9 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 		// a sidecar that could not be written never fails the apply that has
 		// already moved the files.
 		if cfg.Behaviour.XMPExport {
-			_, _ = NewXMPExportService(s.app).ExportFolder(dir)
+			for _, dir := range exportDirs {
+				_, _ = NewXMPExportService(s.app).ExportFolder(dir)
+			}
 		}
 		return batchDTO(batch), nil
 	}
@@ -156,6 +206,21 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 		return batchDTO(batch), err
 	}
 	return batchDTO(batch), nil
+}
+
+// distinctDirs is the folders a scope touches, in first-seen order, so an
+// auto-export visits each folder once however many frames it holds.
+func distinctDirs(refs []FrameRef) []string {
+	seen := map[string]bool{}
+	var dirs []string
+	for _, ref := range refs {
+		if seen[ref.Dir] {
+			continue
+		}
+		seen[ref.Dir] = true
+		dirs = append(dirs, ref.Dir)
+	}
+	return dirs
 }
 
 // Undo reverses the most recent batch that has not already been undone.
@@ -259,6 +324,31 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 			continue
 		}
 		items = append(items, planned{group: g, hash: h, record: rec})
+	}
+	return items, nil
+}
+
+// collectScope pairs each referenced frame with its decision, scanning each
+// distinct folder once. It is collect generalised to a set of frames that may
+// live in several folders, and it reuses collect so a scope over one folder and
+// a plain single-folder apply see exactly the same frames.
+func (s *ApplyService) collectScope(refs []FrameRef) ([]planned, error) {
+	byDir := map[string][]string{}
+	var order []string
+	for _, ref := range refs {
+		if _, seen := byDir[ref.Dir]; !seen {
+			order = append(order, ref.Dir)
+		}
+		byDir[ref.Dir] = append(byDir[ref.Dir], ref.Hash)
+	}
+
+	var items []planned
+	for _, dir := range order {
+		got, err := s.collect(dir, byDir[dir])
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, got...)
 	}
 	return items, nil
 }
