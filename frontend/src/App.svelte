@@ -184,6 +184,7 @@
   void watchRejectsProgress();
   connectMap({
     Positions: async (dir) => (await MapService.Positions(dir)) as never,
+    PositionsScope: async (refs) => (await MapService.PositionsScope(refs as never)) as never,
   });
   void watchMapProgress();
   onOpenFrame((dir, hash) => {
