@@ -325,6 +325,91 @@ func TestPositionsRejectsWhatIsNotAFolder(t *testing.T) {
 	}
 }
 
+func TestPositionsScopePlotsAcrossFoldersInCaptureOrder(t *testing.T) {
+	s := NewMapService(testApp(t))
+	folderA := positioned(t) // DSCF0001 (Jul 19:42), DSCF0002 (Jul 19:58), + no-gps + unreadable
+
+	folderB := t.TempDir()
+	// An earlier shot in a second folder, so a scope spanning both draws one
+	// track ordered by time and not by folder.
+	south := dms{33, 51, 3600, "S"}
+	west := dms{151, 12, 5400, "W"}
+	if err := os.WriteFile(filepath.Join(folderB, "DSCF0100.JPG"),
+		gpsJPEG(south, west, -1250, true, "2026:01:04 06:00:00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The scope names one frame from folderA and the frame from folderB. It
+	// deliberately leaves out folderA's DSCF0002: a session is a subset, and the
+	// map must plot only what the scope holds.
+	refs := []ScopeRef{
+		{Dir: folderA, Stem: "DSCF0001"},
+		{Dir: folderB, Stem: "DSCF0100"},
+	}
+	got, err := s.PositionsScope(refs)
+	if err != nil {
+		t.Fatalf("PositionsScope: %v", err)
+	}
+
+	if got.Total != 2 {
+		t.Errorf("Total = %d, want 2 (only the frames the scope named)", got.Total)
+	}
+	if got.Positioned != 2 {
+		t.Errorf("Positioned = %d, want 2", got.Positioned)
+	}
+	if len(got.Frames) != 2 {
+		t.Fatalf("Frames = %d, want 2: %+v", len(got.Frames), got.Frames)
+	}
+	// January in folderB sorts before July in folderA, across folders.
+	if got.Frames[0].Stem != "DSCF0100" || got.Frames[1].Stem != "DSCF0001" {
+		t.Errorf("track order = %s, %s; want DSCF0100 then DSCF0001",
+			got.Frames[0].Stem, got.Frames[1].Stem)
+	}
+	for _, f := range got.Frames {
+		if f.Stem == "DSCF0002" {
+			t.Error("a frame the scope did not name was plotted")
+		}
+	}
+	// No single folder, so no folder name to show.
+	if got.Dir != "" {
+		t.Errorf("Dir = %q, want empty for a multi-folder scope", got.Dir)
+	}
+}
+
+func TestPositionsScopeSingleFolderNamesItAndFilters(t *testing.T) {
+	s := NewMapService(testApp(t))
+	dir := positioned(t)
+
+	// Only DSCF0002 is in scope, so only it is plotted and the folder is named.
+	got, err := s.PositionsScope([]ScopeRef{{Dir: dir, Stem: "DSCF0002"}})
+	if err != nil {
+		t.Fatalf("PositionsScope: %v", err)
+	}
+	if got.Total != 1 || got.Positioned != 1 {
+		t.Errorf("Total/Positioned = %d/%d, want 1/1", got.Total, got.Positioned)
+	}
+	if len(got.Frames) != 1 || got.Frames[0].Stem != "DSCF0002" {
+		t.Fatalf("Frames = %+v, want only DSCF0002", got.Frames)
+	}
+	if got.Dir != dir {
+		t.Errorf("Dir = %q, want %q for a single-folder scope", got.Dir, dir)
+	}
+}
+
+func TestPositionsScopeEmpty(t *testing.T) {
+	s := NewMapService(testApp(t))
+	got, err := s.PositionsScope(nil)
+	if err != nil {
+		t.Fatalf("PositionsScope(nil): %v", err)
+	}
+	if got.Total != 0 || len(got.Frames) != 0 {
+		t.Errorf("empty scope reported %d frames", got.Total)
+	}
+	if got.Frames == nil {
+		t.Error("Frames is null, want an empty array")
+	}
+}
+
 func TestPositionsWritesNothingToTheFolder(t *testing.T) {
 	s := NewMapService(testApp(t))
 	dir := positioned(t)

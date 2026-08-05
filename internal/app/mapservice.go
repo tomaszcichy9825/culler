@@ -166,6 +166,117 @@ func (s *MapService) Positions(dir string) (PositionsDTO, error) {
 	return out, nil
 }
 
+// ScopeRef names one frame for a map read, by folder and stem — the identity
+// the scanner groups on and the grid already holds. A map read never needs the
+// content hash an apply keys on: a position is read from the file, not matched
+// to a decision.
+type ScopeRef struct {
+	Dir  string `json:"dir"`
+	Stem string `json:"stem"`
+}
+
+// scopeFolder is one folder's share of a scope: the frames wanted from it,
+// already scanned and filtered down to those.
+type scopeFolder struct {
+	dir     string
+	network bool
+	groups  []scan.PhotoGroup
+}
+
+// PositionsScope reads the coordinates of the frames a scope names, across
+// whatever folders they live in, and returns them as one track sorted by
+// capture time. It is Positions generalised to a session: only the named frames
+// are plotted, so a session that is a subset of a folder does not drag the rest
+// of that folder onto the map.
+//
+// Dir is set only when the whole scope is one folder, so the pane can name it;
+// a scope spanning folders has no single folder and leaves it empty. Total,
+// Positioned, Unpositioned and Unreadable count the named frames alone.
+//
+// Progress arrives on EventMapProgress against the scope's total as the reads
+// complete, folder by folder.
+func (s *MapService) PositionsScope(refs []ScopeRef) (PositionsDTO, error) {
+	wanted := map[string]map[string]bool{}
+	var order []string
+	for _, ref := range refs {
+		resolved, err := expandPath(ref.Dir)
+		if err != nil {
+			return PositionsDTO{}, err
+		}
+		if wanted[resolved] == nil {
+			wanted[resolved] = map[string]bool{}
+			order = append(order, resolved)
+		}
+		wanted[resolved][ref.Stem] = true
+	}
+
+	// Scan and filter each folder once, so the read pass below knows the scope's
+	// total before it reports any progress against it.
+	var folders []scopeFolder
+	total := 0
+	for _, dir := range order {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return PositionsDTO{}, fmt.Errorf("open folder: %w", err)
+		}
+		if !info.IsDir() {
+			return PositionsDTO{}, fmt.Errorf("%s is not a folder", dir)
+		}
+		groups, err := scan.ScanDir(dir, s.app.Config().ScanConfig())
+		if err != nil {
+			return PositionsDTO{}, fmt.Errorf("scan %s: %w", dir, err)
+		}
+		var selected []scan.PhotoGroup
+		for _, g := range groups {
+			if wanted[dir][g.Stem] {
+				selected = append(selected, g)
+			}
+		}
+		folders = append(folders, scopeFolder{dir: dir, network: platform.IsNetwork(dir), groups: selected})
+		total += len(selected)
+	}
+
+	out := PositionsDTO{Total: total, Frames: []PositionDTO{}}
+	if len(order) == 1 {
+		out.Dir = order[0]
+	}
+	if total == 0 {
+		s.report(MapProgress{Dir: out.Dir, Done: 0, Total: 0})
+		return out, nil
+	}
+
+	base := 0
+	for _, f := range folders {
+		if len(f.groups) == 0 {
+			continue
+		}
+		workers := s.app.hashWorkers(f.network)
+		read := readPositions(f.groups, workers, func(done int) {
+			s.report(MapProgress{Dir: out.Dir, Done: base + done, Total: total})
+		})
+		for i, r := range read {
+			switch {
+			case r.err != nil:
+				out.Unreadable++
+			case !r.gps.Present:
+				out.Unpositioned++
+			default:
+				out.Positioned++
+				out.Frames = append(out.Frames, positionDTO(f.groups[i], r))
+			}
+		}
+		base += len(f.groups)
+	}
+
+	sort.SliceStable(out.Frames, func(a, b int) bool {
+		if out.Frames[a].Shot != out.Frames[b].Shot {
+			return out.Frames[a].Shot < out.Frames[b].Shot
+		}
+		return out.Frames[a].Stem < out.Frames[b].Stem
+	})
+	return out, nil
+}
+
 // reading is what one frame's metadata read produced.
 type reading struct {
 	gps  exif.GPS
