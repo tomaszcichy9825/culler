@@ -418,8 +418,13 @@
         escape();
         break;
       case "apply":
-        if (library.searchOpen) openFocusedResult();
-        else if (app.plan) void confirmApply();
+        // ⏎ confirms a plan that is up, then applies whatever has been decided
+        // — a session or a search is a scope you cull like a folder, now that
+        // apply spans folders. Only with nothing decided does ⏎ fall back to
+        // opening the focused result, which is what browsing a search wants.
+        if (app.plan) void confirmApply();
+        else if (app.pending.length > 0) void requestApply();
+        else if (library.searchOpen) openFocusedResult();
         else void requestApply();
         break;
       case "undo":
