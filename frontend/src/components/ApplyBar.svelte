@@ -3,13 +3,15 @@
   // decision and the disk. The panel takes no DOM focus: the global key layer
   // routes Enter and Esc to it while it is up, so nothing is ever trapped.
 
-  import { cancelApply, confirmApply, exportXMP } from "../lib/actions";
+  import { cancelApply, confirmApply, exportXMP, filterByVerdict } from "../lib/actions";
+  import { palette } from "../lib/palette.svelte";
   import { formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
   import { PLAN_ORDER, PLAN_TERMS } from "../lib/verdict";
 
   let counts = $derived(app.verdictCounts);
   let total = $derived(app.pending.length);
+  let filterVerdict = $derived(palette.filter.verdict);
 
   /**
    * The plan's own counts still arrive keyed in the pre-verdict vocabulary, so
@@ -41,11 +43,27 @@
     <span class="muted">nothing judged yet</span>
   {:else}
     <span class="count">{total} pending</span>
+    <!-- The pills are the review list: clicking one shows just those frames
+         in the grid; clicking the active one shows everything again. -->
     {#if counts.keep > 0}
-      <span class="chip keep">k keep · {counts.keep}</span>
+      <button
+        class="chip keep"
+        class:active={filterVerdict === "keep"}
+        onclick={() => filterByVerdict("keep")}
+        title="Show only the keeps"
+      >
+        k keep · {counts.keep}
+      </button>
     {/if}
     {#if counts.cut > 0}
-      <span class="chip cut">x cut · {counts.cut}</span>
+      <button
+        class="chip cut"
+        class:active={filterVerdict === "cut"}
+        onclick={() => filterByVerdict("cut")}
+        title="Show only the cuts"
+      >
+        x cut · {counts.cut}
+      </button>
     {/if}
     {#if routed > 0}
       <span class="chip routed">→ routed · {routed}</span>
@@ -173,10 +191,27 @@
     padding: 2px 7px;
     border-radius: 4px;
     color: var(--on-accent);
+    font: inherit;
     font-weight: 600;
+    border: 1px solid transparent;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* The keep and cut chips are buttons; the routed one is still a span. */
+  button.chip {
+    cursor: pointer;
+  }
+
+  button.chip:hover {
+    filter: brightness(1.12);
+  }
+
+  /* The active review filter is ringed so it is clear which list is showing. */
+  button.chip.active {
+    border-color: var(--on-accent);
+    box-shadow: 0 0 0 1px var(--on-accent);
   }
 
   .chip.keep {

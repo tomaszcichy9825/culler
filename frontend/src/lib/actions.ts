@@ -430,6 +430,22 @@ export async function markNetwork(path: string) {
  * confirmation. Nothing has touched the disk when this resolves.
  */
 /**
+ * filterByVerdict narrows the grid to one verdict — the review list behind a
+ * pending pill. Clicking the pill that is already the filter clears it. It
+ * leaves any other mode for the grid, since the list is the grid.
+ */
+export function filterByVerdict(verdict: "keep" | "cut" | "undecided") {
+  shell.setMode("cull");
+  library.closeSearch();
+  const f = palette.filter;
+  if (f.verdict === verdict) {
+    palette.setFilter({ ...f, verdict: "all" });
+  } else {
+    palette.setFilter({ ...f, verdict });
+  }
+}
+
+/**
  * exportXMP writes a sidecar beside every decided or rated frame in the open
  * folder, for Lightroom and Bridge. It is the explicit, on-demand action the
  * button and the palette both run, and it reloads the folder afterwards so the
