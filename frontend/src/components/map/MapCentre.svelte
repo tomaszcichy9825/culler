@@ -377,6 +377,7 @@
   }
 
   let placed = $derived(`${mapState.positions.length} of ${mapState.total} frames placed`);
+  let folderLeaf = $derived(mapState.dir === "" ? "" : (mapState.dir.replace(/\/+$/, "").split("/").pop() ?? ""));
 </script>
 
 <div class="wrap" bind:this={wrap} data-keys="local">
@@ -385,6 +386,12 @@
 
   <div class="float">
     <div class="chip">
+      <!-- Which folder these pins came from: the one open in cull. Without
+           this the map looks like photos from nowhere. -->
+      {#if folderLeaf !== ""}
+        <span class="folder" title={mapState.dir}>{folderLeaf}</span>
+        <span class="sep">|</span>
+      {/if}
       {#if mapState.loading}
         <span class="lit">reading positions</span>
         {#if mapState.progress !== null}
@@ -486,6 +493,14 @@
   .hints .chip {
     padding: 4px 8px;
     font-size: 10.5px;
+  }
+
+  .chip .folder {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+    font-weight: 600;
   }
 
   .chip.quiet {
