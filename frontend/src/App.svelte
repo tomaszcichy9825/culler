@@ -171,7 +171,13 @@
   });
   void watchCatalogProgress();
   onOpenFolder((dir, focusHash) => {
-    shell.setMode("cull");
+    // A folder chosen from the tree is a scope pick: it stays in whatever mode
+    // is up, exactly as picking a session does, so the left-pane picker does the
+    // same thing in PHOTOS, EXIF and MAP. Only opening a specific frame — a
+    // search result or a map pin, which carry a hash — jumps to cull to show it,
+    // as does a pick made from a mode that has no view of a folder.
+    const scoped = shell.mode === "cull" || shell.mode === "exif" || shell.mode === "map";
+    if (focusHash !== undefined || !scoped) shell.setMode("cull");
     // Opening a result is leaving the search, not searching from inside a
     // folder: the grid has to be the folder's again before it loads.
     library.closeSearch();
@@ -577,16 +583,24 @@
     >
       {#if shell.focusedPane === "left"}{@render focusHead("left")}{/if}
       <div class="pane-body">
-        {#if shell.mode === "cull"}
-          <Sidebar bind:path />
-        {:else if shell.mode === "exif"}
-          <FramesRail />
-        {:else if shell.mode === "import"}
+        {#if shell.mode === "import"}
           <ImportLeft />
-        {:else if shell.mode === "map"}
-          <MapLeft layout={shell.layout} />
         {:else}
-          {@render ghost(shell.spec.panes.left, "this pane comes later", "⌃1", "back to cull")}
+          <!-- The scope picker is the same in PHOTOS, EXIF and MAP: one folder
+               tree and session list that sets what every mode shows. Each of
+               those modes keeps its own left-pane content below it — the frames
+               being edited, the places on the map — so nothing is lost by
+               sharing the picker. -->
+          <div class="left-stack" class:split={shell.mode === "exif" || shell.mode === "map"}>
+            <div class="scope-pane">
+              <Sidebar bind:path />
+            </div>
+            {#if shell.mode === "exif"}
+              <div class="mode-pane"><FramesRail /></div>
+            {:else if shell.mode === "map"}
+              <div class="mode-pane"><MapLeft layout={shell.layout} /></div>
+            {/if}
+          </div>
         {/if}
       </div>
     </section>
@@ -786,6 +800,39 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  /* The left pane stacks the shared scope picker over the mode's own content.
+     With nothing below it — PHOTOS — the picker fills the pane; in EXIF and MAP
+     it takes a fixed share and hands the rest to the frames rail or the places
+     list, each scrolling on its own. */
+  .left-stack {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .scope-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .left-stack.split .scope-pane {
+    flex: 0 0 45%;
+  }
+
+  .mode-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-top: 1px solid var(--border);
   }
 
   /* Focus at pane scale is the one place the shell shows it: the surface
