@@ -188,7 +188,7 @@ const groups: GroupDTO[] = positions.map((p) => ({
 const opened: { dir: string; hash?: string }[] = [];
 
 async function loadFolder() {
-  connectMap({ Positions: async () => FOLDER });
+  connectMap({ Positions: async () => FOLDER, PositionsScope: async () => FOLDER });
   onOpenFrame((dir, hash) => opened.push({ dir, hash }));
   mapState.clear();
   await mapState.load(DIR, true);
@@ -565,9 +565,10 @@ function inspector() {
 // --- the empty folder --------------------------------------------------------------
 
 async function nothingPositioned() {
-  connectMap({
-    Positions: async () => ({ dir: DIR, frames: [], total: 12, positioned: 0, unpositioned: 12, unreadable: 0 }),
-  });
+  {
+    const empty = { dir: DIR, frames: [], total: 12, positioned: 0, unpositioned: 12, unreadable: 0 };
+    connectMap({ Positions: async () => empty, PositionsScope: async () => empty });
+  }
   await mapState.load(DIR, true);
 
   eq("empty · nothing is positioned", mapState.positions.length, 0);
@@ -591,16 +592,17 @@ async function nothingPositioned() {
   rail.drop();
 
   // One frame is a real folder too: a single position must not crash the fit.
-  connectMap({
-    Positions: async () => ({
+  {
+    const one = {
       dir: DIR,
       frames: [position(0, 50.06168, 19.937)],
       total: 1,
       positioned: 1,
       unpositioned: 0,
       unreadable: 0,
-    }),
-  });
+    };
+    connectMap({ Positions: async () => one, PositionsScope: async () => one });
+  }
   await mapState.load(DIR, true);
   const single = paneOf(MapCentre, { layout: 0 }, 500, 340);
   await settle(1000);

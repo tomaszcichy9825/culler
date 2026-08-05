@@ -50,9 +50,16 @@ export interface MapProgress {
   total: number;
 }
 
+/** One frame a scope names for the map, by folder and stem. Mirrors ScopeRef. */
+export interface ScopeRef {
+  dir: string;
+  stem: string;
+}
+
 /** MapSource is the backend, as this module needs it. */
 export interface MapSource {
   Positions(dir: string): Promise<MapPositions>;
+  PositionsScope(refs: ScopeRef[]): Promise<MapPositions>;
 }
 
 /**
@@ -450,6 +457,59 @@ class MapState {
     }
   }
 
+  /** The scope last read, so an unchanged scope does not re-read on every tick. */
+  #scopeKey = "";
+
+  /**
+   * loadScope reads the positions of the frames a scope names, which may span
+   * folders — a session view. It is load's counterpart for MAP following the
+   * global scope rather than a single open folder: only the named frames are
+   * plotted, so a session that is a subset of a folder does not drag the rest
+   * of that folder onto the map.
+   *
+   * Like load it is a no-op when the scope has not changed, so the pane can
+   * drive it from an effect that also fires while a folder streams in.
+   */
+  async loadScope(refs: ScopeRef[], force = false) {
+    if (source === null) return;
+    const key = refs
+      .map((r) => frameKey(r.dir, r.stem))
+      .sort()
+      .join(" ");
+    if (!force && key === this.#scopeKey && this.positions.length > 0) return;
+    this.#scopeKey = key;
+
+    if (refs.length === 0) {
+      this.clear();
+      return;
+    }
+
+    this.loading = true;
+    this.error = null;
+    this.progress = null;
+    this.clusters = [];
+    try {
+      const got = await source.PositionsScope(refs);
+      this.dir = got.dir;
+      this.positions = got.frames ?? [];
+      this.total = got.total;
+      this.unpositioned = got.unpositioned;
+      this.unreadable = got.unreadable;
+      this.clusterIndex = 0;
+      this.frameIndex = 0;
+    } catch (error) {
+      this.error = message(error);
+      this.positions = [];
+      this.total = 0;
+      this.unpositioned = 0;
+      this.unreadable = 0;
+      this.clusters = [];
+    } finally {
+      this.loading = false;
+      this.progress = null;
+    }
+  }
+
   /** clear forgets a folder, which is what opening another one wants. */
   clear() {
     this.dir = "";
@@ -463,6 +523,7 @@ class MapState {
     this.error = null;
     this.progress = null;
     this.#hashes = new Map();
+    this.#scopeKey = "";
   }
 
   applyProgress(progress: MapProgress) {

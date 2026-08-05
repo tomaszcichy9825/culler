@@ -19,6 +19,7 @@
   import "leaflet/dist/leaflet.css";
   import TileConsent from "./TileConsent.svelte";
   import { app } from "../../lib/state.svelte";
+  import { library } from "../../lib/library.svelte";
   import { previewURL } from "../../lib/preview";
   import {
     clusterPositions,
@@ -58,17 +59,25 @@
     return (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
   }
 
-  // The pane fills itself from whichever folder is open, so MAP is populated
-  // without the shell having to prime it — the same way IMPORT's panes do. The
-  // frames come along too, purely so a pin can draw the grid's cached
-  // thumbnail; a folder still being hashed simply has none to give yet.
+  // The pane fills itself from the global scope, so MAP is populated without the
+  // shell having to prime it — the same way IMPORT's panes do. A session or a
+  // search is a scope that spans folders, so those read the frame set; a plain
+  // open folder reads the folder, which is the whole of its scope and one read
+  // rather than one per frame. The frames come along either way, purely so a pin
+  // can draw the grid's cached thumbnail; a folder still being hashed has none
+  // to give yet.
   $effect(() => {
     const folder = app.folder;
-    const groups = app.groups;
-    if (folder === null) return;
+    const groups = app.allGroups;
+    const searching = library.searchOpen;
+    if (!searching && folder === null) return;
     untrack(() => {
       mapState.attach(groups);
-      void mapState.load(folder.dir);
+      if (searching) {
+        void mapState.loadScope(groups.map((g) => ({ dir: g.dir, stem: g.stem })));
+      } else if (folder !== null) {
+        void mapState.load(folder.dir);
+      }
     });
   });
 
