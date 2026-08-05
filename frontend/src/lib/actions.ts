@@ -466,24 +466,43 @@ export async function exportXMP() {
   }
 }
 
+/**
+ * scopeRefs is the pending frames as the apply engine names them: folder plus
+ * content hash. A scope may span folders — a session or a search — so the refs
+ * carry each frame's own folder rather than assuming one open directory.
+ */
+function scopeRefs(): { dir: string; hash: string }[] {
+  return app.pending.filter((g) => g.hash !== "").map((g) => ({ dir: g.dir, hash: g.hash }));
+}
+
+/**
+ * reloadScope refreshes whatever the scope was after an apply: a search or
+ * session re-runs its query so the culled frames drop out of the results, and
+ * a plain open folder rescans itself. The two are captured before the apply, so
+ * a view change mid-apply cannot pull the user to a different scope than the one
+ * that was acted on.
+ */
+async function reloadScope(searching: boolean, dir?: string) {
+  if (searching) await library.search();
+  else if (dir) await reload(dir);
+}
+
 export async function requestApply() {
-  const dir = app.folder?.dir;
-  if (!dir) return;
-  // A plan describes the folder as it is now; planning against one that is
-  // mid-rescan would describe a folder about to be replaced.
+  // A plan describes the disk as it is now; planning against a folder that is
+  // mid-rescan would describe frames about to be replaced.
   if (app.scanning !== null) {
     app.notify("still scanning — hold on");
     return;
   }
-  const hashes = app.pending.map((g) => g.hash).filter((h) => h !== "");
-  if (hashes.length === 0) {
+  const refs = scopeRefs();
+  if (refs.length === 0) {
     app.notify("nothing to apply");
     return;
   }
   await flush();
   app.busy = true;
   try {
-    app.plan = await ApplyService.Plan(dir, hashes);
+    app.plan = await ApplyService.PlanScope(refs);
   } catch (err) {
     app.notify(`could not plan: ${message(err)}`, "error");
   } finally {
@@ -491,25 +510,24 @@ export async function requestApply() {
   }
 }
 
-/** confirmApply executes the plan on screen and reloads the folder. */
+/** confirmApply executes the plan on screen and reloads the scope. */
 export async function confirmApply() {
+  if (!app.plan) return;
+  const refs = scopeRefs();
+  const searching = library.searchOpen;
   const dir = app.folder?.dir;
-  if (!dir || !app.plan) return;
-  const hashes = app.pending.map((g) => g.hash).filter((h) => h !== "");
   app.busy = true;
   try {
-    const batch = await ApplyService.Apply(dir, hashes);
+    const batch = await ApplyService.ApplyScope(refs);
     const failed = (batch.actions ?? []).filter((a) => a.outcome !== "ok").length;
     app.plan = null;
-    // Refresh the folder that was applied to, not whatever is open by now:
-    // a folder switch during the apply must not pull the user back.
-    await reload(dir);
+    await reloadScope(searching, dir);
     app.clearSelection();
     if (failed > 0) app.notify(`${failed} action(s) failed; their frames kept their decision`, "error");
     else app.notify(batch.description || "applied");
   } catch (err) {
     app.plan = null;
-    await reload(dir);
+    await reloadScope(searching, dir);
     app.notify(`apply failed: ${message(err)}`, "error");
   } finally {
     app.busy = false;
