@@ -81,7 +81,10 @@ class GeotagState {
     this.#pending = { paths, coord };
     this.busy = true;
     try {
-      this.plan = await ExifService.Plan(editsFor(paths, coord) as never);
+      // The generated binding's DTOs are structurally the same as the ones this
+      // module names but a distinct type, so cross the boundary the way the rest
+      // of the app does — cast in, cast out.
+      this.plan = (await ExifService.Plan(editsFor(paths, coord) as never)) as unknown as ExifPlanDTO;
     } catch (err) {
       app.notify(`could not plan the location: ${message(err)}`, "error");
       this.#pending = null;
@@ -96,7 +99,9 @@ class GeotagState {
     const { paths, coord } = this.#pending;
     this.busy = true;
     try {
-      const batch = await ExifService.Apply(editsFor(paths, coord) as never);
+      const batch = (await ExifService.Apply(editsFor(paths, coord) as never)) as unknown as {
+        actions?: { outcome: string }[];
+      };
       const failed = (batch.actions ?? []).filter((a) => a.outcome !== "ok").length;
       this.plan = null;
       this.#pending = null;
