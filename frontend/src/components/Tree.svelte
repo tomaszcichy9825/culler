@@ -104,8 +104,12 @@
       case "ArrowRight":
       case "l":
         e.preventDefault();
+        // Right walks inward: open a closed folder, step into an open one, and
+        // on a leaf that has no subfolders left to open, load its frames — the
+        // rightmost thing there is to do with it.
         if (row.expandable && !row.expanded) void library.expandNode(row.node.path);
         else if (row.expanded) focusRow(library.treeIndex + 1);
+        else library.openDir(row.node.path);
         break;
       case "ArrowLeft":
       case "h":
@@ -154,6 +158,7 @@
     <div
       class="row"
       class:active={app.folder?.dir === row.node.path}
+      class:cursor={i === library.treeIndex}
       style:padding-left="{6 + row.depth * 13}px"
       role="treeitem"
       aria-level={row.depth + 1}
@@ -252,6 +257,19 @@
 
   .row.active {
     background: var(--bg-row-active);
+    box-shadow: inset 0 0 0 1px var(--border-selected);
+  }
+
+  /* The keyboard cursor. Drawn from the tracked index rather than from
+     :focus-visible, which the webview drops the moment the mouse moves — the
+     whole complaint. It persists so arrow navigation stays legible under the
+     pointer, and sits under .active so the open folder still reads strongest. */
+  .row.cursor {
+    background: var(--bg-raised);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+
+  .row.cursor.active {
     box-shadow: inset 0 0 0 1px var(--border-selected);
   }
 
