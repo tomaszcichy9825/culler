@@ -19,6 +19,7 @@
   import "leaflet/dist/leaflet.css";
   import TileConsent from "./TileConsent.svelte";
   import { app } from "../../lib/state.svelte";
+  import { geotag } from "../../lib/geotag.svelte";
   import { library } from "../../lib/library.svelte";
   import { previewURL } from "../../lib/preview";
   import {
@@ -101,15 +102,22 @@
     // Clusters are cut in projected pixels at the current zoom, so panning
     // leaves them alone and only a zoom has to recut them.
     const recut = () => recluster();
+    const place = (e: L.LeafletMouseEvent) => {
+      // A click only drops a location while placing is armed; otherwise it is
+      // Leaflet's own click and means nothing here.
+      if (geotag.armed) geotag.place(e.latlng.lat, e.latlng.lng);
+    };
     created.on("zoomend", recut);
     created.on("move", drawHeat);
     created.on("resize", drawHeat);
+    created.on("click", place);
     recut();
 
     return () => {
       created.off("zoomend", recut);
       created.off("move", drawHeat);
       created.off("resize", drawHeat);
+      created.off("click", place);
       created.remove();
       map = null;
       pins = null;
@@ -389,9 +397,18 @@
   let folderLeaf = $derived(mapState.dir === "" ? "" : (mapState.dir.replace(/\/+$/, "").split("/").pop() ?? ""));
 </script>
 
-<div class="wrap" bind:this={wrap} data-keys="local">
+<div class="wrap" class:placing={geotag.armed} bind:this={wrap} data-keys="local">
   <div class="map" bind:this={host}></div>
   <canvas class="heat" class:on={layout === 1} bind:this={canvas}></canvas>
+
+  {#if geotag.armed}
+    <!-- The whole point of the mode said in one line: the next click is a
+         location, not a pan, and Esc backs out of it. -->
+    <div class="placing-banner" role="status">
+      click the map to place {geotag.targetCount} photo{geotag.targetCount === 1 ? "" : "s"}
+      <span class="sep">·</span> esc to cancel
+    </div>
+  {/if}
 
   <div class="float">
     <div class="chip">
@@ -421,6 +438,14 @@
     {#if mapState.error !== null}
       <div class="chip warn">{mapState.error}</div>
     {/if}
+
+    <!-- Place the selected photos here. It only appears with a selection to
+         place — a location is set on chosen frames, never on everything. -->
+    {#if geotag.targetCount > 0 && !geotag.armed}
+      <button class="chip place" onclick={() => geotag.arm()} title="Drop a location onto the selected photos">
+        📍 place {geotag.targetCount} selected
+      </button>
+    {/if}
   </div>
 
   <div class="hints">
@@ -435,6 +460,46 @@
 </div>
 
 <style>
+  /* While placing, the whole map is a target and the cursor says so. :global
+     reaches Leaflet's own container, which sets its own cursor otherwise. */
+  .wrap.placing :global(.leaflet-container) {
+    cursor: crosshair;
+  }
+
+  .placing-banner {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 500;
+    padding: 6px 12px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    box-shadow: var(--shadow-dialog);
+  }
+
+  .placing-banner .sep {
+    opacity: 0.6;
+    margin: 0 2px;
+  }
+
+  button.chip.place {
+    font: inherit;
+    cursor: pointer;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: none;
+    font-weight: 600;
+  }
+
+  button.chip.place:hover {
+    filter: brightness(1.1);
+  }
+
   .wrap {
     position: relative;
     flex: 1;

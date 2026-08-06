@@ -426,6 +426,7 @@ class MapState {
    */
   async load(dir: string, force = false) {
     if (source === null || dir === "") return;
+    this.#lastLoad = () => this.load(dir, true);
     if (!force && dir === this.dir && this.positions.length > 0) return;
 
     this.loading = true;
@@ -460,6 +461,15 @@ class MapState {
   /** The scope last read, so an unchanged scope does not re-read on every tick. */
   #scopeKey = "";
 
+  /** How to re-read what is currently shown, for a refresh after a geotag write. */
+  #lastLoad: (() => Promise<void>) | null = null;
+
+  /** reload re-reads whatever the map last loaded, folder or scope, forcing it
+   *  past the no-op guard. It is how a geotag write shows up on the map. */
+  reload(): Promise<void> {
+    return this.#lastLoad?.() ?? Promise.resolve();
+  }
+
   /**
    * loadScope reads the positions of the frames a scope names, which may span
    * folders — a session view. It is load's counterpart for MAP following the
@@ -472,6 +482,7 @@ class MapState {
    */
   async loadScope(refs: ScopeRef[], force = false) {
     if (source === null) return;
+    this.#lastLoad = () => this.loadScope(refs, true);
     const key = refs
       .map((r) => frameKey(r.dir, r.stem))
       .sort()
