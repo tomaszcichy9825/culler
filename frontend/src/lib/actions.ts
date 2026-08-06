@@ -591,7 +591,9 @@ export async function requestApply() {
 
 /** confirmApply executes the plan on screen and reloads the scope. */
 export async function confirmApply() {
-  if (!app.plan) return;
+  // A second Enter before the first apply resolves would run a second batch
+  // over the same refs; the plan is only nulled after the await.
+  if (!app.plan || app.busy) return;
   const refs = scopeRefs();
   const searching = library.searchOpen;
   const dir = app.folder?.dir;

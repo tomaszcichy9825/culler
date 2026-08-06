@@ -40,7 +40,7 @@
   import { geotag } from "./lib/geotag.svelte";
   import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
   import RejectsDialog from "./components/RejectsDialog.svelte";
-  import { connectRejects, watchRejectsProgress } from "./lib/rejects.svelte";
+  import { connectRejects, rejects, watchRejectsProgress } from "./lib/rejects.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
   import { visibleGroups } from "./lib/palette.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -66,13 +66,11 @@
     watchScanProgress,
     watchScanStream,
   } from "./lib/actions";
-  import { flush, setRating, setVerdict, toggleMask } from "./lib/decisions";
+  import { flush } from "./lib/decisions";
   import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
   import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
   import type { Pane } from "./lib/shell.svelte";
   import { app, loupe, picker, tree } from "./lib/state.svelte";
-  import { MAX_RATING } from "./lib/verdict";
-  import type { Half } from "./lib/verdict";
 
   /** How far one arrow press pans the zoomed loupe, in image pixels. */
   const PAN_STEP = 120;
@@ -82,19 +80,6 @@
     redo: "nothing to redo",
   };
 
-  const verdictActions: Record<string, "keep" | "cut"> = {
-    "verdict-keep": "keep",
-    "verdict-cut": "cut",
-  };
-
-  const maskActions: Record<string, Half> = {
-    "mask-toggle-raw": "r",
-    "mask-toggle-jpeg": "j",
-  };
-
-  /** rate-1 through rate-5, plus rate-clear at zero. */
-  const ratingActions: Record<string, number> = { "rate-clear": 0 };
-  for (let n = 1; n <= MAX_RATING; n++) ratingActions[`rate-${n}`] = n;
 
   const modeActions: Record<string, number> = {
     "mode-cull": 0,
@@ -308,6 +293,12 @@
       settings.open = false;
       return;
     }
+    // The rejects dialog is the one permanent-deletion prompt, so Esc must
+    // always close it even when the pointer has taken focus off its panel.
+    if (rejects.open) {
+      rejects.cancel();
+      return;
+    }
     if (exifState.plan !== null) {
       exifState.plan = null;
       return;
@@ -467,13 +458,13 @@
         void pickRoot();
         break;
       default:
-        if (action in verdictActions) {
-          setVerdict(verdictActions[action]);
-        } else if (action in maskActions) {
-          toggleMask(maskActions[action]);
-        } else if (action in ratingActions) {
-          setRating(ratingActions[action]);
-        } else if (action in modeActions) {
+        // Verdict, mask, rating and selection are NOT handled here. They are
+        // registry actions guarded by `culling`, and runAction above is their
+        // one dispatcher — reaching this switch for one means the guard declined
+        // (not in cull, or a palette is open), so it must do nothing. Handling
+        // them here as a fallback drove the hidden grid from EXIF/MAP/IMPORT and
+        // recorded verdicts on frames the user could not see.
+        if (action in modeActions) {
           shell.setModeByIndex(modeActions[action]);
         } else if (action in paneActions) {
           shell.focusPane(paneActions[action]);
@@ -560,6 +551,12 @@
     if (geotag.plan !== null && action !== "apply" && action !== "escape") return;
     if (app.plan && action !== "apply" && action !== "escape") return;
     if (exifState.plan !== null && action !== "escape") return;
+    // Emptying rejects and the storage view are modal but take no DOM focus of
+    // their own once the pointer leaves them, so without this every key drives
+    // the grid behind them — and Enter behind the rejects dialog would run an
+    // apply behind the one permanent-deletion prompt in the app.
+    if (rejects.open && action !== "escape") return;
+    if (library.storageOpen && action !== "escape") return;
     if (app.overlay && action !== "keymap-overlay" && action !== "escape") return;
     run(action);
   }
