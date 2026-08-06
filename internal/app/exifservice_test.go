@@ -3,11 +3,13 @@ package app
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
@@ -309,6 +311,89 @@ func TestExifApplyWritesASidecarForARAWFrame(t *testing.T) {
 	}
 	if _, err := os.Lstat(raf + ".xmp"); err == nil {
 		t.Error("undo left the sidecar behind")
+	}
+}
+
+func TestExifSetGPSWritesLocationToJPEGAndUndoes(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	jpg := filepath.Join(dir, "DSCF0001.JPG")
+	original, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewExifService(a).Apply([]ExifEditDTO{{
+		Path:   jpg,
+		SetGPS: &GPSCoordDTO{Latitude: 51.5066667, Longitude: -0.1275, Altitude: 35.5, HasAltitude: true},
+	}})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	f, err := exif.Read(jpg)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !f.GPS.Present {
+		t.Fatalf("no location read back after geotagging: %+v", f.GPS)
+	}
+	if math.Abs(f.GPS.Latitude-51.5066667) > 1e-5 || math.Abs(f.GPS.Longitude-(-0.1275)) > 1e-5 {
+		t.Errorf("coordinates = %.6f, %.6f", f.GPS.Latitude, f.GPS.Longitude)
+	}
+
+	if err := NewApplyService(a).Undo(); err != nil {
+		t.Fatalf("Undo: %v", err)
+	}
+	restored, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(original, restored) {
+		t.Error("undo did not restore the pre-geotag file byte-for-byte")
+	}
+}
+
+func TestExifSetGPSWritesSidecarForRAW(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	raf := filepath.Join(dir, "DSCF0002.RAF")
+	before, err := os.ReadFile(raf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path:   raf,
+		SetGPS: &GPSCoordDTO{Latitude: 51.5066667, Longitude: -0.1275},
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	sidecar, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatalf("no sidecar written for a geotagged RAW: %v", err)
+	}
+	if !bytes.Contains(sidecar, []byte("<exif:GPSLatitude>")) {
+		t.Errorf("sidecar carries no location:\n%s", sidecar)
+	}
+	after, err := os.ReadFile(raf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the RAW itself was modified; it must never be")
+	}
+}
+
+func TestExifSetGPSRejectsAnImpossibleLocation(t *testing.T) {
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+	_, err := NewExifService(testApp(t)).Apply([]ExifEditDTO{{
+		Path:   jpg,
+		SetGPS: &GPSCoordDTO{Latitude: 200, Longitude: 0},
+	}})
+	if err == nil {
+		t.Error("a latitude off the earth was accepted")
 	}
 }
 
