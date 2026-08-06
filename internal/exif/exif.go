@@ -103,6 +103,7 @@ const (
 	tagLensModel          = 0xA434
 
 	// GPS IFD
+	tagGPSVersionID    = 0x0000
 	tagGPSLatitudeRef  = 0x0001
 	tagGPSLatitude     = 0x0002
 	tagGPSLongitudeRef = 0x0003

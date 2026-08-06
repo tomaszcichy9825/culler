@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,11 +27,25 @@ type Changes struct {
 	Artist           *string
 	Copyright        *string
 	StripGPS         bool
+	// SetGPS writes a location onto the frame, creating the GPS directory if it
+	// has none. It wins over StripGPS: a caller that asked for both meant to set
+	// the location it just chose, and losing that is the worse surprise.
+	SetGPS *GPSCoord
+}
+
+// GPSCoord is a location to write: decimal degrees, signed by hemisphere, with
+// an altitude in metres that is negative below sea level and only meant when
+// HasAltitude says so.
+type GPSCoord struct {
+	Latitude    float64
+	Longitude   float64
+	Altitude    float64
+	HasAltitude bool
 }
 
 // Empty reports whether there is nothing to do. Clearing a tag is a change.
 func (c Changes) Empty() bool {
-	return c.DateTimeOriginal == nil && c.Artist == nil && c.Copyright == nil && !c.StripGPS
+	return c.DateTimeOriginal == nil && c.Artist == nil && c.Copyright == nil && !c.StripGPS && c.SetGPS == nil
 }
 
 // The most an APP1 segment can hold: its length field is two bytes and counts
@@ -200,7 +215,14 @@ func editTIFF(block []byte, c Changes) ([]byte, error) {
 	if c.Copyright != nil {
 		changes = append(changes, asciiChange(tagCopyright, *c.Copyright))
 	}
-	if c.StripGPS {
+	switch {
+	case c.SetGPS != nil:
+		// Setting a location wins over stripping it. Done before IFD0 is rebuilt
+		// below, because creating the GPS directory repoints an entry in IFD0.
+		if err := ed.applyGPS(*c.SetGPS); err != nil {
+			return nil, err
+		}
+	case c.StripGPS:
 		ed.eraseGPS()
 		changes = append(changes, change{tag: tagGPSIFD, del: true})
 	}
@@ -208,6 +230,35 @@ func editTIFF(block []byte, c Changes) ([]byte, error) {
 		return nil, err
 	}
 	return ed.buf, nil
+}
+
+// applyGPS writes a location into the GPS IFD, creating that directory and
+// pointing IFD0 at it when the frame has none — the same shape of change
+// applyTimes makes for the EXIF IFD.
+func (ed *editor) applyGPS(g GPSCoord) error {
+	changes := gpsChanges(ed.order, g)
+
+	d, ok := ed.read(ed.ifd0)
+	if !ok {
+		return errBadTIFF
+	}
+	gpsOff := ed.pointerOf(d, tagGPSIFD)
+	if gpsOff == 0 {
+		created, err := ed.newIFD(nil, changes, 0)
+		if err != nil {
+			return err
+		}
+		return ed.editIFD0([]change{ed.longChange(tagGPSIFD, created)})
+	}
+
+	moved, err := ed.applyTo(gpsOff, changes)
+	if err != nil {
+		return err
+	}
+	if moved != gpsOff {
+		return ed.editIFD0([]change{ed.longChange(tagGPSIFD, moved)})
+	}
+	return nil
 }
 
 // editIFD0 applies changes to the first directory and keeps the TIFF header's
@@ -545,6 +596,76 @@ func (ed *editor) longChange(tag uint16, value uint32) change {
 	return change{tag: tag, typ: typeLong, count: 1, data: data}
 }
 
+// gpsChanges is the full set of tag edits for one location: the version, both
+// coordinates with their hemisphere references, and the altitude when there is
+// one. Producing them together lets applyTo rebuild the GPS IFD in one pass,
+// whether the directory already existed or is being created from nothing.
+func gpsChanges(order binary.ByteOrder, g GPSCoord) []change {
+	latRef, lonRef := "N", "E"
+	if g.Latitude < 0 {
+		latRef = "S"
+	}
+	if g.Longitude < 0 {
+		lonRef = "W"
+	}
+
+	changes := []change{
+		// GPSVersionID 2.3.0.0, four BYTEs, inline. Cameras write it and some
+		// strict readers expect the directory to carry it.
+		{tag: tagGPSVersionID, typ: typeByte, count: 4, data: []byte{2, 3, 0, 0}},
+		gpsRefChange(tagGPSLatitudeRef, latRef),
+		coordChange(order, tagGPSLatitude, g.Latitude),
+		gpsRefChange(tagGPSLongitudeRef, lonRef),
+		coordChange(order, tagGPSLongitude, g.Longitude),
+	}
+	if g.HasAltitude {
+		ref := byte(0)
+		alt := g.Altitude
+		if alt < 0 {
+			ref, alt = 1, -alt
+		}
+		changes = append(changes,
+			change{tag: tagGPSAltitudeRef, typ: typeByte, count: 1, data: []byte{ref}},
+			change{tag: tagGPSAltitude, typ: typeRational, count: 1, data: rationalBytes(order, uint32(math.Round(alt*100)), 100)},
+		)
+	}
+	return changes
+}
+
+// gpsRefChange is a hemisphere reference: one letter and its null, a two-byte
+// ASCII value that fits an entry inline.
+func gpsRefChange(tag uint16, ref string) change {
+	return change{tag: tag, typ: typeASCII, count: 2, data: append([]byte(ref), 0)}
+}
+
+// coordChange encodes decimal degrees as the three RATIONALs — degrees,
+// minutes, seconds — a GPS coordinate is stored as. Degrees and minutes are
+// whole; the seconds carry the remainder to ten-thousandths, finer than a
+// tenth of a metre and so finer than a dropped pin or a camera ever means.
+func coordChange(order binary.ByteOrder, tag uint16, deg float64) change {
+	deg = math.Abs(deg)
+	d := math.Floor(deg)
+	remMin := (deg - d) * 60
+	m := math.Floor(remMin)
+	sec := (remMin - m) * 60
+	const secDen = 10000
+
+	data := make([]byte, 0, 24)
+	data = append(data, rationalBytes(order, uint32(d), 1)...)
+	data = append(data, rationalBytes(order, uint32(m), 1)...)
+	data = append(data, rationalBytes(order, uint32(math.Round(sec*secDen)), secDen)...)
+	return change{tag: tag, typ: typeRational, count: 3, data: data}
+}
+
+// rationalBytes is one RATIONAL — numerator then denominator — in the block's
+// byte order.
+func rationalBytes(order binary.ByteOrder, num, den uint32) []byte {
+	b := make([]byte, 8)
+	order.PutUint32(b, num)
+	order.PutUint32(b[4:], den)
+	return b
+}
+
 // formatOffset renders a time's zone as the "+02:00" the offset tag holds.
 func formatOffset(t time.Time) string {
 	_, secs := t.Zone()
@@ -603,7 +724,22 @@ func RenderXMP(c Changes) []byte {
 		b.WriteString(`          <rdf:li xml:lang="x-default">` + escapeXML(*c.Copyright) + "</rdf:li>\n")
 		b.WriteString("        </rdf:Alt>\n      </dc:rights>\n")
 	}
-	if c.StripGPS {
+	if c.SetGPS != nil {
+		// The sidecar is where a RAW frame's location lives: the RAW is never
+		// rewritten, so the position it should carry is written beside it in the
+		// form every other tool reads, "degrees,decimal-minutes" with the
+		// hemisphere letter.
+		b.WriteString("      <exif:GPSLatitude>" + xmpCoord(c.SetGPS.Latitude, "N", "S") + "</exif:GPSLatitude>\n")
+		b.WriteString("      <exif:GPSLongitude>" + xmpCoord(c.SetGPS.Longitude, "E", "W") + "</exif:GPSLongitude>\n")
+		if c.SetGPS.HasAltitude {
+			alt, ref := c.SetGPS.Altitude, "0"
+			if alt < 0 {
+				alt, ref = -alt, "1"
+			}
+			b.WriteString(fmt.Sprintf("      <exif:GPSAltitude>%d/100</exif:GPSAltitude>\n", int64(math.Round(alt*100))))
+			b.WriteString("      <exif:GPSAltitudeRef>" + ref + "</exif:GPSAltitudeRef>\n")
+		}
+	} else if c.StripGPS {
 		// A sidecar cannot remove what is inside the RAW, so it records the
 		// intent as an empty position rather than claiming the file was edited.
 		b.WriteString("      <exif:GPSLatitude></exif:GPSLatitude>\n")
@@ -613,6 +749,18 @@ func RenderXMP(c Changes) []byte {
 	b.WriteString("    </rdf:Description>\n  </rdf:RDF>\n</x:xmpmeta>\n")
 	b.WriteString(`<?xpacket end="w"?>` + "\n")
 	return []byte(b.String())
+}
+
+// xmpCoord renders decimal degrees as XMP's "degrees,decimal-minutes" with the
+// hemisphere letter — the form exif:GPSLatitude and exif:GPSLongitude take.
+func xmpCoord(v float64, pos, neg string) string {
+	h := pos
+	if v < 0 {
+		h, v = neg, -v
+	}
+	d := math.Floor(v)
+	minutes := (v - d) * 60
+	return fmt.Sprintf("%d,%.6f%s", int(d), minutes, h)
 }
 
 // formatXMPTime is the ISO 8601 rendering XMP asks for, keeping the fraction

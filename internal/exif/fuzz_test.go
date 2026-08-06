@@ -68,11 +68,15 @@ func FuzzRewriteJPEG(f *testing.F) {
 	artist := "Fuzz"
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		out, err := RewriteJPEG(data, Changes{
-			DateTimeOriginal: &when,
-			Artist:           &artist,
-			StripGPS:         true,
-		})
+		// Alternate between stripping GPS and setting it, so both the erase path
+		// and the create-the-GPS-IFD path are hammered against arbitrary input.
+		c := Changes{DateTimeOriginal: &when, Artist: &artist}
+		if len(data) > 0 && data[0]%2 == 0 {
+			c.StripGPS = true
+		} else {
+			c.SetGPS = &GPSCoord{Latitude: 51.5066667, Longitude: -0.1275, Altitude: 35.5, HasAltitude: true}
+		}
+		out, err := RewriteJPEG(data, c)
 		if err != nil {
 			if out != nil {
 				t.Fatalf("returned %d bytes alongside error %v", len(out), err)

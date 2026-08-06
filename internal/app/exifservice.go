@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,19 @@ type ExifEditDTO struct {
 	Artist           *string `json:"artist"`
 	Copyright        *string `json:"copyright"`
 	StripGPS         bool    `json:"stripGps"`
+	// SetGPS writes a location onto the frame — a pin dropped on the map or a
+	// position copied from another photo. JPEG gets it in place; a RAW gets it
+	// in a sidecar. It is set, not typed, so it is a coordinate not a string.
+	SetGPS *GPSCoordDTO `json:"setGps"`
+}
+
+// GPSCoordDTO is a location to write, in signed decimal degrees, with an
+// altitude in metres that means something only when HasAltitude says so.
+type GPSCoordDTO struct {
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	Altitude    float64 `json:"altitude"`
+	HasAltitude bool    `json:"hasAltitude"`
 }
 
 // ExifWriteRowDTO is one line of the write-plan dialog: what happens, to which
@@ -445,7 +459,21 @@ func (t *target) applyEdit(edit ExifEditDTO) error {
 		t.change.Copyright = edit.Copyright
 		row(signFor(*edit.Copyright), "Copyright", *edit.Copyright)
 	}
-	if edit.StripGPS && !t.raw {
+	if edit.SetGPS != nil {
+		g := *edit.SetGPS
+		if math.Abs(g.Latitude) > 90 || math.Abs(g.Longitude) > 180 {
+			return fmt.Errorf("location %.6f, %.6f is off the earth", g.Latitude, g.Longitude)
+		}
+		// Setting a location works for a RAW too: unlike stripping, a sidecar can
+		// carry the coordinate the RAW itself never will.
+		t.change.SetGPS = &exif.GPSCoord{
+			Latitude:    g.Latitude,
+			Longitude:   g.Longitude,
+			Altitude:    g.Altitude,
+			HasAltitude: g.HasAltitude,
+		}
+		row("+", "GPSPosition", fmt.Sprintf("%.6f, %.6f", g.Latitude, g.Longitude))
+	} else if edit.StripGPS && !t.raw {
 		// A sidecar cannot remove coordinates from inside a RAW, and pretending
 		// otherwise is the one lie a metadata editor must not tell.
 		t.change.StripGPS = true

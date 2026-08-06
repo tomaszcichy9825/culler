@@ -49,12 +49,22 @@ export interface FrameExifDTO {
   error: string;
 }
 
+/** A location to write onto a frame. Mirrors the backend's GPSCoordDTO. */
+export interface GPSCoordDTO {
+  latitude: number;
+  longitude: number;
+  altitude: number;
+  hasAltitude: boolean;
+}
+
 export interface ExifEditDTO {
   path: string;
   dateTimeOriginal: string | null;
   artist: string | null;
   copyright: string | null;
   stripGps: boolean;
+  /** A location the user set — a dropped pin or one copied from another frame. */
+  setGps: GPSCoordDTO | null;
 }
 
 export interface ExifWriteRowDTO {
@@ -289,6 +299,7 @@ class ExifState {
         artist: drafted.Artist ?? null,
         copyright: drafted.Copyright ?? null,
         stripGps: this.strip[frame.path] === true,
+        setGps: null,
       };
     });
   }
