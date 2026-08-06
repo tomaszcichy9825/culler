@@ -304,6 +304,12 @@ func (e *Executor) Undo(b journal.Batch) error {
 		Description: "Undo: " + b.Description,
 		UndoOf:      b.ID,
 	}
+	// reversed counts files actually put back or copies removed; blocked counts
+	// only restores stopped because something new occupies the path, which is
+	// the retry-worthy failure. A copy-undo that leaves a replacement alone is a
+	// deliberate protective skip, not a failure, and does not block the batch.
+	var reversed, blocked int
+	var firstErr string
 	for i := len(b.Actions) - 1; i >= 0; i-- {
 		a := b.Actions[i]
 		if a.Outcome != journal.OutcomeOK {
@@ -317,10 +323,12 @@ func (e *Executor) Undo(b journal.Batch) error {
 		}
 		rec := journal.Action{Verb: a.Verb, Src: a.Dst, Dst: a.Src}
 		var err error
+		restore := false
 		switch Verb(a.Verb) {
 		case VerbTrash, VerbMove:
 			// bring it back where it came from — unless something new now
 			// lives there; never silently overwrite
+			restore = true
 			if _, statErr := os.Lstat(a.Src); statErr == nil {
 				err = fmt.Errorf("destination occupied: %s", a.Src)
 			} else {
@@ -341,10 +349,34 @@ func (e *Executor) Undo(b journal.Batch) error {
 		if err != nil {
 			rec.Outcome = journal.OutcomeError
 			rec.Err = err.Error()
+			if restore {
+				blocked++
+				if firstErr == "" {
+					firstErr = err.Error()
+				}
+			}
 		} else {
 			rec.Outcome = journal.OutcomeOK
+			reversed++
 		}
 		undo.Actions = append(undo.Actions, rec)
 	}
-	return e.Journal.Append(undo)
+
+	// An undo that put nothing back yet was blocked from doing so must not be
+	// recorded: journalling it with UndoOf set would mark the batch undone
+	// though the files are still where the batch left them, so the next Undo
+	// would reverse an older batch and this one could never be retried. Leave it
+	// as the undo target and report that it did not happen.
+	if reversed == 0 && blocked > 0 {
+		return fmt.Errorf("undo of %q reversed nothing: %s", b.Description, firstErr)
+	}
+	if err := e.Journal.Append(undo); err != nil {
+		return err
+	}
+	// A partial undo is a real, journalled fact — the batch is spent — but the
+	// caller is told, because some files could not be put back.
+	if blocked > 0 {
+		return fmt.Errorf("undo of %q could not restore %d file(s); %s", b.Description, blocked, firstErr)
+	}
+	return nil
 }

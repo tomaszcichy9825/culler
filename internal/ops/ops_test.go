@@ -329,15 +329,51 @@ func TestUndoRefusesToOverwriteNewFile(t *testing.T) {
 	if err := os.WriteFile(src, []byte("newer"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.Undo(batch); err != nil {
-		t.Fatal(err)
+	// The undo cannot run without clobbering the newer file, so it reverses
+	// nothing — and must say so, not report success. Reporting nil is what let
+	// the caller mark the batch undone and reverse an older one on the next Undo.
+	if err := ex.Undo(batch); err == nil {
+		t.Fatal("a fully-failed undo returned nil; the caller would report success and consume the batch")
 	}
 	if got, _ := os.ReadFile(src); string(got) != "newer" {
 		t.Fatal("undo silently overwrote a newer file")
 	}
+	// Nothing was reversed, so nothing was journalled: the batch is still the
+	// undo target and can be retried once the blocker is cleared.
 	batches, _ := j.ReadAll()
-	last := batches[len(batches)-1]
-	if last.Actions[0].Outcome != journal.OutcomeError {
-		t.Fatalf("occupied destination must be recorded as an error: %+v", last.Actions[0])
+	if len(batches) != 1 {
+		t.Fatalf("a fully-failed undo journalled a batch and consumed the target: %d batches", len(batches))
+	}
+}
+
+func TestUndoReportsPartialFailureButStillJournals(t *testing.T) {
+	dir, _ := setupTree(t)
+	ex, j := newExecutor(t)
+
+	a := filepath.Join(dir, "IMG_0002.JPG")
+	b := filepath.Join(dir, "DSCF0001.JPG")
+	batch, err := ex.Apply("drop two", []FileAction{{Verb: VerbTrash, Src: a}, {Verb: VerbTrash, Src: b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Block only one of the two paths before undo.
+	if err := os.WriteFile(a, []byte("newer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// One reverses, one cannot: a partial undo is journalled (the batch is spent)
+	// but the caller is told it did not fully succeed.
+	if err := ex.Undo(batch); err == nil {
+		t.Fatal("a partial undo returned nil; the failure would be invisible")
+	}
+	if got, _ := os.ReadFile(b); string(got) != "jpg1" {
+		t.Errorf("the reversible half was not restored: %q", got)
+	}
+	if got, _ := os.ReadFile(a); string(got) != "newer" {
+		t.Errorf("the blocked half clobbered the newer file: %q", got)
+	}
+	batches, _ := j.ReadAll()
+	if len(batches) != 2 || batches[1].UndoOf != batch.ID {
+		t.Fatalf("a partial undo must still journal as an undo of the batch: %+v", batches)
 	}
 }
