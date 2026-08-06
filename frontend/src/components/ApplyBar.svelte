@@ -4,7 +4,7 @@
   // routes Enter and Esc to it while it is up, so nothing is ever trapped.
 
   import { cancelApply, confirmApply, exportXMP, filterByVerdict } from "../lib/actions";
-  import { palette } from "../lib/palette.svelte";
+  import { filterIsSet, filterSummary, palette } from "../lib/palette.svelte";
   import { formatBytes } from "../lib/preview";
   import { app } from "../lib/state.svelte";
   import { PLAN_ORDER, PLAN_TERMS } from "../lib/verdict";
@@ -12,6 +12,13 @@
   let counts = $derived(app.verdictCounts);
   let total = $derived(app.pending.length);
   let filterVerdict = $derived(palette.filter.verdict);
+
+  // A narrowing filter needs an escape hatch that survives everything: the
+  // verdict pills vanish once their count hits zero — uncut every cut and the
+  // "cut" pill that set the filter is gone while the filter it set stays on —
+  // so the way out cannot live on the pills. This chip shows whenever anything
+  // is narrowing the grid, whatever set it.
+  let filterActive = $derived(filterIsSet(palette.filter));
 
   /**
    * The plan's own counts still arrive keyed in the pre-verdict vocabulary, so
@@ -69,6 +76,17 @@
       <span class="chip routed">→ routed · {routed}</span>
     {/if}
     <span class="muted">↩ to apply</span>
+  {/if}
+  <!-- Outside the pending guard on purpose: a filter can strand the grid on an
+       empty set with nothing judged, and the way back has to be here for that. -->
+  {#if filterActive}
+    <button
+      class="chip filter-clear"
+      onclick={() => palette.clearFilter()}
+      title="Show every frame again"
+    >
+      ✕ {filterSummary(palette.filter)}
+    </button>
   {/if}
   <!-- The volume, the selection, the busy flag and the key hints all live in
        the title bar and the status bar now; this strip is only the pending
@@ -224,6 +242,21 @@
 
   .chip.routed {
     background: var(--accent);
+  }
+
+  /* The filter escape hatch is a quiet outline, not a coloured verdict pill:
+     it is a state to leave, not a decision to read. */
+  button.chip.filter-clear {
+    flex: 0 1 auto;
+    background: var(--bg-field);
+    color: var(--text-muted);
+    border-color: var(--border-strong);
+  }
+
+  button.chip.filter-clear:hover {
+    filter: none;
+    border-color: var(--accent);
+    color: var(--text);
   }
 
   /* Destinations lead the summary and are marked off from the verdict counts:
