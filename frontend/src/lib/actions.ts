@@ -249,6 +249,9 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
     // it is dropped even if it is still the newest this side asked for.
     if (seq !== scanSeq || ticket.seq < installedSeq) {
       clearTimeout(slow);
+      // This ticket will never own the state, so anything already buffered
+      // against its token is dead and must not leak or drain into a later scan.
+      bufferedScans.delete(ticket.token);
       return;
     }
     installedSeq = ticket.seq;
@@ -275,6 +278,11 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
       app.resetZoom();
     }
     if (remember) rememberFolder(ticket.dir);
+    // Anything the backend already emitted for this token — a folder small
+    // enough to finish before the ticket came back — is waiting; replay it now,
+    // after the folder state is set up, so drained frames are not cleared under
+    // them and a buffered done can end the open cleanly.
+    drainBuffered(ticket.token);
   } catch (err) {
     clearTimeout(slow);
     if (seq !== scanSeq) return;
@@ -348,42 +356,113 @@ function streamHashes(patches: HashPatch[]) {
 }
 
 /**
+ * A scan's events, held until its stream is installed. A small folder can be
+ * walked and finished on the backend before `await OpenFolderStream` has even
+ * returned the ticket, so its frames and its done event arrive while `stream`
+ * is still null. Dropping them left the open stuck on "scanning" forever;
+ * instead they wait here by token and are drained the moment the stream that
+ * owns them is installed.
+ */
+interface BufferedScan {
+  frames: GroupDTO[];
+  hashes: HashPatch[];
+  done: ScanDoneEvent | null;
+}
+
+/** The shape of a scan:done event, as this module reads it. */
+interface ScanDoneEvent {
+  token: string;
+  error: string;
+}
+
+const bufferedScans = new Map<string, BufferedScan>();
+
+/** seqOfToken pulls the backend sequence out of a "scan-<n>" token. */
+function seqOfToken(token: string): number {
+  const m = /scan-(\d+)/.exec(token);
+  return m === null ? -1 : Number(m[1]);
+}
+
+function bufferFor(token: string): BufferedScan {
+  let b = bufferedScans.get(token);
+  if (b === undefined) {
+    b = { frames: [], hashes: [], done: null };
+    bufferedScans.set(token, b);
+  }
+  return b;
+}
+
+/**
+ * drainBuffered replays whatever arrived for token before its stream was
+ * installed, in order, then forgets it and every superseded token — a buffer
+ * for a scan an install has moved past can never be claimed.
+ */
+function drainBuffered(token: string) {
+  const b = bufferedScans.get(token);
+  if (b !== undefined) {
+    if (b.frames.length > 0) streamFrames(b.frames);
+    if (b.hashes.length > 0) {
+      streamHashes(b.hashes);
+      tryPendingFocus();
+    }
+    if (b.done !== null) finishScan(b.done);
+  }
+  const installed = seqOfToken(token);
+  for (const key of bufferedScans.keys()) {
+    if (seqOfToken(key) <= installed) bufferedScans.delete(key);
+  }
+}
+
+/** finishScan ends the open the done event belongs to, if it is the live one. */
+function finishScan(done: ScanDoneEvent) {
+  if (stream === null || done.token !== stream.token) return;
+  const s = stream;
+  stream = null;
+  clearTimeout(s.slow);
+  clearTimeout(s.watchdog);
+  if (pendingFocus?.token === s.token) pendingFocus = null;
+  // Only the newest scan clears the indicator; a superseded one leaving would
+  // blank the state the live scan is still using.
+  if (s.seq === scanSeq) {
+    app.busy = false;
+    app.scanning = null;
+    app.scanSlow = false;
+    app.scanProgress = null;
+    app.scanProgressDir = null;
+    const count = library.searchOpen ? preSearchGroups.length : app.allGroups.length;
+    if (done.error !== "") app.error = done.error;
+    else if (s.announce && count === 0) app.notify("no photos in that folder");
+  }
+}
+
+/**
  * watchScanStream subscribes to the streamed open for the life of the app:
  * frames paint the grid as the walk finds them, identities and decisions land
- * on top, and the done event ends the scan. Call it once, at startup.
+ * on top, and the done event ends the scan. Events for a stream not yet
+ * installed are buffered by token rather than dropped. Call it once, at startup.
  */
 export function watchScanStream() {
   Events.On("scan:frames", (event) => {
     const batch = event.data;
-    if (!batch || stream === null || batch.token !== stream.token) return;
-    streamFrames(batch.frames ?? []);
+    if (!batch) return;
+    if (stream !== null && batch.token === stream.token) streamFrames(batch.frames ?? []);
+    else bufferFor(batch.token).frames.push(...(batch.frames ?? []));
   });
   Events.On("scan:hashed", (event) => {
     const batch = event.data;
-    if (!batch || stream === null || batch.token !== stream.token) return;
-    streamHashes(batch.frames ?? []);
-    tryPendingFocus();
+    if (!batch) return;
+    if (stream !== null && batch.token === stream.token) {
+      streamHashes(batch.frames ?? []);
+      tryPendingFocus();
+    } else {
+      bufferFor(batch.token).hashes.push(...(batch.frames ?? []));
+    }
   });
   Events.On("scan:done", (event) => {
     const done = event.data;
-    if (!done || stream === null || done.token !== stream.token) return;
-    const s = stream;
-    stream = null;
-    clearTimeout(s.slow);
-    clearTimeout(s.watchdog);
-    if (pendingFocus?.token === s.token) pendingFocus = null;
-    // Only the newest scan clears the indicator; a superseded one leaving
-    // would blank the state the live scan is still using.
-    if (s.seq === scanSeq) {
-      app.busy = false;
-      app.scanning = null;
-      app.scanSlow = false;
-      app.scanProgress = null;
-      app.scanProgressDir = null;
-      const count = library.searchOpen ? preSearchGroups.length : app.allGroups.length;
-      if (done.error !== "") app.error = done.error;
-      else if (s.announce && count === 0) app.notify("no photos in that folder");
-    }
+    if (!done) return;
+    if (stream !== null && done.token === stream.token) finishScan(done);
+    else bufferFor(done.token).done = done;
   });
 }
 
