@@ -44,6 +44,7 @@
   import { settings } from "./lib/settings.svelte";
   import { groupKey } from "./lib/state.svelte";
   import Sidebar from "./components/Sidebar.svelte";
+  import VSplit from "./components/VSplit.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import TitleBar from "./components/TitleBar.svelte";
   import Toast from "./components/Toast.svelte";
@@ -588,24 +589,25 @@
     >
       {#if shell.focusedPane === "left"}{@render focusHead("left")}{/if}
       <div class="pane-body">
+        <!-- The scope picker is the same in PHOTOS, EXIF and MAP: one folder
+             tree and session list that sets what every mode shows. EXIF and MAP
+             keep their own left-pane content below it — the frames being edited,
+             the places on the map — under a divider the user can drag and that
+             is remembered; PHOTOS is the picker alone. -->
         {#if shell.mode === "import"}
           <ImportLeft />
+        {:else if shell.mode === "exif"}
+          <VSplit storageKey="culler.split.exif-left">
+            {#snippet top()}<Sidebar bind:path />{/snippet}
+            {#snippet bottom()}<FramesRail mosaic={exifState.batch} />{/snippet}
+          </VSplit>
+        {:else if shell.mode === "map"}
+          <VSplit storageKey="culler.split.map-left">
+            {#snippet top()}<Sidebar bind:path />{/snippet}
+            {#snippet bottom()}<MapLeft layout={shell.layout} />{/snippet}
+          </VSplit>
         {:else}
-          <!-- The scope picker is the same in PHOTOS, EXIF and MAP: one folder
-               tree and session list that sets what every mode shows. Each of
-               those modes keeps its own left-pane content below it — the frames
-               being edited, the places on the map — so nothing is lost by
-               sharing the picker. -->
-          <div class="left-stack" class:split={shell.mode === "exif" || shell.mode === "map"}>
-            <div class="scope-pane">
-              <Sidebar bind:path />
-            </div>
-            {#if shell.mode === "exif"}
-              <div class="mode-pane"><FramesRail mosaic={exifState.batch} /></div>
-            {:else if shell.mode === "map"}
-              <div class="mode-pane"><MapLeft layout={shell.layout} /></div>
-            {/if}
-          </div>
+          <Sidebar bind:path />
         {/if}
       </div>
     </section>
@@ -807,38 +809,6 @@
     overflow: hidden;
   }
 
-  /* The left pane stacks the shared scope picker over the mode's own content.
-     With nothing below it — PHOTOS — the picker fills the pane; in EXIF and MAP
-     it takes a fixed share and hands the rest to the frames rail or the places
-     list, each scrolling on its own. */
-  .left-stack {
-    flex: 1;
-    min-height: 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .scope-pane {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .left-stack.split .scope-pane {
-    flex: 0 0 45%;
-  }
-
-  .mode-pane {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border-top: 1px solid var(--border);
-  }
 
   /* Focus at pane scale is the one place the shell shows it: the surface
      lifts, the border warms, and a strip says which pane has the keyboard. */
