@@ -464,6 +464,12 @@ func (t *target) applyEdit(edit ExifEditDTO) error {
 		if math.Abs(g.Latitude) > 90 || math.Abs(g.Longitude) > 180 {
 			return fmt.Errorf("location %.6f, %.6f is off the earth", g.Latitude, g.Longitude)
 		}
+		// The altitude encodes as hundredths of a metre in a uint32, so an absurd
+		// value would silently wrap to a wrong one. Anywhere a photograph is taken
+		// sits well inside this bound; a value past it is a mistake, not a place.
+		if g.HasAltitude && math.Abs(g.Altitude) > 100_000 {
+			return fmt.Errorf("altitude %.1f m is not a place on earth", g.Altitude)
+		}
 		// Setting a location works for a RAW too: unlike stripping, a sidecar can
 		// carry the coordinate the RAW itself never will.
 		t.change.SetGPS = &exif.GPSCoord{

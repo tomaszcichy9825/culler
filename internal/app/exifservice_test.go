@@ -397,6 +397,17 @@ func TestExifSetGPSRejectsAnImpossibleLocation(t *testing.T) {
 	}
 }
 
+func TestExifSetGPSRejectsAnAbsurdAltitude(t *testing.T) {
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+	_, err := NewExifService(testApp(t)).Apply([]ExifEditDTO{{
+		Path:   jpg,
+		SetGPS: &GPSCoordDTO{Latitude: 51, Longitude: 0, Altitude: 99_999_999, HasAltitude: true},
+	}})
+	if err == nil {
+		t.Error("an altitude that would wrap the uint32 encoder was accepted")
+	}
+}
+
 func TestExifApplyLeavesNoStagingBehind(t *testing.T) {
 	a := testApp(t)
 	jpg := filepath.Join(frames(t), "DSCF0001.JPG")

@@ -100,6 +100,31 @@ func TestRewriteJPEGOverwritesExistingGPS(t *testing.T) {
 	}
 }
 
+func TestSetGPSWithoutAltitudeClearsAStaleOne(t *testing.T) {
+	// fullTIFF already carries an altitude. Writing a location that carries none
+	// must take the old altitude off, not leave it paired with the new
+	// coordinates — the same hazard the capture-time write guards against for a
+	// leftover sub-second.
+	after, err := RewriteJPEG(jpegWith(fullTIFF(binary.LittleEndian)), Changes{SetGPS: &GPSCoord{
+		Latitude:    48.8584,
+		Longitude:   2.2945,
+		HasAltitude: false,
+	}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+	f, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !f.GPS.Present {
+		t.Fatalf("the new coordinates did not read back: %+v", f.GPS)
+	}
+	if f.GPS.HasAltitude {
+		t.Errorf("a stale altitude survived the new location: %v m", f.GPS.Altitude)
+	}
+}
+
 func TestSetGPSTakesPrecedenceOverStrip(t *testing.T) {
 	// If a caller somehow asks to both set and strip, the location the user
 	// chose wins over the removal — losing a location the user just set is the

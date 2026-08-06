@@ -628,6 +628,14 @@ func gpsChanges(order binary.ByteOrder, g GPSCoord) []change {
 			change{tag: tagGPSAltitudeRef, typ: typeByte, count: 1, data: []byte{ref}},
 			change{tag: tagGPSAltitude, typ: typeRational, count: 1, data: rationalBytes(order, uint32(math.Round(alt*100)), 100)},
 		)
+	} else {
+		// No altitude with the new position, so any altitude the frame already
+		// carried must go — a leftover would silently qualify the new
+		// coordinates, the same way a stale sub-second would a new capture time.
+		changes = append(changes,
+			change{tag: tagGPSAltitudeRef, del: true},
+			change{tag: tagGPSAltitude, del: true},
+		)
 	}
 	return changes
 }
