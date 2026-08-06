@@ -257,16 +257,10 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
     installedSeq = ticket.seq;
     clearTimeout(watchdog);
     // A stream that goes silent — a scan the backend cancelled without a done,
-    // or one that stalled — must not leave the UI busy forever.
-    watchdog = setTimeout(() => {
-      if (stream?.token === ticket.token && seq === scanSeq) {
-        stream = null;
-        app.busy = false;
-        app.scanning = null;
-        app.scanSlow = false;
-        app.notify("the scan stopped responding — try opening the folder again", "error");
-      }
-    }, SCAN_WATCHDOG_MS);
+    // or one that stalled — must not leave the UI busy forever. The timer is
+    // re-armed by every frame that arrives (bumpWatchdog), so it only fires on
+    // real silence, not on a scan that is simply long.
+    watchdog = armWatchdog(ticket.token, seq);
     // The stream owns the state from here: frames and identities arrive as
     // events carrying this token, and the done event ends the scan. The slow
     // timer is handed over with the rest.
@@ -301,6 +295,31 @@ let installedSeq = 0;
 let watchdog: ReturnType<typeof setTimeout> | undefined;
 const SCAN_WATCHDOG_MS = 60_000;
 
+/** armWatchdog builds the silence timer that ends a stream that stops speaking. */
+function armWatchdog(token: string, seq: number): ReturnType<typeof setTimeout> {
+  return setTimeout(() => {
+    if (stream?.token === token && seq === scanSeq) {
+      stream = null;
+      app.busy = false;
+      app.scanning = null;
+      app.scanSlow = false;
+      app.notify("the scan stopped responding — try opening the folder again", "error");
+    }
+  }, SCAN_WATCHDOG_MS);
+}
+
+/**
+ * bumpWatchdog restarts the silence timer whenever the stream shows a sign of
+ * life. Without it the watchdog was a hard deadline: a large card over a slow
+ * share that took longer than the timeout to walk was declared dead mid-stream,
+ * and every frame after it was buffered and lost.
+ */
+function bumpWatchdog() {
+  if (stream === null) return;
+  clearTimeout(stream.watchdog);
+  stream.watchdog = armWatchdog(stream.token, stream.seq);
+}
+
 /**
  * The stream the state currently belongs to. Events carrying any other token
  * are a scan the user has already left and change nothing.
@@ -319,6 +338,14 @@ let pendingFocus: { token: string; hash: string } | null = null;
 
 /** focusWhenHashed asks for hash to be focused, bound to the current stream. */
 function focusWhenHashed(hash: string) {
+  // A fast folder can finish before this is called: its frames are already
+  // loaded and identified, and its stream has ended, so focus the target now
+  // rather than binding to a stream that will never emit again.
+  const i = app.allGroups.findIndex((g) => g.hash !== "" && g.hash === hash);
+  if (i >= 0) {
+    app.setFocus(i);
+    return;
+  }
   if (stream === null) return;
   pendingFocus = { token: stream.token, hash };
   tryPendingFocus();
@@ -445,13 +472,18 @@ export function watchScanStream() {
   Events.On("scan:frames", (event) => {
     const batch = event.data;
     if (!batch) return;
-    if (stream !== null && batch.token === stream.token) streamFrames(batch.frames ?? []);
-    else bufferFor(batch.token).frames.push(...(batch.frames ?? []));
+    if (stream !== null && batch.token === stream.token) {
+      bumpWatchdog();
+      streamFrames(batch.frames ?? []);
+    } else {
+      bufferFor(batch.token).frames.push(...(batch.frames ?? []));
+    }
   });
   Events.On("scan:hashed", (event) => {
     const batch = event.data;
     if (!batch) return;
     if (stream !== null && batch.token === stream.token) {
+      bumpWatchdog();
       streamHashes(batch.frames ?? []);
       tryPendingFocus();
     } else {
