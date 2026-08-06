@@ -450,7 +450,9 @@ class ExifState {
    */
   async confirmWrite(): Promise<boolean> {
     const edits = this.editsDTO;
-    if (edits.length === 0 || this.plan === null) return false;
+    // A second Enter before the write resolves would re-run it against the
+    // already-written files; the plan is only cleared after the await.
+    if (edits.length === 0 || this.plan === null || this.writing) return false;
     this.writing = true;
     this.error = "";
     try {

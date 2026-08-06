@@ -95,7 +95,9 @@ class GeotagState {
 
   /** confirm writes the planned location and refreshes the map over it. */
   async confirm() {
-    if (this.#pending === null) return;
+    // A second Enter before the first write resolves would back up the
+    // already-geotagged file over the original, so undo could no longer reach it.
+    if (this.#pending === null || this.busy) return;
     const { paths, coord } = this.#pending;
     this.busy = true;
     try {
