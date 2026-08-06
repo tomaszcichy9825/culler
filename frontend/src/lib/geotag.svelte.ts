@@ -63,7 +63,17 @@ class GeotagState {
   /** place is the dropped-pin path: the selection takes the clicked coordinate. */
   place(latitude: number, longitude: number) {
     this.armed = false;
-    void this.request(app.selected, { latitude, longitude, altitude: 0, hasAltitude: false });
+    // Leaflet's world repeats horizontally, so a click after panning across it
+    // can carry a longitude well outside [-180, 180]; wrap it back to the real
+    // meridian, and clamp the latitude to the poles, before it becomes a plan.
+    const longitudeWrapped = (((longitude + 180) % 360) + 360) % 360 - 180;
+    const latitudeClamped = Math.max(-90, Math.min(90, latitude));
+    void this.request(app.selected, {
+      latitude: latitudeClamped,
+      longitude: longitudeWrapped,
+      altitude: 0,
+      hasAltitude: false,
+    });
   }
 
   /** copyFrom borrows one located frame's coordinate onto the selection. */
