@@ -306,6 +306,49 @@ Wails covers the shell. The parts that will actually break:
 Keep every one of these behind an interface in `internal/platform`. No `runtime.GOOS` checks
 scattered through business logic.
 
+### R11: geotagging (setting a location)
+
+A frame off a camera with no GPS has no place on the map. This is how a user gives it one, in
+the spirit of Immich: drop a pin, or copy the location from a frame that already has one. It sets
+a location; it does not name one — there is no reverse geocoding here, and none is added.
+
+Two ways to set a location, both acting on the current selection (or the focused frame when
+nothing is selected):
+
+- **Drop a pin in MAP.** Click a point on the map, or drag a frame's existing pin, and the
+  selected frames take those coordinates. Setting a coordinate is entirely local — the map's two
+  opt-in cloud exceptions are tiles and ask-first reverse geocoding, and neither is touched by
+  writing a position the user chose.
+- **Copy from another photo.** Pick a frame that already carries GPS and borrow its
+  latitude/longitude/altitude onto the selection. This is how a whole shoot from a camera with no
+  GPS gets placed from one tagged reference frame — a phone shot at the same spot, or an earlier
+  frame that was tagged.
+
+Writing goes through the **existing EXIF write plan** — the same `Plan`/`Apply`, journal, backup
+and undo as every other metadata edit. A geotag is not special-cased:
+
+- **JPEG**: the GPS tags are written into the file's EXIF in place. A JPEG with no GPS sub-IFD
+  gets one created and IFD0's GPS pointer set to it — the same shape of change the writer already
+  makes to add the EXIF sub-IFD for a capture time.
+- **RAW**: never rewritten. The coordinates go to the frame's `.xmp` sidecar (`exif:GPSLatitude`,
+  `exif:GPSLongitude`, `exif:GPSAltitude`), the same sidecar the rest of RAW metadata editing
+  writes to.
+- The card is never written to directly: the op engine stages the edited bytes, moves the
+  original into backup, then copies the new bytes into place, in one journaled batch — so a
+  geotag is undoable byte-for-byte like any apply.
+
+The bulk of the work is in `internal/exif`, which today can only *strip* GPS. Setting it needs a
+rational-value encoder (deg/min/sec as three `RATIONAL`s, ASCII `N/S/E/W` refs, the altitude
+`RATIONAL` plus its `BYTE` above/below-sea-level ref) and the ability to create the GPS sub-IFD
+on a frame that lacks one. `exif.Changes` gains GPS fields, `ExifEditDTO` and the editable-field
+table gain the Location row, and the package's write and fuzz tests gate all of it. Removing a
+location stays the existing `StripGPS` path. APP1 stays under its 64 KB ceiling — a GPS IFD is
+small.
+
+Testing: write coordinates then read back the same value; create the GPS IFD where none existed;
+JPEG-in-place and RAW-sidecar parity; copy-from-another-frame produces the source's exact
+coordinates; apply→undo restores byte-identical files; the fuzz gate stays green.
+
 ---
 
 ## 5. Performance
@@ -351,7 +394,8 @@ bulk ops (R6), EXIF panel, `_Rejected` folder mode.
 **v0.3** — ingest from card with folder templates, verified copy, and simultaneous second-copy
 to a backup destination. 1:1 zoom with Tier-3 demosaic for RAW-only frames. Compare mode.
 
-**v0.4** — Windows and Linux builds, auto-update, XMP export.
+**v0.4** — Windows and Linux builds, auto-update, XMP export. Geotagging (R11): drop-a-pin and
+copy-from-another-frame, written through the EXIF plan.
 
 ---
 
