@@ -7,6 +7,7 @@
   import { shell } from "../lib/shell.svelte";
   import { app } from "../lib/state.svelte";
   import NetworkChip from "./NetworkChip.svelte";
+  import UnwrittenChip from "./exif/UnwrittenChip.svelte";
 
   let {
     onlayout,
@@ -56,6 +57,10 @@
   </button>
 
   <div class="chips">
+    <!-- EXIF's edits are drafts until written, and this is the only thing that
+         says so and the only button that writes them. Without it, editing a
+         field in EXIF looks like it does nothing. -->
+    {#if shell.mode === "exif"}<UnwrittenChip />{/if}
     {#if app.busy}
       <span class="chip working"><span class="dot" aria-hidden="true"></span>working</span>
     {/if}
