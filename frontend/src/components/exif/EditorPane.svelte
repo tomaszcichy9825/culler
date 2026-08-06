@@ -44,7 +44,7 @@
     {#if exifState.loading}
       <p class="empty">reading metadata…</p>
     {:else if count === 0}
-      <p class="empty">no frames selected — pick one in the grid, or select several and press ⌥2 to edit them together</p>
+      <p class="empty">nothing to edit yet — pick a folder or session on the left, or select frames in PHOTOS; ⌥2 edits several at once</p>
     {:else}
       {#each exifState.sections as section (section.name)}
         <section class="group">

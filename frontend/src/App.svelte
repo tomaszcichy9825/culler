@@ -601,7 +601,7 @@
               <Sidebar bind:path />
             </div>
             {#if shell.mode === "exif"}
-              <div class="mode-pane"><FramesRail /></div>
+              <div class="mode-pane"><FramesRail mosaic={exifState.batch} /></div>
             {:else if shell.mode === "map"}
               <div class="mode-pane"><MapLeft layout={shell.layout} /></div>
             {/if}
