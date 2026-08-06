@@ -36,6 +36,8 @@
   import MapCentre from "./components/map/MapCentre.svelte";
   import MapLeft from "./components/map/MapLeft.svelte";
   import MapRight from "./components/map/MapRight.svelte";
+  import GeotagDialog from "./components/map/GeotagDialog.svelte";
+  import { geotag } from "./lib/geotag.svelte";
   import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
   import RejectsDialog from "./components/RejectsDialog.svelte";
   import { connectRejects, watchRejectsProgress } from "./lib/rejects.svelte";
@@ -292,6 +294,16 @@
   });
 
   function escape() {
+    // Geotagging is the frontmost thing when it is up: back out of the confirm,
+    // then out of armed placement, before anything else unwinds.
+    if (geotag.plan !== null) {
+      geotag.cancel();
+      return;
+    }
+    if (geotag.armed) {
+      geotag.disarm();
+      return;
+    }
     if (settings.open) {
       settings.open = false;
       return;
@@ -419,6 +431,11 @@
         escape();
         break;
       case "apply":
+        // A geotag confirm is the frontmost plan when it is up.
+        if (geotag.plan !== null) {
+          void geotag.confirm();
+          break;
+        }
         // ⏎ confirms a plan that is up, then applies whatever has been decided
         // — a session or a search is a scope you cull like a folder, now that
         // apply spans folders. Only with nothing decided does ⏎ fall back to
@@ -540,6 +557,7 @@
     // The plan panels and the overlay are modal in intent but not in focus:
     // they swallow everything except the keys that dismiss them. Without this
     // a verdict key would fall through to the grid behind the dialog.
+    if (geotag.plan !== null && action !== "apply" && action !== "escape") return;
     if (app.plan && action !== "apply" && action !== "escape") return;
     if (exifState.plan !== null && action !== "escape") return;
     if (app.overlay && action !== "keymap-overlay" && action !== "escape") return;
@@ -717,6 +735,7 @@
     <WritePlanDialog />
   {/if}
   <RejectsDialog />
+  <GeotagDialog />
 
   <ApplyBar />
   <StatusBar />

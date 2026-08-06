@@ -11,6 +11,7 @@
   // sending it somewhere, which the mode does not do.
 
   import { previewURL } from "../../lib/preview";
+  import { geotag } from "../../lib/geotag.svelte";
   import {
     formatAltitude,
     formatClock,
@@ -102,6 +103,25 @@
 
       {#if frame.hasAltitude}
         <div class="row"><span class="key">altitude</span><span class="val">{formatAltitude(frame.altitude)}</span></div>
+      {/if}
+
+      <!-- Borrow this located frame's position onto the selected photos — the
+           way a whole shoot from a camera with no GPS gets placed from one
+           tagged reference frame. -->
+      {#if geotag.targetCount > 0}
+        <button
+          type="button"
+          class="copy-to"
+          onclick={() =>
+            geotag.copyFrom({
+              latitude: frame.latitude,
+              longitude: frame.longitude,
+              altitude: frame.altitude,
+              hasAltitude: frame.hasAltitude,
+            })}
+        >
+          copy this location to {geotag.targetCount} selected
+        </button>
       {/if}
     </section>
 
@@ -249,6 +269,28 @@
 
   .val.dim {
     color: var(--text-muted);
+  }
+
+  .copy-to {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-field);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .copy-to:hover {
+    border-color: var(--accent);
+    color: var(--text);
   }
 
   /* The two coordinate rows are one control, so the whole block is the copy
