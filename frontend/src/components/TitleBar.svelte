@@ -57,10 +57,10 @@
   </button>
 
   <div class="chips">
-    <!-- EXIF's edits are drafts until written, and this is the only thing that
-         says so and the only button that writes them. Without it, editing a
-         field in EXIF looks like it does nothing. -->
-    {#if shell.mode === "exif"}<UnwrittenChip />{/if}
+    <!-- Metadata edits are drafts until written, and this is the only thing
+         in the chrome that says so. Cull-only because that is where the
+         inspector that drafts them is; the chip draws nothing at zero. -->
+    {#if shell.mode === "cull"}<UnwrittenChip />{/if}
     {#if app.busy}
       <span class="chip working"><span class="dot" aria-hidden="true"></span>working</span>
     {/if}

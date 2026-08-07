@@ -22,7 +22,10 @@ no telemetry, no plugin system.
 Amended 2026-08-03 with the adopted redesign (`docs/design/DESIGN-SPEC.md`): a local catalogue
 (LIBRARY mode) is now in scope, superseding the original "no catalogue" stance; MAP mode makes
 two narrow, opt-in exceptions to "no cloud" — map tiles and ask-first reverse geocoding. EXIF
-metadata editing (not pixel editing) is in scope via the op engine with journal and undo. The
+metadata editing (not pixel editing) is in scope via the op engine with journal and undo; since
+2026-08-07 it lives in the PHOTOS inspector rather than a mode of its own — every edit is a
+draft against the grid's selection or focused frame, and ⌘S puts up the write plan that backs
+up, journals and writes, undoable like any other batch (see `docs/design/AMENDMENTS.md`). The
 decision model is verdict + mask + star ratings (k/x/r/j, 1–5), superseding the four numeric
 decision keys below where they conflict.
 

@@ -1,5 +1,6 @@
 <script lang="ts">
-  // One row of the editor form, in the four states screen 3a draws.
+  // One editable row of the inspector's metadata section, in the four states
+  // the design draws for a field.
   //
   // editing — the row has the caret: accent wash, accent border, the value on
   //   a brighter wash with the caret drawn as an inset edge on its right.
@@ -122,8 +123,9 @@
   }
 
   .name {
+    /* Sized for the 296px inspector pane rather than a full editor pane. */
     flex: 0 0 auto;
-    width: 210px;
+    width: 88px;
     font-size: 11px;
     color: var(--text-dim);
     overflow: hidden;

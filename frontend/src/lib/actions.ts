@@ -120,9 +120,8 @@ const FRONTEND_BINDINGS: Record<string, string[]> = {
   // chord, and where the two collide the mode is the one that should answer —
   // panes keep their shift+mod alternative for exactly that case.
   "mode-cull": ["ctrl+1"],
-  "mode-exif": ["ctrl+2"],
-  "mode-map": ["ctrl+3"],
-  "mode-import": ["ctrl+4"],
+  "mode-map": ["ctrl+2"],
+  "mode-import": ["ctrl+3"],
   "pane-left": ["mod+1", "shift+mod+1"],
   "pane-centre": ["mod+2", "shift+mod+2"],
   "pane-right": ["mod+3", "shift+mod+3"],
@@ -205,6 +204,12 @@ export async function loadSettings() {
     app.notify(`could not read settings: ${message(err)}`, "error");
   }
   app.slowScanSeconds = slowScanSeconds;
+
+  // EXIF stopped being a mode when its editing moved into the inspector. A
+  // config saved before that may still bind the retired action; the entry is
+  // dropped so its chord — stock ⌃2 — frees up for the mode that owns it now
+  // rather than shadowing it as a binding nothing answers to.
+  delete keymap["mode-exif"];
 
   const taken = new Set(Object.values(keymap).flat());
   for (const [action, chords] of Object.entries(FRONTEND_BINDINGS)) {
@@ -987,8 +992,8 @@ function hasFrames(): boolean {
 /**
  * culling is true only when the grid is on screen with frames in it. The
  * decision keys, the loupe and compare all act on that grid, so running them
- * from EXIF or MAP or IMPORT — where the same frames are not shown — would
- * change state the user cannot see.
+ * from MAP or IMPORT — where the same frames are not shown — would change
+ * state the user cannot see.
  */
 function culling(): boolean {
   return shell.mode === "cull" && app.groups.length > 0;
@@ -1144,7 +1149,6 @@ export const ACTIONS: Action[] = [
   modeAction(0),
   modeAction(1),
   modeAction(2),
-  modeAction(3),
 
   paneAction("left"),
   paneAction("centre"),
@@ -1187,7 +1191,7 @@ export const ACTIONS: Action[] = [
     icon: "⇢",
     note: "pick a destination",
     // Cull-only, like the verdict keys: the targets are the cull grid's
-    // selection or focus, which EXIF/MAP/IMPORT do not show as such — moving
+    // selection or focus, which MAP and IMPORT do not show as such — moving
     // files from there would act on frames the user cannot see.
     when: () => shell.mode === "cull" && app.targets.length > 0,
     run: () => palette.toggle("move"),
@@ -1277,9 +1281,10 @@ export const ACTIONS: Action[] = [
     group: FILES,
     icon: "✎",
     note: "shows the write plan first",
-    // Drafts survive the rail moving on, so the gate is the unwritten count,
-    // not the frames currently in view.
-    when: () => shell.mode === "exif" && exifState.unwritten > 0,
+    // Drafts survive the targets moving on, so the gate is the unwritten
+    // count, not the frames currently in view. Cull-only because that is
+    // where the inspector that drafted them is.
+    when: () => shell.mode === "cull" && exifState.unwritten > 0,
     run: () => void exifState.requestWrite(),
   },
   {

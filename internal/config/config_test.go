@@ -133,6 +133,29 @@ func TestDefaultKeymapHasNoDecisionActions(t *testing.T) {
 	}
 }
 
+// EXIF stopped being a mode, and its mode chord was only ever a frontend
+// fallback — but a user who recorded mode bindings in settings has them in the
+// file. Such a config must keep loading and validating: unknown action names
+// are carried, not rejected, and the frontend decides what to do with them.
+func TestLoadToleratesRetiredActions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeFile(t, path, `{"keymap":{"mode-exif":["ctrl+2"],"mode-map":["ctrl+3"],"mode-import":["ctrl+4"]}}`)
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("a config naming a retired action must still load: %v", err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("and must still validate: %v", err)
+	}
+	if got := c.Keymap["mode-exif"]; !slices.Equal(got, []string{"ctrl+2"}) {
+		t.Errorf("the retired entry is carried as data, got %v", got)
+	}
+	if got := c.Keymap["apply"]; !slices.Contains(got, "Enter") {
+		t.Errorf("the defaults must survive the merge, got %v", got)
+	}
+}
+
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nope", "config.json")
 

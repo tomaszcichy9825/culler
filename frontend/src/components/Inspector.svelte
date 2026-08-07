@@ -11,12 +11,20 @@
   //
   // Every value in here is a button, because the reason to look at a path or a
   // serial number in a culling tool is almost always to paste it somewhere.
+  //
+  // The Edit metadata section is the metadata editor itself — what used to be
+  // a mode of its own. Its rows come from exifState, which the shell keeps fed
+  // with the grid's action targets, so an edit lands on the selection when
+  // there is one and on the focused frame otherwise. Everything typed there is
+  // a draft until ⌘S puts the write plan up.
 
   import type { Snippet } from "svelte";
   import { Clipboard } from "@wailsio/runtime";
   import type { GroupDTO } from "../lib/bindings";
   import { message } from "../lib/decisions";
+  import { exifState } from "../lib/exif.svelte";
   import { exifCache, valueOf } from "../lib/exifcache.svelte";
+  import FieldRow from "./exif/FieldRow.svelte";
   import { sampleHistogram } from "../lib/histogram";
   import { queuedImage } from "../lib/imageQueue";
   import { previewURL } from "../lib/preview";
@@ -41,7 +49,7 @@
   const STORE = "culler.inspector.section.";
 
   /** The collapsible sections, in the order they are drawn. */
-  const SECTIONS = ["histogram", "metadata", "files", "warnings"] as const;
+  const SECTIONS = ["histogram", "metadata", "edit", "files", "warnings"] as const;
 
   function stored(id: string): boolean {
     try {
@@ -101,6 +109,8 @@
         ["ƒ", "FNumber"],
         ["iso", "ISO"],
         ["focal", "FocalLength"],
+        ["pixels", "ImageSize"],
+        ["gps", "GPSPosition"],
       ] as const
     )
       .map(([label, tag]) => ({ label, value: valueOf(meta, tag) }))
@@ -232,6 +242,79 @@
 
     {@render block("histogram", "Histogram", histogram, frame)}
     {@render block("metadata", "Metadata", metadata, frame)}
+
+    <!-- The editor proper. Hidden until the shell has fed exifState, which is
+         why the harness that mounts the pane alone never sees it. -->
+    {#if exifState.frames.length > 0 || exifState.loading || exifState.error !== ""}
+      <section class="block">
+        <button
+          type="button"
+          class="section-label"
+          data-section="edit"
+          aria-expanded={shut.edit !== true}
+          onclick={() => toggle("edit")}
+        >
+          <span class="chev" class:shut={shut.edit} aria-hidden="true"></span>
+          <span>Edit metadata</span>
+          <span class="hair"></span>
+          {#if exifState.unwritten > 0}
+            <span class="unwritten"><span class="udot" aria-hidden="true"></span>{exifState.unwritten} unwritten</span>
+          {/if}
+        </button>
+        {#if shut.edit !== true}
+          {#if exifState.error !== ""}
+            <p class="edit-error" role="alert">{exifState.error}</p>
+          {/if}
+          {#if exifState.loading && exifState.frames.length === 0}
+            <p class="edit-note">reading metadata…</p>
+          {:else if exifState.frames.length > 0}
+            {#if exifState.frames.length > 1}
+              <p class="edit-note">
+                {exifState.frames.length} frames selected — a value you type replaces every one; <em>⟨mixed⟩</em>
+                means they disagree
+              </p>
+            {:else}
+              <p class="edit-note">
+                {exifState.frames[0].kind === "raw" ? "RAW — edits go to a sidecar" : "JPEG — written in place"}
+              </p>
+            {/if}
+            <div class="edit-rows" data-testid="exif-editor">
+              {#each exifState.editableRows as r (r.tag)}
+                <FieldRow row={r} />
+              {/each}
+            </div>
+            {@const gps = exifState.rows.find((r) => r.tag === "GPSPosition")}
+            <div class="gps-line">
+              <span class="gps-key">GPS</span>
+              <span class="gps-word" class:strip={exifState.stripping}>
+                {exifState.stripping ? "drafted for removal" : gps?.present ? "present" : "none"}
+              </span>
+              {#if gps?.present === true || exifState.stripping}
+                <button type="button" class="edit-button" onclick={() => exifState.toggleStrip()}>
+                  {exifState.stripping ? "keep" : "strip"}
+                </button>
+              {/if}
+            </div>
+            {#if exifState.unwritten > 0}
+              <div class="edit-actions">
+                <button
+                  type="button"
+                  class="edit-write"
+                  disabled={exifState.writing}
+                  onclick={() => void exifState.requestWrite()}
+                >
+                  write ⌘S
+                </button>
+                <button type="button" class="edit-button" onclick={() => exifState.discard()}>
+                  discard {exifState.unwritten}
+                </button>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </section>
+    {/if}
+
     {@render block("files", "Files", files, frame)}
     {#if (frame.warnings ?? []).length > 0}
       {@render block("warnings", "Warnings", warnings, frame)}
@@ -594,6 +677,126 @@
 
   .warning:hover {
     background: var(--bg-raised);
+  }
+
+  /* ---- the Edit metadata section ---- */
+
+  .unwritten {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--gold-wash-16);
+    font-size: 9.5px;
+    letter-spacing: 0.02em;
+    color: var(--gold);
+    text-transform: none;
+    white-space: nowrap;
+  }
+
+  .udot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--gold);
+  }
+
+  .edit-note {
+    margin: 0 0 6px;
+    font-size: 10px;
+    line-height: 1.55;
+    color: var(--text-ghost);
+    text-wrap: pretty;
+  }
+
+  .edit-note em {
+    font-style: normal;
+    color: var(--gold);
+  }
+
+  .edit-error {
+    margin: 0 0 6px;
+    padding: 5px 7px;
+    border-radius: 4px;
+    background: var(--cut-wash-09);
+    border: 1px solid var(--cut-wash-16);
+    font-size: 10px;
+    line-height: 1.55;
+    color: var(--cut);
+    text-wrap: pretty;
+  }
+
+  .edit-rows {
+    margin: 0 -8px;
+  }
+
+  .gps-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 24px;
+    min-width: 0;
+  }
+
+  .gps-key {
+    flex: 0 0 72px;
+    padding-left: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .gps-word {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gps-word.strip {
+    color: var(--gold);
+  }
+
+  .edit-actions {
+    display: flex;
+    gap: 7px;
+    margin-top: 8px;
+  }
+
+  .edit-button {
+    flex: 0 0 auto;
+    padding: 3px 9px;
+    border-radius: 4px;
+    background: var(--bg-field);
+    border: 1px solid var(--border-strong);
+    font: inherit;
+    font-size: 10.5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    appearance: none;
+  }
+
+  .edit-write {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    border-radius: 4px;
+    background: var(--keep);
+    border: 1px solid var(--keep);
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--on-accent);
+    cursor: pointer;
+    appearance: none;
+  }
+
+  .edit-write:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .inspector button:focus-visible {

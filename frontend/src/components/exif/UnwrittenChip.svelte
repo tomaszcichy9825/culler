@@ -1,8 +1,8 @@
 <script lang="ts">
-  // The title bar's right-hand cluster while EXIF mode is showing: a gold chip
-  // counting the drafted changes, and the green pill that writes them.
+  // The title bar's right-hand cluster while PHOTOS is showing: a gold chip
+  // counting the drafted metadata changes, and the green pill that writes them.
   //
-  // The chip is the whole of the mode's honesty. Every edit is a draft until
+  // The chip is the whole of the editor's honesty. Every edit is a draft until
   // ⌘S, so a number sitting in the title bar is the only thing telling the
   // user that closing the app now would lose work. It disappears at zero
   // rather than reading "0 unwritten", which would be noise.
@@ -10,19 +10,9 @@
   import { exifState } from "../../lib/exif.svelte";
 
   let count = $derived(exifState.unwritten);
-  let batch = $derived(exifState.batch);
-  let frames = $derived(exifState.targets.length);
-  let tags = $derived(new Set(exifState.rows.filter((r) => r.state === "dirty").map((r) => r.tag)).size);
 </script>
 
 <div class="cluster" data-testid="exif-unwritten">
-  {#if batch && frames > 0}
-    <span class="pill">{frames} frame{frames === 1 ? "" : "s"} selected</span>
-    {#if tags > 0}
-      <span class="tally">{tags} tag{tags === 1 ? "" : "s"} × {frames} frame{frames === 1 ? "" : "s"}</span>
-    {/if}
-  {/if}
-
   {#if count > 0}
     <span class="chip" title="edits that are not on disk yet">
       <span class="dot" aria-hidden="true"></span>
@@ -59,21 +49,6 @@
     height: 5px;
     border-radius: 50%;
     background: var(--gold);
-  }
-
-  .pill {
-    padding: 3px 8px;
-    border-radius: 4px;
-    background: var(--accent-wash-18);
-    font-size: 10.5px;
-    color: var(--accent);
-    white-space: nowrap;
-  }
-
-  .tally {
-    font-size: 10.5px;
-    color: var(--gold);
-    white-space: nowrap;
   }
 
   .write {

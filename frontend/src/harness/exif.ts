@@ -1,11 +1,12 @@
-// A headless bench for EXIF mode.
+// A headless bench for the metadata editor, which lives in the PHOTOS
+// inspector.
 //
 // Not part of the application: nothing in src/main.ts reaches this, so it adds
-// nothing to the bundle. It exists because the editor form has to be verifiable
+// nothing to the bundle. It exists because the editor has to be verifiable
 // without a backend — a field edited and committed, a dirty row showing what it
-// replaces, a locked row refusing the keyboard, a batch reading ⟨mixed⟩ until
-// something replaces it, and a write plan that lists exactly what it will do —
-// and none of that needs a photograph or a running Go process.
+// replaces, a selection reading ⟨mixed⟩ until something replaces it, and a
+// write plan that lists exactly what it will do — and none of that needs a
+// photograph or a running Go process.
 //
 // The fake port stands in for ExifService. It returns the DTO shapes
 // internal/app/exifservice.go returns, and its apply records what it was sent,
@@ -22,11 +23,15 @@
 // tally so a check can read one line.
 
 import { flushSync, mount, unmount } from "svelte";
-import ExifMode from "../components/exif/ExifMode.svelte";
+import Inspector from "../components/Inspector.svelte";
 import UnwrittenChip from "../components/exif/UnwrittenChip.svelte";
-import { BATCH, MIXED, SINGLE_FRAME, exifState } from "../lib/exif.svelte";
+import WritePlanDialog from "../components/exif/WritePlanDialog.svelte";
+import type { GroupDTO } from "../lib/bindings";
+import { MIXED, exifState } from "../lib/exif.svelte";
 import type { ExifEditDTO, ExifPlanDTO, ExifPort, FrameExifDTO } from "../lib/exif.svelte";
+import { exifCache } from "../lib/exifcache.svelte";
 import { shell } from "../lib/shell.svelte";
+import { app } from "../lib/state.svelte";
 
 interface Result {
   name: string;
@@ -66,6 +71,14 @@ function jpegFrame(path: string, stem: string, artist: string, when: string): Fr
       { tag: "Copyright", label: "Copyright", section: "Rights", value: "", present: false, writable: true },
       { tag: "Make", label: "Camera make", section: "Camera", value: "FUJIFILM", present: true, writable: false },
       { tag: "ISO", label: "ISO", section: "Exposure", value: "640", present: true, writable: false },
+      {
+        tag: "GPSPosition",
+        label: "Position",
+        section: "Location",
+        value: "54.372158 N, 18.638306 E",
+        present: true,
+        writable: false,
+      },
     ],
   };
 }
@@ -92,15 +105,40 @@ function rawFrame(path: string, stem: string): FrameExifDTO {
   };
 }
 
-const A = "/card/DSCF0001.JPG";
-const B = "/card/DSCF0002.JPG";
-const R = "/card/DSCF0003.RAF";
+const DIR = "/card";
+const A = `${DIR}/DSCF0001.JPG`;
+const B = `${DIR}/DSCF0002.JPG`;
+const R = `${DIR}/DSCF0003.RAF`;
 
-const library: Record<string, FrameExifDTO> = {
+const metaLibrary: Record<string, FrameExifDTO> = {
   [A]: jpegFrame(A, "DSCF0001.JPG", "Old Artist", "2026-08-03T19:42:07+02:00"),
   [B]: jpegFrame(B, "DSCF0002.JPG", "Someone Else", "2026-08-03T19:43:01+02:00"),
   [R]: rawFrame(R, "DSCF0003.RAF"),
 };
+
+/** The grid's own view of the same three frames, for the inspector's header. */
+function groupOf(stem: string, ext: "JPG" | "RAF"): GroupDTO {
+  return {
+    dir: DIR,
+    stem,
+    kind: ext === "JPG" ? "jpeg-only" : "raw-only",
+    hasRaw: ext === "RAF",
+    hasJpeg: ext === "JPG",
+    rawPath: ext === "RAF" ? `${DIR}/${stem}.RAF` : "",
+    jpegPath: ext === "JPG" ? `${DIR}/${stem}.JPG` : "",
+    sidecars: 0,
+    shot: "2026-08-03T19:42:07Z",
+    warnings: null,
+    verdict: "",
+    mask: "rj",
+    rating: 0,
+    hash: `hash-${stem}`,
+    destination: "",
+    decision: "",
+  } as GroupDTO;
+}
+
+const groups: GroupDTO[] = [groupOf("DSCF0001", "JPG"), groupOf("DSCF0002", "JPG"), groupOf("DSCF0003", "RAF")];
 
 /** What apply was last sent, so the payload can be inspected. */
 let lastApply: ExifEditDTO[] = [];
@@ -110,7 +148,7 @@ const port: ExifPort = {
   read: (paths) => {
     const out: Record<string, FrameExifDTO> = {};
     for (const p of paths) {
-      const frame = library[p];
+      const frame = metaLibrary[p];
       // A real read returns a fresh object per call; sharing one would let the
       // harness mutate the library by accident and hide a bug.
       if (frame !== undefined) out[p] = JSON.parse(JSON.stringify(frame)) as FrameExifDTO;
@@ -173,29 +211,33 @@ function valueOf(tag: string): string {
 
 async function run() {
   exifState.usePort(port);
-  shell.setMode("exif");
-  shell.setLayout(SINGLE_FRAME);
-  shell.focusPane("centre");
+  exifCache.useReader((paths) => port.read(paths));
+  shell.setMode("cull");
 
-  const app = mount(ExifMode, { target: mounts, props: { follow: false } });
+  app.allGroups = groups;
+  app.groups = groups;
+  app.focusIndex = 0;
+
+  const pane = mount(Inspector, { target: mounts });
   const chip = mount(UnwrittenChip, { target: mounts });
+  const dialog = mount(WritePlanDialog, { target: mounts });
 
-  // ---- reading -------------------------------------------------------------
+  // ---- reading: one focused frame ------------------------------------------
 
-  await exifState.load([A, B, R]);
+  await exifState.load([A]);
   flushSync();
 
-  eq("three frames on the rail", exifState.frames.length, 3);
-  eq("rail rows drawn", mounts.querySelectorAll('[data-testid="exif-frames-rail"] .row').length, 3);
-  eq("the first frame is focused", exifState.focused?.stem, "DSCF0001.JPG");
+  check("the edit section is drawn once the editor is fed", mounts.querySelector('[data-testid="exif-editor"]') !== null);
+  eq("only the writable tags become field rows", mounts.querySelectorAll('[data-testid="exif-editor"] .field').length, 3);
+  check("a read-only tag is not an editable row", fieldEl("Make") === null, "Make got a field row");
   eq("a writable row is clean", stateOf("Artist"), "clean");
-  eq("a tag this app will not write is locked", stateOf("Make"), "locked");
   eq("the value on disk is shown", valueOf("Artist"), "Old Artist");
   check(
     "a tag the file does not carry reads as absent rather than empty",
     valueOf("Copyright") === "—",
     `got ${valueOf("Copyright")}`,
   );
+  eq("the frame's GPS reads as present", text(mounts.querySelector(".gps-line .gps-word")), "present");
   eq("nothing is unwritten yet", exifState.unwritten, 0);
   eq("no chip at zero", text(mounts.querySelector('[data-testid="exif-unwritten"] .chip')), "");
 
@@ -215,9 +257,9 @@ async function run() {
   eq("one unwritten change", exifState.unwritten, 1);
   eq("the chip counts it", text(mounts.querySelector('[data-testid="exif-unwritten"] .chip')), "1 unwritten");
   eq(
-    "the frame's rail row carries a dirty dot",
-    mounts.querySelectorAll('[data-testid="exif-frames-rail"] .dot.on').length,
-    1,
+    "the section header counts it too",
+    text(mounts.querySelector('.section-label[data-section="edit"] .unwritten')),
+    "1 unwritten",
   );
 
   // ---- a value equal to what is already there is not a change --------------
@@ -246,7 +288,7 @@ async function run() {
   exifState.nextField();
   exifState.nextField();
   flushSync();
-  eq("⇥ steps over locked rows and wraps", exifState.editingTag, "DateTimeOriginal");
+  eq("⇥ wraps back to the first editable row", exifState.editingTag, "DateTimeOriginal");
   exifState.revert();
 
   // ---- clearing a tag ------------------------------------------------------
@@ -259,28 +301,14 @@ async function run() {
   flushSync();
   eq("discard clears every draft", exifState.unwritten, 0);
 
-  // ---- moving between frames -----------------------------------------------
+  // ---- a selection ----------------------------------------------------------
 
-  exifState.setIndex(2);
+  await exifState.load([A, B, R]);
   flushSync();
-  eq("the rail moved to the RAW frame", exifState.focused?.kind, "raw");
-  eq("a RAW frame's sidecar-only tags are locked", stateOf("Orientation"), "locked");
-  eq("a RAW frame can still take an artist", stateOf("Artist"), "clean");
-  exifState.setIndex(0);
-
-  // ---- batch ---------------------------------------------------------------
-
-  shell.setLayout(BATCH);
-  flushSync();
-  check("the batch layout is showing", exifState.batch, `layout ${shell.layout}`);
-  eq("batch covers every frame", exifState.targets.length, 3);
+  eq("a selection covers every loaded frame", exifState.targets.length, 3);
+  check("the pane states the rule for a selection", text(mounts.querySelector(".edit-note")).includes("3 frames selected"), text(mounts.querySelector(".edit-note")));
   eq("frames that disagree read as mixed", valueOf("Artist"), MIXED);
   eq("a mixed row says so", stateOf("Artist"), "mixed");
-  eq(
-    "a row only some frames can take is locked for all of them",
-    stateOf("Orientation"),
-    "locked",
-  );
 
   exifState.beginEdit("Artist");
   flushSync();
@@ -289,19 +317,14 @@ async function run() {
   exifState.commit();
   flushSync();
   eq("one typed value drafts onto every frame", exifState.unwritten, 3);
-  eq("the batch row is dirty", stateOf("Artist"), "dirty");
-  eq(
-    "every rail thumbnail carries a dirty dot",
-    mounts.querySelectorAll('[data-testid="exif-frames-rail"] .dot').length,
-    3,
-  );
-  eq("the title bar states the batch", text(mounts.querySelector('[data-testid="exif-unwritten"] .pill')), "3 frames selected");
+  eq("the selection's row is dirty", stateOf("Artist"), "dirty");
 
   // ---- stripping GPS -------------------------------------------------------
 
   exifState.toggleStrip();
   flushSync();
   eq("stripping GPS is a drafted change per frame", exifState.unwritten, 6);
+  eq("the GPS line says so", text(mounts.querySelector(".gps-line .gps-word")), "drafted for removal");
   exifState.toggleStrip();
   flushSync();
   eq("toggling it back removes those drafts", exifState.unwritten, 3);
@@ -313,8 +336,8 @@ async function run() {
   await settle();
   flushSync();
 
-  const dialog = mounts.querySelector('[data-testid="exif-write-plan"]');
-  check("the write plan is up", dialog !== null);
+  const planEl = mounts.querySelector('[data-testid="exif-write-plan"]');
+  check("the write plan is up", planEl !== null);
   eq("the plan was asked about every dirty frame", lastPlan.length, 3);
   eq("the plan lists one line per write", mounts.querySelectorAll('[data-testid="exif-write-plan"] .line').length, 3);
   eq(
@@ -352,10 +375,11 @@ async function run() {
   await exifState.load([A]);
   flushSync();
   eq("a failed read is reported, not thrown", exifState.error, "service is not connected");
-  check("the pane still draws", mounts.querySelector('[data-testid="exif-editor"]') !== null);
+  check("the section still draws the error", text(mounts.querySelector(".edit-error")) === "service is not connected", text(mounts.querySelector(".edit-error")));
 
-  unmount(app);
+  unmount(pane);
   unmount(chip);
+  unmount(dialog);
 
   const failed = results.filter((r) => !r.pass);
   document.title = `exif harness: ${results.length - failed.length}/${results.length} passed`;

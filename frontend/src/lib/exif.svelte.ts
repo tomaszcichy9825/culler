@@ -1,5 +1,5 @@
-// EXIF mode's own state: the frames on the rail, the form the middle pane
-// draws, and the one explicit write that puts any of it on disk.
+// The metadata editor's state: the frames the inspector is editing, the field
+// rows it draws, and the one explicit write that puts any of it on disk.
 //
 // Nothing here touches a file. The user edits a draft, the draft is compared
 // against what the frames actually carry, and only `write` sends anything to
@@ -8,22 +8,18 @@
 // the title bar honestly: it is a count of drafted changes, not of files
 // already altered.
 //
-// The mode has two sub-layouts and they are the same form. In `single frame`
-// the draft belongs to the frame under the cursor; in `batch` a value typed
-// once is written into every selected frame's draft, and a field whose frames
-// disagree reads ⟨mixed⟩ until something replaces it. Modelling batch as "the
-// same edit, applied to more drafts" is what keeps the write plan, the
-// unwritten count and the dirty marks from needing a second implementation.
+// Editing lives in the PHOTOS inspector, and the frames follow the grid's
+// action targets: the selection when there is one, the focused frame alone
+// otherwise. A value typed once is written into every covered frame's draft,
+// and a field whose frames disagree reads ⟨mixed⟩ until something replaces it.
+// Modelling a selection as "the same edit, applied to more drafts" is what
+// keeps the write plan, the unwritten count and the dirty marks from needing
+// a second implementation.
 
-import { shell } from "./shell.svelte";
 import { app } from "./state.svelte";
 
 /** The value shown for a field whose selected frames do not agree. */
 export const MIXED = "⟨mixed⟩";
-
-/** Which sub-layout of EXIF edits one frame, and which edits the selection. */
-export const SINGLE_FRAME = 0;
-export const BATCH = 1;
 
 /**
  * The DTOs internal/app/exifservice.go returns. They are declared here rather
@@ -151,10 +147,8 @@ export function message(err: unknown): string {
 }
 
 class ExifState {
-  /** The frames on the rail, in the order the grid had them. */
+  /** The frames being edited, in the order the grid had them. */
   frames = $state<FrameExifDTO[]>([]);
-  /** Which rail row holds the cursor. */
-  index = $state(0);
 
   /** path → tag → the value the user typed. The draft, and nothing else. */
   edits = $state<Record<string, Record<string, string>>>({});
@@ -184,20 +178,12 @@ class ExifState {
     this.#port = port;
   }
 
-  /** Whether the batch sub-layout is showing, which is what ⌥2 and Tab pick. */
-  get batch(): boolean {
-    return shell.mode === "exif" && shell.layout === BATCH;
-  }
-
-  get focused(): FrameExifDTO | null {
-    return this.frames[this.index] ?? null;
-  }
-
-  /** The frames an edit reaches: the selection in batch, otherwise one frame. */
+  /**
+   * The frames an edit reaches: every frame that was loaded, which is the
+   * grid's own target resolution — the selection, or the focused frame alone.
+   */
   get targets(): FrameExifDTO[] {
-    if (this.batch) return this.frames;
-    const one = this.focused;
-    return one ? [one] : [];
+    return this.frames;
   }
 
   /**
@@ -284,7 +270,7 @@ class ExifState {
    * unwritten is the number the title bar chips: one per drafted tag per
    * frame, plus one per frame drafted to lose its GPS. It counts writes, not
    * frames, which is what the write plan will list — and it counts every
-   * draft, on the rail or off it, because ⌘S writes them all.
+   * draft, on screen or off it, because ⌘S writes them all.
    */
   get unwritten(): number {
     let n = 0;
@@ -293,15 +279,10 @@ class ExifState {
     return n;
   }
 
-  /** The frames on the rail carrying a drafted change, for their dirty dots. */
-  get dirtyFrames(): FrameExifDTO[] {
-    return this.frames.filter((f) => this.isDirty(f.path));
-  }
-
   /**
    * draftedPaths is every path carrying a drafted change, whether or not its
-   * frame is still on the rail: the rail's frames first, in rail order, then
-   * the drafts made on frames since scrolled away.
+   * frame is still loaded: the loaded frames first, in their own order, then
+   * the drafts made on frames the targets have since moved off.
    */
   get draftedPaths(): string[] {
     const drafted = new Set<string>();
@@ -333,15 +314,7 @@ class ExifState {
     });
   }
 
-  // ---- moving about ---------------------------------------------------------
-
-  setIndex(index: number) {
-    if (this.frames.length === 0) return;
-    this.index = Math.max(0, Math.min(index, this.frames.length - 1));
-    // The form belongs to the frame; moving off it abandons a half-typed row
-    // rather than carrying the text to a frame it was not typed for.
-    this.editingTag = null;
-  }
+  // ---- editing --------------------------------------------------------------
 
   /** beginEdit puts a row into edit with its current value in the field. */
   beginEdit(tag: string) {
@@ -504,19 +477,19 @@ class ExifState {
    * the folder stays the same: ⌘S must still pick up an edit made three
    * frames ago, and a search glanced at and closed again must not eat it.
    *
-   * Drafts typed WHILE the search is open are the exception: the rail is fed
-   * by the results then, which can span folders, so those drafts belong to
-   * that search. They are tagged as they are made (#searchDrafts) and exactly
-   * they are dropped when the search closes without the folder changing —
-   * which is what keeps a cross-folder stray from lingering into an
-   * unrelated ⌘S later. Without the folder-change prune, switching folders
-   * in EXIF left the chip counting edits against files no longer on screen,
-   * and ⌘S wrote into the previous folder with only base filenames in the
-   * plan to say so.
+   * Drafts typed WHILE the search is open are the exception: the editor is
+   * fed by the results then, which can span folders, so those drafts belong
+   * to that search. They are tagged as they are made (#searchDrafts) and
+   * exactly they are dropped when the search closes without the folder
+   * changing — which is what keeps a cross-folder stray from lingering into
+   * an unrelated ⌘S later. Without the folder-change prune, switching folders
+   * left the chip counting edits against files no longer on screen, and ⌘S
+   * wrote into the previous folder with only base filenames in the plan to
+   * say so.
    *
    * Keying on the folder rather than the frame list is deliberate — arrowing
-   * around a folder reloads the rail without changing what the drafts belong
-   * to. Every way into a folder — the tree, a search result, a session, a
+   * around a folder reloads the editor without changing what the drafts
+   * belong to. Every way into a folder — the tree, a search result, a session, a
    * map pin, an import — funnels through the same app.folder change, so one
    * key covers them all.
    */
@@ -536,9 +509,9 @@ class ExifState {
 
   /**
    * load reads the metadata of the given frames. Drafts are left alone:
-   * arrowing to the next frame reloads the rail, and a committed edit on the
-   * frame just left is exactly what ⌘S is for. A draft only goes away when it
-   * is written or explicitly reverted.
+   * arrowing to the next frame reloads what the inspector shows, and a
+   * committed edit on the frame just left is exactly what ⌘S is for. A draft
+   * only goes away when it is written or explicitly reverted.
    *
    * Reads are serialised by #loadSeq, the way library.search holds a ticket: a
    * slow read that comes back after a newer one must not put stale frames
@@ -552,7 +525,6 @@ class ExifState {
       const byPath = await this.#port.read(paths);
       if (seq !== this.#loadSeq) return; // a newer read has answered
       this.frames = paths.map((p) => byPath[p]).filter((f): f is FrameExifDTO => f !== undefined);
-      this.index = Math.min(this.index, Math.max(0, this.frames.length - 1));
     } catch (err) {
       if (seq !== this.#loadSeq) return;
       this.frames = [];

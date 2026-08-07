@@ -7,7 +7,7 @@
 // lives apart: the folder, the selection and the pending decisions survive a
 // mode switch untouched.
 
-export type Mode = "cull" | "exif" | "map" | "import";
+export type Mode = "cull" | "map" | "import";
 export type Pane = "left" | "centre" | "right";
 
 export interface ModeSpec {
@@ -21,14 +21,10 @@ export interface ModeSpec {
 }
 
 /**
- * Always four, always in this order. The EXIF sub-layout labels are the names
- * of the two screens that exist for that mode; the authored labels for its
- * segmented control did not survive the design export.
- *
- * The fourth slot was LIBRARY until the catalogue stopped being a room of its
- * own: the tree, the search and the sessions are all in CULL now, and the slot
- * belongs to the flow that puts photographs into the library rather than the
- * one that looks around it.
+ * Always three, always in this order. There were rooms called LIBRARY and EXIF
+ * once: the catalogue's tree, search and sessions folded into CULL, and
+ * metadata editing folded into CULL's inspector, so the bar keeps only the
+ * modes that show something the grid cannot — the map, and the import flow.
  */
 export const MODES: ModeSpec[] = [
   {
@@ -36,12 +32,6 @@ export const MODES: ModeSpec[] = [
     label: "PHOTOS",
     layouts: ["contact sheet", "loupe-first", "table"],
     panes: { left: "SOURCES", centre: "GRID", right: "INSPECTOR" },
-  },
-  {
-    id: "exif",
-    label: "EXIF",
-    layouts: ["single frame", "batch"],
-    panes: { left: "FRAMES", centre: "EDITOR", right: "TARGETS" },
   },
   {
     id: "map",
@@ -74,7 +64,7 @@ class ShellState {
    * The chosen sub-layout of every mode, not just the current one: switching
    * away and back returns to the layout that mode was left in.
    */
-  layouts = $state<Record<Mode, number>>({ cull: 0, exif: 0, map: 0, import: 0 });
+  layouts = $state<Record<Mode, number>>({ cull: 0, map: 0, import: 0 });
 
   /** The pane holding the keyboard, or null when the grid has it. */
   focusedPane = $state<Pane | null>(null);
@@ -105,7 +95,7 @@ class ShellState {
     this.focusedPane = null;
   }
 
-  /** setModeByIndex backs ⌃1–4, which are positional rather than named. */
+  /** setModeByIndex backs ⌃1–3, which are positional rather than named. */
   setModeByIndex(index: number) {
     const spec = MODES[index];
     if (spec) this.setMode(spec.id);

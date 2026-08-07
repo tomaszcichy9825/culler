@@ -90,10 +90,9 @@ export const ACTION_GROUPS: ActionGroup[] = [
   {
     title: "Modes",
     actions: [
-      { id: "mode-cull", label: "CULL mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+1"] },
-      { id: "mode-exif", label: "EXIF mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+2"] },
-      { id: "mode-map", label: "MAP mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+3"] },
-      { id: "mode-import", label: "IMPORT mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+4"] },
+      { id: "mode-cull", label: "PHOTOS mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+1"] },
+      { id: "mode-map", label: "MAP mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+2"] },
+      { id: "mode-import", label: "IMPORT mode", note: "", scope: "shell", source: "shell", chords: ["ctrl+3"] },
     ],
   },
   {
@@ -109,7 +108,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
     title: "Writes",
     actions: [
       { id: "apply", label: "apply pending verdicts", note: "shows the plan first", scope: "global", source: "config", chords: ["Enter"] },
-      { id: "write-metadata", label: "write metadata changes", note: "shows the write plan first", scope: "exif", source: "config", chords: ["mod+s"] },
+      { id: "write-metadata", label: "write metadata changes", note: "shows the write plan first", scope: "cull", source: "config", chords: ["mod+s"] },
       { id: "undo", label: "undo last batch", note: "", scope: "global", source: "config", chords: ["mod+z"] },
       { id: "redo", label: "redo", note: "comes in v0.2", scope: "global", source: "config", chords: ["shift+mod+z"] },
     ],

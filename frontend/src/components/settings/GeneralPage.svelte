@@ -98,7 +98,7 @@
 
         <SettingRow
           name="exiftool"
-          desc="EXIF editing comes with the EXIF mode; nothing shells out to exiftool today."
+          desc="Metadata editing lives in the PHOTOS inspector; nothing shells out to exiftool today."
           wired={false}
         >
           <Choice
