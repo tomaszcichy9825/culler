@@ -64,8 +64,10 @@ type FrameExifDTO struct {
 // them alone" — carried all the way to the writer.
 type ExifEditDTO struct {
 	Path string `json:"path"`
-	// DateTimeOriginal is RFC3339. The offset it carries is written out as
-	// OffsetTimeOriginal, so a time never lands in the file unqualified.
+	// DateTimeOriginal is RFC3339, or the same shape with the offset left off
+	// for a frame whose zone is unknown. An offset it carries is written out as
+	// OffsetTimeOriginal; a time without one writes no offset tag at all,
+	// because the zone the file never recorded is not this app's to invent.
 	DateTimeOriginal *string `json:"dateTimeOriginal"`
 	Artist           *string `json:"artist"`
 	Copyright        *string `json:"copyright"`
@@ -449,12 +451,12 @@ func (t *target) applyEdit(edit ExifEditDTO) error {
 			// with no time at all sorts nowhere and cannot be found again.
 			return errors.New("the capture time cannot be cleared, only changed")
 		}
-		when, err := time.Parse(time.RFC3339, *edit.DateTimeOriginal)
+		when, err := parseCaptureTime(*edit.DateTimeOriginal)
 		if err != nil {
 			return fmt.Errorf("capture time %q: %w", *edit.DateTimeOriginal, err)
 		}
 		t.change.DateTimeOriginal = &when
-		row("+", "DateTimeOriginal", when.Format(time.RFC3339))
+		row("+", "DateTimeOriginal", renderCaptureTime(when))
 	}
 	if edit.Artist != nil {
 		t.change.Artist = edit.Artist
@@ -599,13 +601,43 @@ func sidecarPath(path string) string {
 	return path + ".xmp"
 }
 
-// formatCaptureTime renders the capture time for the form. It is RFC3339 so
-// that what the editor shows is what an edit can send straight back.
+// formatCaptureTime renders the capture time for the form: RFC3339, with the
+// offset left off when the file never recorded one, so that what the editor
+// shows is what an edit can send straight back — a frame whose zone is unknown
+// round-trips as exactly that rather than gaining a "Z" nobody stated.
 func formatCaptureTime(t exif.Timestamp) string {
+	layout := "2006-01-02T15:04:05"
 	if t.HasSubSec {
-		return t.Value.Format("2006-01-02T15:04:05.999999999Z07:00")
+		layout += ".999999999"
 	}
-	return t.Value.Format(time.RFC3339)
+	if t.HasOffset {
+		layout += "Z07:00"
+	}
+	return t.Value.Format(layout)
+}
+
+// parseCaptureTime reads an edit's time back in: RFC3339 when it names its
+// zone, the same shape without the suffix when it does not. The offset-less
+// form is parsed as a wall clock in UTC, mirroring how the reader holds a
+// zone-unknown time.
+func parseCaptureTime(s string) (exif.CaptureTime, error) {
+	if when, err := time.Parse(time.RFC3339, s); err == nil {
+		return exif.CaptureTime{Value: when, HasOffset: true}, nil
+	}
+	when, err := time.ParseInLocation("2006-01-02T15:04:05", s, time.UTC)
+	if err != nil {
+		return exif.CaptureTime{}, err
+	}
+	return exif.CaptureTime{Value: when, HasOffset: false}, nil
+}
+
+// renderCaptureTime is the plan dialog's rendering of the time being written,
+// in the same offset-or-nothing form the field itself uses.
+func renderCaptureTime(t exif.CaptureTime) string {
+	if t.HasOffset {
+		return t.Value.Format(time.RFC3339)
+	}
+	return t.Value.Format("2006-01-02T15:04:05")
 }
 
 // formatShutter renders an exposure the way a photographer reads it: 1/250 for

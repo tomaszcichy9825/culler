@@ -31,7 +31,10 @@
     for (const frame of targets) {
       const row = (frame.fields ?? []).find((f) => f.tag === "DateTimeOriginal");
       if (row === undefined || !row.writable || !row.present) continue;
-      const when = new Date(row.value);
+      // A value without a zone suffix is a wall clock whose zone was never
+      // recorded. It is held in UTC for the arithmetic — not because it is
+      // UTC, but because UTC has no daylight-saving step to trip over.
+      const when = new Date(zoneOf(row.value) === null ? row.value + "Z" : row.value);
       if (Number.isNaN(when.getTime())) continue;
       when.setTime(when.getTime() + sign * seconds * 1000);
       exifState.editingTag = "DateTimeOriginal";
@@ -60,17 +63,25 @@
     return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] ?? 0);
   }
 
+  /** The zone suffix a value carries, or null when its zone is unknown. */
+  function zoneOf(value: string): string | null {
+    return /([+-]\d{2}:\d{2}|Z)$/.exec(value)?.[1] ?? null;
+  }
+
   /**
    * isoWithOffset renders a shifted time in the zone the original carried, so
-   * nudging a frame by two hours does not also move it to the local zone.
+   * nudging a frame by two hours does not also move it to the local zone. A
+   * frame whose zone was never recorded keeps its wall clock unqualified —
+   * shifting is not a licence to invent the zone the backend refuses to write.
    */
   function isoWithOffset(when: Date, original: string): string {
-    const zone = /([+-]\d{2}:\d{2}|Z)$/.exec(original);
-    if (zone === null || zone[1] === "Z") return when.toISOString().replace(/\.\d+Z$/, "Z");
-    const sign = zone[1].startsWith("-") ? -1 : 1;
-    const minutes = sign * (Number(zone[1].slice(1, 3)) * 60 + Number(zone[1].slice(4, 6)));
+    const zone = zoneOf(original);
+    if (zone === null) return when.toISOString().replace(/\.\d+Z$/, "Z").replace("Z", "");
+    if (zone === "Z") return when.toISOString().replace(/\.\d+Z$/, "Z");
+    const sign = zone.startsWith("-") ? -1 : 1;
+    const minutes = sign * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6)));
     const local = new Date(when.getTime() + minutes * 60_000);
-    return local.toISOString().replace(/\.\d+Z$/, "").replace("Z", "") + zone[1];
+    return local.toISOString().replace(/\.\d+Z$/, "").replace("Z", "") + zone;
   }
 </script>
 

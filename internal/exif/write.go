@@ -18,12 +18,13 @@ import (
 // frame, empty leaves them alone" — so it is modelled here rather than guessed
 // at by each caller.
 //
-// Writing DateTimeOriginal also writes OffsetTimeOriginal from the time's own
-// zone, and writes or clears SubSecTimeOriginal to match its fraction. A time
-// written without its offset is ambiguous, and a sub-second left behind from
-// the old value would silently qualify the new one.
+// Writing DateTimeOriginal also writes or removes the two tags that qualify
+// it: OffsetTimeOriginal follows the CaptureTime's own rule, and
+// SubSecTimeOriginal is written or cleared to match the fraction — a
+// sub-second left behind from the old value would silently qualify the new
+// one.
 type Changes struct {
-	DateTimeOriginal *time.Time
+	DateTimeOriginal *CaptureTime
 	Artist           *string
 	Copyright        *string
 	StripGPS         bool
@@ -31,6 +32,19 @@ type Changes struct {
 	// has none. It wins over StripGPS: a caller that asked for both meant to set
 	// the location it just chose, and losing that is the worse surprise.
 	SetGPS *GPSCoord
+}
+
+// CaptureTime is a value for DateTimeOriginal. HasOffset says whether the
+// time's zone is a recorded fact. When it is, OffsetTimeOriginal is written
+// from Value's own zone; when it is not — a frame whose file never carried an
+// offset, edited by a user who did not state one — no offset tag is written
+// and any OffsetTimeOriginal already in the file is removed, because an old
+// zone would qualify the new time with a fact nobody stated. The reader keeps
+// the same distinction the other way round, so a zone-unknown time survives a
+// round trip as exactly that.
+type CaptureTime struct {
+	Value     time.Time
+	HasOffset bool
 }
 
 // GPSCoord is a location to write: decimal degrees, signed by hemisphere, with
@@ -278,12 +292,19 @@ func (ed *editor) editIFD0(changes []change) error {
 
 // applyTimes writes DateTimeOriginal and the two tags that qualify it into the
 // EXIF IFD, creating that directory if the file has none.
-func (ed *editor) applyTimes(when time.Time) error {
+func (ed *editor) applyTimes(when CaptureTime) error {
 	changes := []change{
-		asciiChange(tagDateTimeOriginal, when.Format(exifTimeLayout)),
-		asciiChange(tagOffsetTimeOriginal, formatOffset(when)),
+		asciiChange(tagDateTimeOriginal, when.Value.Format(exifTimeLayout)),
 	}
-	if sub := formatSubSec(when); sub != "" {
+	if when.HasOffset {
+		changes = append(changes, asciiChange(tagOffsetTimeOriginal, formatOffset(when.Value)))
+	} else {
+		// The zone is not known, so no offset is written — and an offset left
+		// over from the old time would qualify the new one with a fact nobody
+		// stated, the same hazard as a stale sub-second.
+		changes = append(changes, change{tag: tagOffsetTimeOriginal, del: true})
+	}
+	if sub := formatSubSec(when.Value); sub != "" {
 		changes = append(changes, asciiChange(tagSubSecTimeOriginal, sub))
 	} else {
 		// A sub-second left over from the old value would qualify the new one.
@@ -802,12 +823,17 @@ func xmpCoord(v float64, pos, neg string) string {
 }
 
 // formatXMPTime is the ISO 8601 rendering XMP asks for, keeping the fraction
-// only when there is one.
-func formatXMPTime(t time.Time) string {
-	if t.Nanosecond() == 0 {
-		return t.Format("2006-01-02T15:04:05-07:00")
+// only when there is one and the zone only when it is a recorded fact — XMP's
+// date form makes the time zone optional for exactly this case.
+func formatXMPTime(t CaptureTime) string {
+	layout := "2006-01-02T15:04:05"
+	if t.Value.Nanosecond() != 0 {
+		layout += ".999999999"
 	}
-	return t.Format("2006-01-02T15:04:05.999999999-07:00")
+	if t.HasOffset {
+		layout += "-07:00"
+	}
+	return t.Value.Format(layout)
 }
 
 // escapeXML escapes what a user typed into a form. A copyright line with an

@@ -408,6 +408,67 @@ func TestExifSetGPSRejectsAnAbsurdAltitude(t *testing.T) {
 	}
 }
 
+// jpegFixture's capture time carries no offset tag, and the camera that wrote
+// it never said which zone it was in. Editing the time must not invent one:
+// the form shows the wall clock without a zone, an edit sent back without one
+// writes no OffsetTimeOriginal, and the file reads back with the zone still
+// honestly unknown.
+func TestExifCaptureTimeWithoutAZoneStaysUnzoned(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	jpg := filepath.Join(dir, "DSCF0001.JPG")
+
+	read, err := NewExifService(a).Read([]string{jpg})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for _, f := range read[jpg].Fields {
+		if f.Tag == "DateTimeOriginal" && f.Value != "2026-08-03T19:42:07" {
+			t.Errorf("capture time = %q; a zone the file never recorded must not be shown", f.Value)
+		}
+	}
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path: jpg, DateTimeOriginal: str("2026-08-05T10:11:12"),
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	f, err := exif.Read(jpg)
+	if err != nil {
+		t.Fatalf("exif.Read: %v", err)
+	}
+	if !f.DateTimeOriginal.Present {
+		t.Fatal("the new capture time did not land")
+	}
+	if got := f.DateTimeOriginal.Value.Format("2006-01-02T15:04:05"); got != "2026-08-05T10:11:12" {
+		t.Errorf("capture time = %s, want 2026-08-05T10:11:12", got)
+	}
+	if f.DateTimeOriginal.HasOffset {
+		t.Errorf("an offset %q was invented for a frame whose zone was never recorded", f.DateTimeOriginal.Offset)
+	}
+}
+
+// A time typed with an offset keeps it: the user stated the zone, so it is a
+// fact the file can carry.
+func TestExifCaptureTimeWithAZoneWritesTheOffset(t *testing.T) {
+	a := testApp(t)
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path: jpg, DateTimeOriginal: str("2026-08-05T10:11:12+02:00"),
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	f, err := exif.Read(jpg)
+	if err != nil {
+		t.Fatalf("exif.Read: %v", err)
+	}
+	if !f.DateTimeOriginal.HasOffset || f.DateTimeOriginal.Offset != "+02:00" {
+		t.Errorf("offset = %q (has %v), want +02:00", f.DateTimeOriginal.Offset, f.DateTimeOriginal.HasOffset)
+	}
+}
+
 func TestExifApplyLeavesNoStagingBehind(t *testing.T) {
 	a := testApp(t)
 	jpg := filepath.Join(frames(t), "DSCF0001.JPG")

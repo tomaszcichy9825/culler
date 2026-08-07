@@ -64,7 +64,7 @@ func FuzzRewriteJPEG(f *testing.F) {
 	for _, s := range seeds() {
 		f.Add(s)
 	}
-	when := time.Date(2026, 8, 3, 19, 42, 7, 370000000, time.UTC)
+	when := CaptureTime{Value: time.Date(2026, 8, 3, 19, 42, 7, 370000000, time.UTC), HasOffset: true}
 	artist := "Fuzz"
 
 	f.Fuzz(func(t *testing.T, data []byte) {
