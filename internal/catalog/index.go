@@ -132,7 +132,7 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 	// gone, and the prune must leave them exactly as they were.
 	var failed []string
 
-	err = filepath.WalkDir(clean, func(path string, d fs.DirEntry, err error) error {
+	err = walkDirFollowingRoot(clean, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// A directory that cannot be read is skipped rather than failing
 			// the pass: one unreadable folder on a card should not cost the
@@ -701,6 +701,59 @@ func (s *Store) pruneMissingDirs(root string, walked, failed []string) (int, err
 		return 0, err
 	}
 	return int(removed), tx.Commit()
+}
+
+// walkDirFollowingRoot is filepath.WalkDir with one difference: a root that
+// is itself a symlink to a directory is followed rather than visited as the
+// file the link is. A root is an address the user gave, and a linked path is
+// as good an address as a real one — internal/scan takes the same stance for
+// linked files, resolving them rather than reading the link. Without this,
+// the walk lstats the root, enters nothing, and the prune afterwards empties
+// everything under the link on every reindex. Directories inside the walk
+// are still never entered through links, exactly as filepath.WalkDir has it.
+func walkDirFollowingRoot(root string, fn fs.WalkDirFunc) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		err = fn(root, nil, err)
+	} else {
+		err = walkDir(root, fs.FileInfoToDirEntry(info), fn)
+	}
+	if err == fs.SkipDir || err == fs.SkipAll {
+		return nil
+	}
+	return err
+}
+
+// walkDir mirrors filepath.WalkDir's descent, entry for entry, so the walk
+// behaves identically below the root.
+func walkDir(path string, d fs.DirEntry, fn fs.WalkDirFunc) error {
+	if err := fn(path, d, nil); err != nil || !d.IsDir() {
+		if err == fs.SkipDir && d.IsDir() {
+			err = nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		// Second call on the same directory reports the listing failure, as
+		// filepath.WalkDir does.
+		err = fn(path, d, err)
+		if err != nil {
+			if err == fs.SkipDir {
+				err = nil
+			}
+			return err
+		}
+	}
+	for _, e := range entries {
+		if err := walkDir(filepath.Join(path, e.Name()), e, fn); err != nil {
+			if err == fs.SkipDir {
+				break
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // hashGroups returns the identity hash of every group's primary file, aligned

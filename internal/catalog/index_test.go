@@ -475,6 +475,46 @@ func TestReindexKeepsTheVerdictOfAnUnreadableFrameWhoseContentDidNot(t *testing.
 	}
 }
 
+// A root that is itself a symlink used to be lstat'd by the walk and never
+// entered: zero directories reached, and the prune then emptied everything
+// under the link on every reindex. The root is an address the user gave, so
+// the walk follows it to its target — the stance internal/scan takes for
+// linked files — and the frames stay put.
+func TestIndexWalksARootThatIsItselfASymlink(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	mkdir(t, real)
+	writeFrame(t, real, "DSCF0001", 100, 0, shotAt(9, 0))
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+
+	s := openStore(t)
+	stats, err := s.Index(link, IndexOptions{})
+	if err != nil {
+		t.Fatalf("index through the link: %v", err)
+	}
+	if stats.Frames != 1 {
+		t.Fatalf("indexed %d frames through the symlinked root, want 1", stats.Frames)
+	}
+
+	again, err := s.Index(link, IndexOptions{})
+	if err != nil {
+		t.Fatalf("reindex through the link: %v", err)
+	}
+	if again.Removed != 0 {
+		t.Errorf("reindex removed %d rows, nothing left the disk", again.Removed)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Errorf("catalogue holds %d frames after reindexing a symlinked root, want 1", res.Total)
+	}
+}
+
 // WalkDir does not follow a symlinked directory, while UpsertDir happily
 // catalogues one — coverage is lexical. Without the two agreeing, a symlinked
 // folder flip-flops: catalogued when the user opens it, forgotten by the next
