@@ -213,6 +213,26 @@ func TestParseOffsetRejectsMalformedValues(t *testing.T) {
 
 // A malformed offset tag must not turn the capture time into the zero time:
 // the timestamp stays a wall clock and the zone stays honestly unknown.
+// A camera that pads the offset tag still names a zone; the padding must not
+// reach the UI through Timestamp.Offset.
+func TestReadPaddedOffsetComesBackTrimmed(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	exifIFD := b.ifd([]tag{
+		ascii(tagDateTimeOriginal, "2026:08:03 19:42:07"),
+		ascii(tagOffsetTimeOriginal, "  +02:00"),
+	}, 0)
+	ifd0 := b.ifd([]tag{b.long(tagExifIFD, exifIFD)}, 0)
+
+	f, err := Parse(jpegWith(b.done(ifd0)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !f.DateTimeOriginal.HasOffset || f.DateTimeOriginal.Offset != "+02:00" {
+		t.Errorf("offset = %q (has %v), want the trimmed +02:00",
+			f.DateTimeOriginal.Offset, f.DateTimeOriginal.HasOffset)
+	}
+}
+
 func TestReadMalformedOffsetKeepsTheWallClock(t *testing.T) {
 	for _, offset := range []string{"++5:00", "+-5:00", "+05:+0"} {
 		t.Run(offset, func(t *testing.T) {
