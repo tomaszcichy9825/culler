@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,5 +157,93 @@ func TestSkipsCorruptTrailingLine(t *testing.T) {
 	}
 	if len(batches) != 1 || batches[0].ID != "b1" {
 		t.Fatalf("want the intact batch only, got %+v", batches)
+	}
+}
+
+// A write that died mid-line — disk full, power gone — leaves the file without
+// its trailing newline. The next append must not continue that line: gluing a
+// durable batch onto a corrupt one makes both invisible to ReadAll, and the
+// glued one was fsynced and reported durable.
+func TestAppendAfterAPartialWriteDoesNotGlueLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Append(Batch{ID: "first", Description: "survives"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The tail a short write leaves: half a JSON object, no newline.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":"torn","desc`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.Append(Batch{ID: "second", Description: "must not be glued"}); err != nil {
+		t.Fatal(err)
+	}
+
+	batches, err := reopened.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || batches[0].ID != "first" || batches[1].ID != "second" {
+		t.Fatalf("batches = %+v, want first and second with the torn line skipped", batches)
+	}
+}
+
+// One enormous batch — a full-card import runs to tens of thousands of actions
+// — must not put every batch after it out of reach. The old reader capped a
+// line at 16MiB and stopped dead there, taking undo and history with it.
+func TestReadAllSurvivesABatchPastTheOldLineCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	j, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	// ~20MiB of actions in one batch, comfortably past the old cap.
+	huge := Batch{ID: "huge", Description: "a very large import"}
+	for i := 0; i < 100_000; i++ {
+		huge.Actions = append(huge.Actions, Action{
+			Verb: "copy",
+			Src:  fmt.Sprintf("/cards/one/DSCF%06d.RAF", i),
+			Dst:  fmt.Sprintf("/library/2026/keepers/DSCF%06d.RAF", i),
+			// Padding stands in for the digests real actions carry.
+			Digest:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Outcome: OutcomeOK,
+		})
+	}
+	if err := j.Append(huge); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Append(Batch{ID: "after", Description: "still reachable"}); err != nil {
+		t.Fatal(err)
+	}
+
+	batches, err := j.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll over a huge batch: %v", err)
+	}
+	if len(batches) != 2 || batches[0].ID != "huge" || batches[1].ID != "after" {
+		t.Fatalf("got %d batches, want the huge one and the one after it", len(batches))
+	}
+	if len(batches[0].Actions) != 100_000 {
+		t.Errorf("the huge batch lost actions: %d", len(batches[0].Actions))
 	}
 }
