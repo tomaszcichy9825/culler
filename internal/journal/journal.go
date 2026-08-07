@@ -1,7 +1,14 @@
-// Package journal is the append-only record of every applied batch. It is the
+// Package journal is the append-only record of applied batches. It is the
 // single most important reliability feature in the app: undo replays it
-// backwards, and after a crash or a vanished volume it says exactly what
-// happened to every file.
+// backwards.
+//
+// Its guarantee is batch-granular. A batch is appended, and synced, as one
+// line after its actions have run, carrying a per-action outcome for
+// everything that was attempted — which is how a vanished volume mid-batch
+// still leaves a record of partial completion. What it does not survive is
+// the process dying mid-batch: a batch that never reached Append leaves no
+// record of any of its actions. The journal holds every batch that finished,
+// exactly as it finished, and nothing about a batch that did not.
 package journal
 
 import (
@@ -18,13 +25,20 @@ import (
 const (
 	OutcomeOK    = "ok"
 	OutcomeError = "error"
+	// OutcomeSkipped records an action the collision policy declined to
+	// perform: nothing moved, nothing landed, and the source is exactly where
+	// it was. It is neither a success (treating it as one would let an apply
+	// clear a verdict for work that never happened) nor a failure worth
+	// retrying unchanged. Journals written before it existed hold only ok and
+	// error; a policy skip in those was recorded as ok with no destination.
+	OutcomeSkipped = "skipped"
 )
 
 // Action is one executed FileAction with its result. Dst records where the
 // file actually went (including the trash location), which is what makes the
 // batch replayable backwards.
 type Action struct {
-	Verb    string `json:"verb"` // copy | move | trash
+	Verb    string `json:"verb"` // copy | move | trash | destroy
 	Src     string `json:"src"`
 	Dst     string `json:"dst,omitempty"`
 	Outcome string `json:"outcome"`
@@ -153,15 +167,6 @@ func (j *Journal) ReadAll() ([]Batch, error) {
 			return batches, err
 		}
 	}
-}
-
-// Last returns the most recent batch, if any.
-func (j *Journal) Last() (Batch, bool, error) {
-	batches, err := j.ReadAll()
-	if err != nil || len(batches) == 0 {
-		return Batch{}, false, err
-	}
-	return batches[len(batches)-1], true, nil
 }
 
 // Close closes the underlying file.

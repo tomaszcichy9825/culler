@@ -82,13 +82,21 @@ func (DropRAW) Plan(groups []scan.PhotoGroup) ([]FileAction, error) {
 func (DropRAW) Describe() string { return "Drop RAW, keep JPEG" }
 
 // DropJPEG trashes the JPEG of each group that has one. Sidecars belong to
-// the RAW and stay.
+// the RAW and stay with it; a frame with no RAW at all has only the JPEG for
+// them to belong to, so there they follow it into the trash rather than being
+// orphaned.
 type DropJPEG struct{}
 
 func (DropJPEG) Plan(groups []scan.PhotoGroup) ([]FileAction, error) {
 	var actions []FileAction
 	for _, g := range groups {
+		if g.Jpeg == nil {
+			continue
+		}
 		actions = append(actions, trashRefs(g.Jpeg)...)
+		if g.Raw == nil {
+			actions = append(actions, trashSidecars(g)...)
+		}
 	}
 	return actions, nil
 }

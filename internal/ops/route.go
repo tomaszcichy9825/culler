@@ -92,6 +92,12 @@ func route(
 		if err != nil {
 			return nil, fmt.Errorf("ops: destination for %s: %w", g.Stem, err)
 		}
+		// A destination that collapsed to nothing, or never was absolute,
+		// would plan actions relative to wherever the process happens to be
+		// running from. Refusing here keeps that path out of every plan.
+		if dir == "" || !filepath.IsAbs(dir) {
+			return nil, fmt.Errorf("ops: destination %q for %s expands to %q, which is not an absolute folder", dest, g.Stem, dir)
+		}
 		for _, ref := range surviving(g, halves) {
 			actions = append(actions, FileAction{
 				Verb: verb,
@@ -152,7 +158,13 @@ func primaryExt(g scan.PhotoGroup) string {
 // Separators inside a token's value are the one thing that does not pass
 // through: a camera that calls itself Nikon/Z8 must not quietly add a folder
 // level. Separators the user wrote, including inside a date layout, do.
+//
+// A backslash in the template is a separator too, so a template written with
+// Windows separators splits into the same segments it would with forward
+// slashes — a dead token takes its own segment, never a whole backslash-joined
+// path that then collapses to nothing.
 func ExpandTemplate(template string, tok Tokens) (string, error) {
+	template = strings.ReplaceAll(template, `\`, "/")
 	absolute := strings.HasPrefix(template, "/")
 	rest := strings.TrimPrefix(template, "/")
 

@@ -109,6 +109,41 @@ func TestExpandTemplateRejectsAnUnclosedToken(t *testing.T) {
 	}
 }
 
+func TestExpandTemplateTreatsBackslashesAsSeparators(t *testing.T) {
+	bare := Tokens{Stem: "DSCF0001"}
+	// A backslash-joined template must split into the same segments it would
+	// with forward slashes: a dead token takes its own segment, never the
+	// whole template.
+	got, err := ExpandTemplate(`/library\shot-on-{camera}\{stem}`, bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/library/DSCF0001" {
+		t.Errorf("backslash-joined template expanded to %q, want /library/DSCF0001", got)
+	}
+}
+
+// A destination whose expansion collapses to nothing, or never was absolute,
+// must fail the frame's routing rather than plan an action whose Dst lands
+// wherever the process happens to be running from.
+func TestRouteRefusesADestinationThatIsNotAbsolute(t *testing.T) {
+	cases := []struct{ name, dest string }{
+		// No Metadata func, so {camera} is unanswerable and the whole
+		// expansion collapses to the empty string.
+		{"collapses to nothing", "{camera}"},
+		{"backslash-joined and unanswerable", `C:\photos\{camera}`},
+		{"relative after expansion", "keepers/{date:2006}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			actions, err := CopyTo{Dest: c.dest, Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+			if err == nil {
+				t.Fatalf("planned %v instead of refusing a destination that is not absolute", destPaths(actions))
+			}
+		})
+	}
+}
+
 func TestExpandTemplateKeepsRelativeTemplatesRelative(t *testing.T) {
 	got, err := ExpandTemplate("{date:2006}/keepers", shotTokens())
 	if err != nil {
@@ -289,19 +324,22 @@ func readFile(t *testing.T, path string) string {
 func TestCopyCollisionPolicies(t *testing.T) {
 	cases := []struct {
 		policy      config.CollisionPolicy
+		wantOutcome string
 		wantDst     string
 		wantContent map[string]string
 	}{
-		{config.CollisionRenameSuffix, "DSCF0001-2.RAF", map[string]string{
+		{config.CollisionRenameSuffix, journal.OutcomeOK, "DSCF0001-2.RAF", map[string]string{
 			"DSCF0001.RAF":   "already here",
 			"DSCF0001-2.RAF": "fresh",
 		}},
-		{config.CollisionOverwrite, "DSCF0001.RAF", map[string]string{
+		{config.CollisionOverwrite, journal.OutcomeOK, "DSCF0001.RAF", map[string]string{
 			"DSCF0001.RAF": "fresh",
 		}},
-		// A skip is the user's instruction carried out, not a failure — but it
-		// records no destination, so undo has nothing of ours to remove.
-		{config.CollisionSkip, "", map[string]string{
+		// A skip is the user's instruction carried out, not a failure — but
+		// nothing moved, so it must not be journalled as done: a done that
+		// never happened is what lets an apply clear a verdict whose files
+		// are still exactly where they were.
+		{config.CollisionSkip, journal.OutcomeSkipped, "", map[string]string{
 			"DSCF0001.RAF": "already here",
 		}},
 	}
@@ -320,8 +358,8 @@ func TestCopyCollisionPolicies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if batch.Actions[0].Outcome != journal.OutcomeOK {
-				t.Fatalf("outcome %s: %s", batch.Actions[0].Outcome, batch.Actions[0].Err)
+			if batch.Actions[0].Outcome != c.wantOutcome {
+				t.Fatalf("outcome %s, want %s: %s", batch.Actions[0].Outcome, c.wantOutcome, batch.Actions[0].Err)
 			}
 			wantDst := ""
 			if c.wantDst != "" {
@@ -353,6 +391,79 @@ func TestUndoLeavesASkippedCopyAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertTree(t, dstDir, map[string]string{"DSCF0001.RAF": "already here"})
+}
+
+// A move the collision policy skips leaves the source exactly where it was.
+// Recording it as done would let the caller clear the frame's verdict and
+// prune it from the catalogue while the photo still sits on the card.
+func TestSkippedMoveIsJournalledAsSkippedNotDone(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "DSCF0001.RAF")
+	writeFile(t, src, "still on the card")
+	dstDir := t.TempDir()
+	dst := filepath.Join(dstDir, "DSCF0001.RAF")
+	writeFile(t, dst, "already here")
+
+	ex, j := newExecutor(t)
+	ex.Collision = config.CollisionSkip
+	batch, err := ex.Apply("import", []FileAction{{Verb: VerbMove, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != journal.OutcomeSkipped {
+		t.Fatalf("a move that never happened was journalled %q: %s", batch.Actions[0].Outcome, batch.Actions[0].Err)
+	}
+	if readFile(t, src) != "still on the card" {
+		t.Fatal("the skipped move touched the source")
+	}
+
+	// Undo treats the skipped action as the no-op it is.
+	if err := ex.Undo(batch); err != nil {
+		t.Fatalf("Undo: %v", err)
+	}
+	if readFile(t, src) != "still on the card" || readFile(t, dst) != "already here" {
+		t.Error("undo of a skipped action moved something")
+	}
+	if batches, _ := j.ReadAll(); len(batches) != 2 {
+		t.Errorf("undo of an all-skipped batch should still journal: %d batches", len(batches))
+	}
+}
+
+// An action that depends on the one before it must not run when that one was
+// skipped by the collision policy: its premise did not happen any more than
+// it did after a failure.
+func TestNeedsPriorDoesNotRunAfterASkippedPredecessor(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "DSCF0001.JPG")
+	writeFile(t, original, "original")
+	staged := filepath.Join(t.TempDir(), "staged.JPG")
+	writeFile(t, staged, "edited")
+	backup := filepath.Join(t.TempDir(), "backup", "DSCF0001.JPG")
+	writeFile(t, backup, "occupied")
+	// The dependent action's own destination is free, so if the chain does
+	// not stop it, it will land there and the test will see it.
+	install := filepath.Join(dir, "DSCF0001-edited.JPG")
+
+	ex, _ := newExecutor(t)
+	ex.Collision = config.CollisionSkip
+	batch, err := ex.Apply("edit metadata", []FileAction{
+		{Verb: VerbMove, Src: original, Dst: backup},
+		{Verb: VerbCopy, Src: staged, Dst: install, NeedsPrior: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != journal.OutcomeSkipped {
+		t.Fatalf("the backup move was supposed to be skipped: %+v", batch.Actions[0])
+	}
+	if batch.Actions[1].Outcome == journal.OutcomeOK {
+		t.Fatalf("the dependent action ran on a state that does not exist: %+v", batch.Actions[1])
+	}
+	if _, err := os.Lstat(install); !os.IsNotExist(err) {
+		t.Error("the dependent copy landed although the action it depends on never happened")
+	}
+	if readFile(t, original) != "original" {
+		t.Errorf("the original was disturbed: %q", readFile(t, original))
+	}
 }
 
 /* ---- verified copies ---- */

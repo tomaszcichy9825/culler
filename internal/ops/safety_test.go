@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
+	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 )
 
@@ -321,6 +322,147 @@ func TestUndoMoveBackIsVerified(t *testing.T) {
 	}
 	if _, err := os.Stat(src); err == nil && read(t, src) == "corrupted in transit" {
 		t.Error("a corrupt copy was left at the restored path")
+	}
+}
+
+// An undo that could not remove the copy for a real reason — permissions, a
+// failing disk — must count as blocked, so the reversed-nothing guard fires
+// and the batch stays retryable, instead of being silently marked undone.
+func TestUndoCopyRemovalFailureBlocksTheBatch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	ex, j := newExecutor(t)
+
+	src := filepath.Join(t.TempDir(), "card.jpg")
+	if err := os.WriteFile(src, []byte("shot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := t.TempDir()
+	dst := filepath.Join(dstDir, "library.jpg")
+
+	batch, err := ex.Apply("import", []FileAction{{Verb: VerbCopy, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The directory is readable but not writable, so the digest still matches
+	// and only the removal itself fails.
+	if err := os.Chmod(dstDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dstDir, 0o755) })
+
+	if err := ex.Undo(batch); err == nil {
+		t.Fatal("an undo that removed nothing reported success")
+	}
+	// Nothing was reversed, so nothing was journalled: the batch must still be
+	// the undo target so it can be retried once the permissions are fixed.
+	if batches, _ := j.ReadAll(); len(batches) != 1 {
+		t.Fatalf("a fully-blocked undo consumed the batch: %d batches", len(batches))
+	}
+	if read(t, dst) != "shot" {
+		t.Error("the copy went missing during a blocked undo")
+	}
+}
+
+// When copy-undo protectively leaves a replacement alone, the file the
+// overwrite displaced is still sitting in the trash. Undo must not report
+// success over it: its path is occupied, which is a blocked restore, and the
+// batch has to stay retryable.
+func TestUndoCountsAStrandedDisplacedFileAsBlocked(t *testing.T) {
+	ex, j := newExecutor(t)
+	ex.Collision = config.CollisionOverwrite
+	ex.Trasher = platform.DirTrasher{Dir: t.TempDir()}
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "new.jpg")
+	dst := filepath.Join(dir, "existing.jpg")
+	if err := os.WriteFile(src, []byte("incoming"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("valuable original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := ex.Apply("copy over", []FileAction{{Verb: VerbCopy, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The user replaces our copy with an edit of their own. Undo must leave
+	// the edit alone — and must not pretend the displaced original came back.
+	if err := os.WriteFile(dst, []byte("a newer edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ex.Undo(batch); err == nil {
+		t.Fatal("undo reported success while the displaced original is stranded in the trash")
+	}
+	if read(t, dst) != "a newer edit" {
+		t.Errorf("the replacement was altered: %q", read(t, dst))
+	}
+	if batches, _ := j.ReadAll(); len(batches) != 1 {
+		t.Fatalf("a fully-blocked undo consumed the batch: %d batches", len(batches))
+	}
+}
+
+// The mirror case: the protective skip found nothing at the destination at
+// all — the user deleted our unverifiable copy — so the displaced file's old
+// path is free, and undo must put it back rather than leave it in the trash.
+func TestUndoRestoresTheDisplacedFileWhenTheCopyIsGone(t *testing.T) {
+	ex, _ := newExecutor(t)
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "existing.jpg")
+	trash := t.TempDir()
+	displaced := filepath.Join(trash, "existing.jpg")
+	if err := os.WriteFile(displaced, []byte("valuable original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A hand-written batch: the copy's digest was never recorded and its
+	// destination no longer exists, while the displaced original waits in
+	// the trash.
+	batch := journal.Batch{
+		ID:          "b1",
+		Description: "copy over",
+		Actions: []journal.Action{{
+			Verb:      string(VerbCopy),
+			Src:       "/card/new.jpg",
+			Dst:       dst,
+			Digest:    digestUnreadable,
+			Displaced: displaced,
+			Outcome:   journal.OutcomeOK,
+		}},
+	}
+
+	if err := ex.Undo(batch); err != nil {
+		t.Fatalf("Undo: %v", err)
+	}
+	if read(t, dst) != "valuable original" {
+		t.Errorf("the displaced file was not restored, dst holds %q", read(t, dst))
+	}
+	if _, err := os.Lstat(displaced); !os.IsNotExist(err) {
+		t.Error("the displaced file is still in the trash after its restore")
+	}
+}
+
+// Trashing through an executor that was never given a trash must fail the
+// action cleanly, like overwrite already does, not crash the whole apply.
+func TestTrashWithoutATrasherFailsTheActionNotTheApply(t *testing.T) {
+	ex, _ := newExecutor(t)
+	ex.Trasher = nil
+
+	src := filepath.Join(t.TempDir(), "DSCF0001.RAF")
+	if err := os.WriteFile(src, []byte("shot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := ex.Apply("drop", []FileAction{{Verb: VerbTrash, Src: src}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != "error" || batch.Actions[0].Err == "" {
+		t.Fatalf("a trash with no trash must be recorded as an error: %+v", batch.Actions[0])
+	}
+	if read(t, src) != "shot" {
+		t.Error("the file went somewhere although there was no trash to take it")
 	}
 }
 

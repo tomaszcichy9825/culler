@@ -54,7 +54,7 @@ type ResultDTO struct {
 	Verb    string `json:"verb"`
 	Src     string `json:"src"`
 	Dst     string `json:"dst"`
-	Outcome string `json:"outcome"` // ok | error
+	Outcome string `json:"outcome"` // ok | error | skipped
 	Err     string `json:"err"`
 }
 
