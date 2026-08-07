@@ -81,7 +81,11 @@ func (s *Store) Children(dir string) ([]Node, error) {
 		return nil, err
 	}
 
-	prefix := parent + string(filepath.Separator)
+	// childPrefix, not parent + separator: a separator-terminated parent — the
+	// filesystem root, or a drive root like C:\ — would otherwise build a
+	// doubled prefix no catalogued dir carries, and this method has to agree
+	// with under and underRoot on what counts as inside.
+	prefix := childPrefix(parent)
 	byName := map[string]*Node{}
 	var order []string
 	for _, t := range totals {

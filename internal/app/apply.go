@@ -686,6 +686,9 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	// The catalogue must not keep frames whose files just left their folder.
 	// Best-effort: a prune failure never fails the apply — the files have
 	// already moved — and the self-healing reindex catches anything missed.
+	// A frame that lost only one half — a drop-RAW that leaves the JPEG — is
+	// deliberately pruned whole here and re-catalogued from what survived on
+	// disk by the next UpsertDir or index pass.
 	if len(pruned) > 0 {
 		_ = NewLibraryIndexService(s.app).PruneApplied(pruned)
 	}

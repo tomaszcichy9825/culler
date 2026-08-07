@@ -297,11 +297,6 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// chunk is how many hashes go into one statement. The driver's parameter
-// ceiling is 32766, and a batch is kept far below it rather than risking the
-// one statement that trips it.
-const chunk = 500
-
 // FrameKey names one catalogued frame: the content and the place it was seen,
 // which is the identity rows are keyed on.
 type FrameKey struct {
@@ -570,14 +565,22 @@ func cleanRoot(path string) (string, error) {
 // and the two have to agree: a folder that counted as covered in one place and
 // not the other would be a root here and a child there.
 func under(path, root string) bool {
-	if path == root {
-		return true
-	}
+	return path == root || strings.HasPrefix(path, childPrefix(root))
+}
+
+// childPrefix is the prefix every path strictly inside dir carries.
+//
+// A separator-terminated dir — the filesystem root, or a drive root like C:\
+// on Windows, both of which filepath.Clean leaves ending in the separator —
+// already carries its own prefix, and appending another separator would build
+// one no path matches. under, underRoot and the tree's Children all share
+// this rule, because they are required to agree on what sits inside what.
+func childPrefix(dir string) string {
 	sep := string(filepath.Separator)
-	if root == sep {
-		return strings.HasPrefix(path, sep)
+	if strings.HasSuffix(dir, sep) {
+		return dir
 	}
-	return strings.HasPrefix(path, root+sep)
+	return dir + sep
 }
 
 // underRoot builds the predicate for "this frame's directory is the root or
@@ -587,13 +590,7 @@ func under(path, root string) bool {
 // name is allowed to contain every wildcard either of those understands.
 // SQLite's substr counts characters, so the length is measured in runes.
 func underRoot(root string) (string, []any) {
-	sep := string(filepath.Separator)
-	prefix := root + sep
-	// The filesystem root already ends in the separator; doubling it would
-	// build a prefix no path carries. It is the same special case under makes.
-	if root == sep {
-		prefix = sep
-	}
+	prefix := childPrefix(root)
 	return "(dir = ? OR substr(dir, 1, ?) = ?)",
 		[]any{root, utf8.RuneCountInString(prefix), prefix}
 }

@@ -103,33 +103,37 @@ func TestSetDestinationBatch(t *testing.T) {
 	if err := s.SetDestinationBatch(items); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{"DSCF0001": "/library/a", "DSCF0002": "/library/b", "DSCF0003": "/library/a"}
-	for stem, dest := range want {
-		if got[stem].Destination != dest {
-			t.Errorf("%s routed to %q, want %q", stem, got[stem].Destination, dest)
+	for _, it := range items {
+		r, ok := mustGet(t, s, it.Hash, it.Dir, it.Stem)
+		if !ok || r.Destination != it.Destination {
+			t.Errorf("%s routed to %q (ok=%v), want %q", it.Stem, r.Destination, ok, it.Destination)
 		}
-		if got[stem].Verdict != Keep {
-			t.Errorf("%s should be kept, got %q", stem, got[stem].Verdict)
+		if r.Verdict != Keep {
+			t.Errorf("%s should be kept, got %q", it.Stem, r.Verdict)
 		}
 	}
 }
 
-func TestSetDestinationBatchIsAtomic(t *testing.T) {
+// A frame whose primary file could not be hashed keys on ("", dir, stem) like
+// any other row: the composite key tells two unhashed frames apart by place,
+// so routing one must neither be refused nor bleed into the other.
+func TestSetDestinationAcceptsAnUnhashedFrame(t *testing.T) {
 	s := openStore(t)
 
-	err := s.SetDestinationBatch([]DestinationItem{
-		{Hash: "h1", Dir: "/cardA", Stem: "DSCF0001", Destination: "/library/a"},
-		{Hash: "", Dir: "/cardA", Stem: "DSCF0002", Destination: "/library/b"},
-	})
-	if err == nil {
-		t.Fatal("a batch with an identity-less frame must fail")
+	if err := s.SetDestination("", "/cardA", "DSCF0001", "/library/a"); err != nil {
+		t.Fatalf("an unhashed frame must be routable: %v", err)
 	}
-	if _, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001"); ok {
-		t.Error("the good half of a failed batch landed anyway")
+	if err := s.SetDestination("", "/cardA", "DSCF0002", "/library/b"); err != nil {
+		t.Fatalf("a second unhashed frame must be routable: %v", err)
+	}
+
+	a, ok := mustGet(t, s, "", "/cardA", "DSCF0001")
+	if !ok || a.Destination != "/library/a" || a.Verdict != Keep {
+		t.Errorf("first unhashed frame = %+v (ok=%v), want /library/a and keep", a, ok)
+	}
+	b, ok := mustGet(t, s, "", "/cardA", "DSCF0002")
+	if !ok || b.Destination != "/library/b" {
+		t.Errorf("second unhashed frame = %+v (ok=%v), want its own /library/b", b, ok)
 	}
 }
 
@@ -435,21 +439,23 @@ func TestMigrationFromTheVerdictSchema(t *testing.T) {
 	}
 	defer s.Close()
 
-	got, err := s.ForDir("/cardA")
-	if err != nil {
+	var migrated int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM decisions WHERE dir = ?`, "/cardA").Scan(&migrated); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]Record{
-		"DSCF0001": {Verdict: Keep, Mask: MaskBoth, Rating: 5},
-		"DSCF0002": {Verdict: Cut, Mask: MaskBoth},
-		"DSCF0003": {Verdict: Keep, Mask: MaskRAW, Rating: 3},
+		"hash-1": {Verdict: Keep, Mask: MaskBoth, Rating: 5},
+		"hash-2": {Verdict: Cut, Mask: MaskBoth},
+		"hash-3": {Verdict: Keep, Mask: MaskRAW, Rating: 3},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("migrated %d rows, want %d: %v", len(got), len(want), got)
+	if migrated != len(want) {
+		t.Fatalf("migrated %d rows, want %d", migrated, len(want))
 	}
-	for stem, w := range want {
-		if got[stem] != w {
-			t.Errorf("%s migrated to %+v, want %+v", stem, got[stem], w)
+	stems := map[string]string{"hash-1": "DSCF0001", "hash-2": "DSCF0002", "hash-3": "DSCF0003"}
+	for hash, w := range want {
+		got, ok := mustGet(t, s, hash, "/cardA", stems[hash])
+		if !ok || got != w {
+			t.Errorf("%s migrated to %+v (ok=%v), want %+v", stems[hash], got, ok, w)
 		}
 	}
 

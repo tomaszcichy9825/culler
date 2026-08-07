@@ -41,6 +41,10 @@ type Stats struct {
 	Frames  int
 	Changed int
 	Removed int
+	// Unreadable counts frames whose primary file could not be hashed. Their
+	// existing rows are kept — unreadable is not the same as gone — but what
+	// those rows say may be stale until a pass can read the files again.
+	Unreadable int
 }
 
 func (s *Stats) add(other Stats) {
@@ -48,6 +52,7 @@ func (s *Stats) add(other Stats) {
 	s.Frames += other.Frames
 	s.Changed += other.Changed
 	s.Removed += other.Removed
+	s.Unreadable += other.Unreadable
 }
 
 // IndexOptions tunes one index pass.
@@ -183,6 +188,21 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 	if err != nil {
 		return stats, err
 	}
+
+	// Catalogued folders the walk never reached but that are still on disk
+	// behind a symlink. WalkDir does not follow a symlinked directory, while
+	// UpsertDir happily catalogues one — coverage is lexical — so without
+	// this a folder the user opened would flip-flop: catalogued on open,
+	// forgotten on the next reindex. The walk still does not descend into it,
+	// which is the stance internal/scan takes too (a symlink is resolved,
+	// never walked as a directory), so its subtree is unknown rather than
+	// current: it joins failed and keeps its rows exactly as they were, and
+	// the next folder open refreshes them.
+	linked, err := s.symlinkedDirs(clean, walked, failed)
+	if err != nil {
+		return stats, err
+	}
+	failed = append(failed, linked...)
 
 	removed, err := s.pruneMissingDirs(clean, walked, failed)
 	if err != nil {
@@ -404,8 +424,17 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 	for i, g := range groups {
 		hash := known[i]
 		// A frame whose primary file cannot be read has no identity, so there
-		// is nothing to key a row on. It is skipped rather than guessed at.
+		// is nothing to key a fresh row on. But the file is on disk, and if
+		// the last pass wrote a row for it that row must survive the prune
+		// below: its content may be stale, and stale beats silently gone —
+		// the same call an unreadable directory gets. A frame never seen
+		// before has no row to keep and is skipped rather than guessed at.
 		if hash == "" {
+			stats.Unreadable++
+			if row, ok := held[primaryPath(states[i][0], states[i][1])]; ok && row.hash != "" {
+				kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
+				stats.Frames++
+			}
 			continue
 		}
 		verdict, rating := "", 0
@@ -532,10 +561,74 @@ func pruneDirTx(tx *sql.Tx, dir string, keep []FrameKey) (int, error) {
 	return len(doomed), nil
 }
 
+// symlinkedDirs returns the directories that keep catalogued folders under
+// root reachable through a symlink: for every catalogued directory the walk
+// did not reach and no failed directory already covers, the ancestor that is
+// a symlink still resolving to a directory on disk. The result is
+// deduplicated — a rescued ancestor covers everything beneath it.
+func (s *Store) symlinkedDirs(root string, walked, failed []string) ([]string, error) {
+	where, args := underRoot(root)
+	rows, err := s.db.Query(`SELECT DISTINCT dir FROM frames WHERE `+where, args...)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: read folders under %s: %w", root, err)
+	}
+	defer rows.Close()
+	var dirs []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	reached := make(map[string]bool, len(walked))
+	for _, d := range walked {
+		reached[d] = true
+	}
+	underAny := func(dir string, list []string) bool {
+		for _, l := range list {
+			if under(dir, l) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var out []string
+	for _, dir := range dirs {
+		if reached[dir] || underAny(dir, failed) || underAny(dir, out) {
+			continue
+		}
+		// Climb towards root. The first component that is itself a symlink
+		// decides: resolving to a directory means everything beneath it is
+		// present and only reachable through it; a dangling link means the
+		// folder really has left. Lstat follows every component but the last,
+		// so a failure here says this level is gone and the verdict, if any,
+		// lives further up.
+		for p := dir; p != root && len(p) > len(root); p = filepath.Dir(p) {
+			fi, err := os.Lstat(p)
+			if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			if target, err := os.Stat(p); err == nil && target.IsDir() {
+				out = append(out, p)
+			}
+			break
+		}
+	}
+	return out, nil
+}
+
 // pruneMissingDirs drops the frames of directories that were under root and
-// are not any more. The walked list is bounded by the number of directories
-// rather than the number of frames, so it goes into a temporary table instead
-// of an ever-growing IN clause.
+// are not any more. The walked and failed lists are bounded by the number of
+// directories rather than the number of frames, so both go into temporary
+// tables: an ever-growing IN clause runs out of parameter slots, and one AND
+// NOT term per failed directory runs out of expression depth near a thousand
+// unreadable folders.
 //
 // A directory in failed could not be listed, which is not the same as not
 // being there: everything under it — itself and the subtree the walk never
@@ -547,24 +640,36 @@ func (s *Store) pruneMissingDirs(root string, walked, failed []string) (int, err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS pass_dirs (dir TEXT PRIMARY KEY)`); err != nil {
-		return 0, fmt.Errorf("catalog: prepare prune: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM pass_dirs`); err != nil {
-		return 0, fmt.Errorf("catalog: prepare prune: %w", err)
+	for _, stmt := range []string{
+		`CREATE TEMP TABLE IF NOT EXISTS pass_dirs (dir TEXT PRIMARY KEY)`,
+		`DELETE FROM pass_dirs`,
+		`CREATE TEMP TABLE IF NOT EXISTS failed_dirs (dir TEXT PRIMARY KEY, prefix TEXT NOT NULL)`,
+		`DELETE FROM failed_dirs`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return 0, fmt.Errorf("catalog: prepare prune: %w", err)
+		}
 	}
 	for _, dir := range walked {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO pass_dirs (dir) VALUES (?)`, dir); err != nil {
 			return 0, fmt.Errorf("catalog: prepare prune: %w", err)
 		}
 	}
-	where, args := underRoot(root)
-	query := `DELETE FROM frames WHERE ` + where + ` AND dir NOT IN (SELECT dir FROM pass_dirs)`
 	for _, dir := range failed {
-		fw, fa := underRoot(dir)
-		query += ` AND NOT ` + fw
-		args = append(args, fa...)
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO failed_dirs (dir, prefix) VALUES (?, ?)`,
+			dir, childPrefix(dir)); err != nil {
+			return 0, fmt.Errorf("catalog: prepare prune: %w", err)
+		}
 	}
+	where, args := underRoot(root)
+	// length() counts characters on SQLite text, matching the rune count
+	// underRoot binds, so the two prefix tests agree on non-ASCII names.
+	query := `DELETE FROM frames WHERE ` + where + `
+		AND dir NOT IN (SELECT dir FROM pass_dirs)
+		AND NOT EXISTS (
+			SELECT 1 FROM failed_dirs f
+			WHERE frames.dir = f.dir OR substr(frames.dir, 1, length(f.prefix)) = f.prefix
+		)`
 	res, err := tx.Exec(query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: prune folders that left %s: %w", root, err)

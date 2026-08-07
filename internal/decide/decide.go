@@ -410,13 +410,11 @@ func applyVerdict(tx *sql.Tx, it VerdictItem) error {
 	return err
 }
 
-// applyDestination writes one destination inside a transaction. A frame with
-// no identity hash is refused rather than stored: every such frame would share
-// the one empty key and so route the rest of them wherever the last one went.
+// applyDestination writes one destination inside a transaction. A frame whose
+// primary file could not be hashed keys on ("", dir, stem) like any other row
+// — the composite key tells two unhashed frames apart by place, the same way
+// SetVerdict and SetRating already accept them.
 func applyDestination(tx *sql.Tx, it DestinationItem) error {
-	if it.Hash == "" {
-		return fmt.Errorf("decide: no frame identity for %s: it cannot be routed", it.Stem)
-	}
 	verdict := ""
 	if it.Destination != "" {
 		verdict = string(Keep)
@@ -486,30 +484,6 @@ func (s *Store) Get(hash, dir, stem string) (Record, bool, error) {
 		return Record{}, false, err
 	}
 	return r, true, nil
-}
-
-// ForDir returns stem to record for every decided or rated frame last seen in
-// dir. This is the one query the grid runs when a folder is opened.
-func (s *Store) ForDir(dir string) (map[string]Record, error) {
-	rows, err := s.db.Query(
-		`SELECT stem, verdict, mask, rating, destination FROM decisions WHERE dir = ? ORDER BY updated_at`, dir)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[string]Record)
-	for rows.Next() {
-		var stem string
-		var r Record
-		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating, &r.Destination); err != nil {
-			return nil, err
-		}
-		// Ordered by updated_at, so if an edited file left a stale row under
-		// its old hash the newest record for that stem wins.
-		out[stem] = r
-	}
-	return out, rows.Err()
 }
 
 // Clear wipes every record. Used when the user discards a session rather than

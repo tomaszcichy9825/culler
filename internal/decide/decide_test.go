@@ -25,6 +25,33 @@ func mustGet(t *testing.T, s *Store, hash, dir, stem string) (Record, bool) {
 	return r, ok
 }
 
+// recordsIn reads every row filed under dir, keyed by stem. A test-only view:
+// production reads answer to the full (hash, dir, stem) identity through Get,
+// but batch and migration tests want to see a whole directory at once.
+func recordsIn(t *testing.T, s *Store, dir string) map[string]Record {
+	t.Helper()
+	rows, err := s.db.Query(
+		`SELECT stem, verdict, mask, rating, destination FROM decisions WHERE dir = ?`, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	out := map[string]Record{}
+	for rows.Next() {
+		var stem string
+		var r Record
+		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating, &r.Destination); err != nil {
+			t.Fatal(err)
+		}
+		out[stem] = r
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestSetVerdictRoundTrip(t *testing.T) {
 	s := openStore(t)
 
@@ -78,12 +105,8 @@ func TestUpsertOverwrites(t *testing.T) {
 	if r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); !ok || r.Verdict != Keep {
 		t.Errorf("the original place lost its keep to a twin: %+v (ok=%v)", r, ok)
 	}
-	fresh, err := s.ForDir("/photos/keep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fresh["RENAMED"].Verdict != Cut {
-		t.Errorf("want RENAMED->cut in the new dir, got %v", fresh)
+	if r, ok := mustGet(t, s, "h1", "/photos/keep", "RENAMED"); !ok || r.Verdict != Cut {
+		t.Errorf("want RENAMED->cut in the new dir, got %+v (ok=%v)", r, ok)
 	}
 }
 
@@ -222,48 +245,6 @@ func TestSetRatingRejectsValuesOffTheScale(t *testing.T) {
 	}
 }
 
-func TestForDirIsScopedToOneDir(t *testing.T) {
-	s := openStore(t)
-
-	if err := s.SetVerdict("h1", "/cardA", "DSCF0001", Keep, MaskJPEG); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetVerdict("h2", "/cardA", "DSCF0002", Keep, MaskBoth); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetRating("h2", "/cardA", "DSCF0002", 3); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetVerdict("h3", "/cardB", "DSCF0003", Cut, MaskBoth); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("want 2 records for /cardA, got %d: %v", len(got), got)
-	}
-	if got["DSCF0001"].Mask != MaskJPEG {
-		t.Errorf("wrong mask for DSCF0001: %+v", got["DSCF0001"])
-	}
-	if got["DSCF0002"].Rating != 3 {
-		t.Errorf("ForDir dropped the rating: %+v", got["DSCF0002"])
-	}
-	if _, leaked := got["DSCF0003"]; leaked {
-		t.Error("ForDir leaked a record from another directory")
-	}
-
-	empty, err := s.ForDir("/cardC")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(empty) != 0 {
-		t.Errorf("want no records for an unvisited dir, got %v", empty)
-	}
-}
-
 func TestSetVerdictBatch(t *testing.T) {
 	s := openStore(t)
 
@@ -276,10 +257,7 @@ func TestSetVerdictBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if len(got) != 3 {
 		t.Fatalf("want 3 records, got %d: %v", len(got), got)
 	}
@@ -317,10 +295,7 @@ func TestSetRatingBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if got["DSCF0001"].Rating != 1 || got["DSCF0001"].Verdict != Cut {
 		t.Errorf("rating a decided frame disturbed its verdict: %+v", got["DSCF0001"])
 	}
@@ -352,10 +327,7 @@ func TestSetVerdictBatchIsAtomic(t *testing.T) {
 		t.Fatal("want an error for a batch containing an invalid verdict")
 	}
 
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if len(got) != 1 {
 		t.Fatalf("batch must roll back entirely, got %v", got)
 	}
@@ -374,10 +346,7 @@ func TestSetRatingBatchIsAtomic(t *testing.T) {
 	if err := s.SetRatingBatch(items); err == nil {
 		t.Fatal("want an error for a batch containing a rating off the scale")
 	}
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if len(got) != 0 {
 		t.Errorf("batch must roll back entirely, got %v", got)
 	}
@@ -420,10 +389,7 @@ func TestClear(t *testing.T) {
 	if _, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001"); ok {
 		t.Error("Clear left h1 behind")
 	}
-	got, err := s.ForDir("/cardB")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardB")
 	if len(got) != 0 {
 		t.Errorf("Clear left %v behind", got)
 	}
@@ -459,12 +425,9 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	if !ok || r.Verdict != Keep || r.Mask != MaskRAW || r.Rating != 2 {
 		t.Fatalf("record lost across reopen: %+v (ok=%v)", r, ok)
 	}
-	got, err := s2.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s2, "/cardA")
 	if got["DSCF0001"].Rating != 2 {
-		t.Errorf("ForDir lost the record across reopen: %v", got)
+		t.Errorf("the record lost its rating across reopen: %v", got)
 	}
 }
 
@@ -525,10 +488,7 @@ func TestMigrationFromTheOldSchema(t *testing.T) {
 		"DSCF0003": {Verdict: Keep, Mask: MaskRAW},
 		"DSCF0004": {Verdict: Cut, Mask: MaskBoth},
 	}
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if len(got) != len(want) {
 		t.Fatalf("migrated %d rows, want %d: %v", len(got), len(want), got)
 	}
@@ -606,10 +566,7 @@ CREATE INDEX IF NOT EXISTS decisions_dir ON decisions(dir);
 	}
 	defer s.Close()
 
-	got, err := s.ForDir("/cardA")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := recordsIn(t, s, "/cardA")
 	if len(got) != 1 {
 		t.Fatalf("want only the decided frame to survive, got %v", got)
 	}
