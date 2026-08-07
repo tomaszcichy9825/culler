@@ -138,6 +138,29 @@ func TestSearchTreatsWildcardsAsText(t *testing.T) {
 	}
 }
 
+// SQLite's built-in lower() folds ASCII and nothing else, so case-insensitive
+// matching has to go through the catalogue's own function: a stem holding a
+// non-ASCII capital must be findable however the query is cased.
+func TestSearchFoldsCaseBeyondASCII(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.db.Exec(upsertFrameSQL,
+		"hash-muenchen", "/photos/trips", "MÜNCHEN_001", "raw-only", int64(0),
+		"/photos/trips/MÜNCHEN_001.RAF", "", int64(100), int64(0),
+		int64(0), int64(0), 0, "", int64(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, query := range []string{"münchen", "MÜNCHEN", "Münch"} {
+		res, err := s.Search(query, Facets{}, Page{})
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		if got := stems(res); len(got) != 1 || got[0] != "MÜNCHEN_001" {
+			t.Errorf("search for %q = %v, want MÜNCHEN_001", query, got)
+		}
+	}
+}
+
 func TestSearchFacets(t *testing.T) {
 	s, cards, _ := searchTree(t)
 

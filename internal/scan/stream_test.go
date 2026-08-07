@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -128,6 +129,31 @@ func TestScanDirStreamBatchesAreNotReused(t *testing.T) {
 	}
 	if kept[0][0].Stem != "a" || kept[1][0].Stem != "b" {
 		t.Fatalf("a retained batch was overwritten: %q then %q", kept[0][0].Stem, kept[1][0].Stem)
+	}
+}
+
+// The streamed walk treats symlinks exactly as ScanDir does: target metadata
+// for a linked file, nothing at all for a link to a directory.
+func TestScanDirStreamResolvesSymlinks(t *testing.T) {
+	outside := t.TempDir()
+	target := filepath.Join(outside, "master.jpg")
+	if err := os.WriteFile(target, make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, "LINK0001.JPG")); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "FAKE.JPG")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, all := collectStream(t, dir, StreamOptions{})
+	if len(all) != 1 || all[0].Stem != "LINK0001" || all[0].Jpeg == nil {
+		t.Fatalf("streamed %+v, want LINK0001 alone", all)
+	}
+	if got := all[0].Jpeg.Size; got != 1234 {
+		t.Errorf("size = %d, want the target's 1234, not the link's own", got)
 	}
 }
 
