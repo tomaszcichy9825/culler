@@ -94,12 +94,26 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 
 // Path returns where (key, size) lives in the cache and whether it is present.
 // The path is returned either way, so a caller can log a miss by name.
+//
+// Presence is checked on disk, not just in the index: the OS or the user can
+// reclaim a cache file at any time, and an index hit for a file that has gone
+// would 404 for the life of the process. A vanished entry is dropped so the
+// caller regenerates it.
 func (s *Store) Path(key string, size Size) (string, bool) {
 	ek := entryKey{key: key, size: size}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.entries[ek]
-	return s.filePath(ek), ok
+	path := s.filePath(ek)
+	e, ok := s.entries[ek]
+	if !ok {
+		return path, false
+	}
+	if _, err := os.Stat(path); err != nil {
+		s.total -= e.bytes
+		delete(s.entries, ek)
+		return path, false
+	}
+	return path, true
 }
 
 // Put decodes srcJPEG, shrinks it so its long edge is size (a smaller source

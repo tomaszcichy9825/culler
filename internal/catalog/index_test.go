@@ -290,6 +290,108 @@ func TestReindexKeepsEverythingWhenTheRootIsUnreadable(t *testing.T) {
 	}
 }
 
+// A file that cannot be read has no identity to key a fresh row on, but the
+// row the last pass wrote is still describing a file that is on disk. Pruning
+// it would report the frame gone when it is merely unreadable — the same
+// wrong guess an unreadable directory is protected from.
+func TestReindexKeepsTheRowOfAnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "DSCF0001", 100, 0, shotAt(9, 0))
+	writeFrame(t, root, "DSCF0002", 100, 0, shotAt(9, 1))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	// Rewritten, so the pass must re-read it — and unreadable, so it cannot.
+	locked := filepath.Join(root, "DSCF0002.RAF")
+	writeFrame(t, root, "DSCF0002", 150, 0, shotAt(9, 30))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Removed != 0 {
+		t.Errorf("stats report %d removals, nothing left the disk", stats.Removed)
+	}
+	if stats.Unreadable != 1 {
+		t.Errorf("stats report %d unreadable frames, want the 1 the pass could not hash", stats.Unreadable)
+	}
+
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 2 {
+		t.Fatalf("catalogue holds %d frames, want both — an unreadable file is not a gone one: %v",
+			res.Total, stems(res))
+	}
+	byStem := map[string]Frame{}
+	for _, f := range res.Frames {
+		byStem[f.Stem] = f
+	}
+	if _, ok := byStem["DSCF0002"]; !ok {
+		t.Error("the unreadable frame's row was pruned")
+	}
+}
+
+// WalkDir does not follow a symlinked directory, while UpsertDir happily
+// catalogues one — coverage is lexical. Without the two agreeing, a symlinked
+// folder flip-flops: catalogued when the user opens it, forgotten by the next
+// reindex.
+func TestIndexKeepsASymlinkedDirectoryTheUserOpened(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	mkdir(t, real)
+	writeFrame(t, real, "REAL0001", 100, 0, shotAt(9, 0))
+
+	elsewhere := t.TempDir()
+	sub := filepath.Join(elsewhere, "sub")
+	mkdir(t, sub)
+	writeFrame(t, elsewhere, "LINK0001", 100, 0, shotAt(9, 1))
+	writeFrame(t, sub, "SUB00001", 100, 0, shotAt(9, 2))
+	archive := filepath.Join(root, "Archive")
+	if err := os.Symlink(elsewhere, archive); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	up, err := s.UpsertDir(archive, IndexOptions{})
+	if err != nil {
+		t.Fatalf("UpsertDir on the symlinked folder: %v", err)
+	}
+	if up.Frames != 1 {
+		t.Fatalf("UpsertDir catalogued %d frames in the symlinked folder, want 1", up.Frames)
+	}
+	// A folder deeper inside the symlinked one, reached the same way.
+	if _, err := s.UpsertDir(filepath.Join(archive, "sub"), IndexOptions{}); err != nil {
+		t.Fatalf("UpsertDir on the nested folder: %v", err)
+	}
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("reindex: %v", err)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 3 {
+		t.Errorf("catalogue holds %d frames after the reindex, want all 3 — the symlinked folder is still on disk: %v",
+			res.Total, stems(res))
+	}
+}
+
 // seedDir files n synthetic rows under dir, bypassing the scanner: the prune
 // tests care about rows, not files on disk.
 func seedDir(t *testing.T, s *Store, dir string, n int) []FrameKey {
@@ -370,6 +472,54 @@ func TestPruneDirDropsAcrossChunks(t *testing.T) {
 	}
 	if n != 1 {
 		t.Error("a kept hash did not survive the prune")
+	}
+}
+
+// One AND NOT term per failed directory trips SQLite's expression-depth
+// ceiling at about a thousand unreadable folders, and a card full of locked
+// directories must not fail the prune it was being protected by.
+func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
+	s := openStore(t)
+	root := "/photos"
+
+	failed := make([]string, 0, 1100)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1100; i++ {
+		dir := fmt.Sprintf("%s/locked/%04d", root, i)
+		failed = append(failed, dir)
+		if _, err := tx.Exec(upsertFrameSQL,
+			fmt.Sprintf("lock-%04d", i), dir, fmt.Sprintf("LOCK%04d", i), "raw-only", int64(i),
+			filepath.Join(dir, "LOCK.RAF"), "", int64(100), int64(0),
+			int64(0), int64(0), 0, "", int64(0)); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+	if _, err := tx.Exec(upsertFrameSQL,
+		"gone-0000", root+"/gone", "GONE0000", "raw-only", int64(0),
+		root+"/gone/GONE.RAF", "", int64(100), int64(0),
+		int64(0), int64(0), 0, "", int64(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := s.pruneMissingDirs(root, nil, failed)
+	if err != nil {
+		t.Fatalf("pruneMissingDirs with %d failed dirs: %v", len(failed), err)
+	}
+	if removed != 1 {
+		t.Errorf("pruned %d frames, want only the 1 whose folder truly left", removed)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1100 {
+		t.Errorf("%d rows survive, want every frame under a failed folder", n)
 	}
 }
 

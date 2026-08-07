@@ -417,3 +417,42 @@ func TestPutHonoursEXIFOrientation(t *testing.T) {
 		t.Fatalf("rotated long edge must still be the size cap: got %dx%d", w, h)
 	}
 }
+
+// The index is memory and the file is disk, and the OS or the user can
+// reclaim the disk half at any time. A hit on an entry whose file has gone
+// must come back as a miss — and drop the entry — so the caller regenerates
+// the thumbnail instead of serving a 404 for the life of the process.
+func TestPathMissesWhenTheCachedFileHasVanished(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.Put(key("gone"), SizeGrid, makeJPEG(t, 64, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Path(key("gone"), SizeGrid); !ok {
+		t.Fatal("a just-put entry must hit")
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Path(key("gone"), SizeGrid); ok {
+		t.Error("a vanished file must report a miss")
+	}
+	s.mu.Lock()
+	total := s.total
+	s.mu.Unlock()
+	if total != 0 {
+		t.Errorf("the dropped entry still holds %d bytes of the cap", total)
+	}
+
+	// The miss must be recoverable: a fresh Put fills the hole and hits again.
+	if _, err := s.Put(key("gone"), SizeGrid, makeJPEG(t, 64, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Path(key("gone"), SizeGrid); !ok {
+		t.Error("a regenerated entry must hit again")
+	}
+}

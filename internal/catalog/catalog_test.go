@@ -235,6 +235,31 @@ func mkdir(t *testing.T, dir string) {
 	}
 }
 
+// under and underRoot special-case a root that already ends in the path
+// separator — the filesystem root here, a drive root like C:\ on Windows —
+// and the two must agree on it: doubling the separator would build a prefix
+// no path carries.
+func TestUnderAndUnderRootAgreeOnASeparatorTerminatedRoot(t *testing.T) {
+	sep := string(filepath.Separator)
+	if !under(sep, sep) {
+		t.Error("the root is not under itself")
+	}
+	if !under(filepath.Join(sep, "photos"), sep) {
+		t.Error("a top-level folder is not under the root")
+	}
+
+	where, args := underRoot(sep)
+	if len(args) != 3 {
+		t.Fatalf("underRoot(%q) built %d args, want 3 for %q", sep, len(args), where)
+	}
+	if args[2] != sep {
+		t.Errorf("underRoot(%q) matches prefix %q, want the root itself", sep, args[2])
+	}
+	if args[1] != 1 {
+		t.Errorf("underRoot(%q) measures the prefix as %v runes, want 1", sep, args[1])
+	}
+}
+
 // writeFrame lays one frame down in dir: a RAW of rawBytes and, when
 // jpegBytes is above zero, a JPEG beside it. Both carry shot as their mtime,
 // which is what the scan reads as the shot time. Contents differ per file so

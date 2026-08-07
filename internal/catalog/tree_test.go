@@ -234,3 +234,35 @@ func TestKeysUnderCoversTheWholeSubtree(t *testing.T) {
 		t.Errorf("the root covers %d keys, want 5", len(all))
 	}
 }
+
+// Children of the filesystem root must agree with under() and underRoot(),
+// which both treat a separator-terminated root as already carrying its own
+// prefix. Building "//" instead would report a root that RootNodes says holds
+// frames as having no children at all. A drive root like C:\ has the same
+// separator-terminated shape and rides the same code path.
+func TestChildrenOfTheFilesystemRoot(t *testing.T) {
+	s := openStore(t)
+	seedDir(t, s, "/photos", 2)
+	if _, err := s.AddRoot("/"); err != nil {
+		t.Fatalf("AddRoot: %v", err)
+	}
+
+	nodes, err := s.RootNodes()
+	if err != nil {
+		t.Fatalf("RootNodes: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Frames != 2 {
+		t.Fatalf("RootNodes = %+v, want the root holding both frames", nodes)
+	}
+
+	kids, err := s.Children("/")
+	if err != nil {
+		t.Fatalf("Children: %v", err)
+	}
+	if len(kids) != 1 {
+		t.Fatalf("the filesystem root reports %d children, want the 1 RootNodes promised: %+v", len(kids), kids)
+	}
+	if kids[0].Name != "photos" || kids[0].Path != "/photos" || kids[0].Frames != 2 {
+		t.Errorf("child = %+v, want photos at /photos with 2 frames", kids[0])
+	}
+}

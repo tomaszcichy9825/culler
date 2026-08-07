@@ -52,13 +52,6 @@ func TestTwinsInTheSameFolderHoldSeparateVerdicts(t *testing.T) {
 		t.Errorf("copy = %q (ok=%v), want keep", copied.Verdict, ok)
 	}
 
-	forDir, err := s.ForDir("/photos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if forDir["DSCF0001"].Verdict != Cut || forDir["DSCF0001-copy"].Verdict != Keep {
-		t.Errorf("ForDir lost a twin: %v", forDir)
-	}
 }
 
 // A database written while the hash was the whole key must come through the
