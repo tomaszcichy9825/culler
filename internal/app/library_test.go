@@ -248,3 +248,30 @@ func TestToItemRequiresHash(t *testing.T) {
 		t.Errorf("drop_all became %q/%q, want cut/rj", legacy.Verdict, legacy.Mask)
 	}
 }
+
+// The final progress report must arrive however many groups could not be
+// hashed: a group with no file to read still counts towards done, or the bar
+// sticks below the total forever.
+func TestHashGroupsProgressReachesTheTotalWithFilelessGroups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "DSCF0001.JPG")
+	if err := os.WriteFile(path, []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	groups := []scan.PhotoGroup{
+		{Dir: dir, Stem: "DSCF0001", Jpeg: &scan.FileRef{Path: path}},
+		{Dir: dir, Stem: "GHOST"}, // neither half: nothing to read
+	}
+
+	last := 0
+	hashes := hashGroups(groups, 2, func(done int) { last = done })
+	if hashes[0] == "" {
+		t.Error("the readable frame was not hashed")
+	}
+	if hashes[1] != "" {
+		t.Error("a file-less group grew a hash")
+	}
+	if last != len(groups) {
+		t.Errorf("final progress = %d, want %d — the bar would stick below the total", last, len(groups))
+	}
+}

@@ -102,3 +102,56 @@ func TestApplyScopeEmptyRefs(t *testing.T) {
 		t.Errorf("empty scope executed %d actions", len(batch.Actions))
 	}
 }
+
+// A scope can name the same folder more than once and in more than one
+// spelling — a session row and a tree pick, or an unclean path. The plan must
+// not double up: two identical trash actions would run the file into the
+// rejects twice, and the duplicate's failure would then mark the frame as not
+// done, leaving a cut on a frame whose files are already gone.
+func TestApplyScopeDeduplicatesRepeatedRefs(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	library := NewLibraryService(a)
+	decisions := NewDecisionService(a)
+	apply := NewApplyService(a)
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := folder.Groups[0]
+	if err := decisions.SetVerdict(frame.Hash, frame.Dir, frame.Stem, "cut", "rj"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same frame three times: twice verbatim, once through an unclean
+	// spelling of its folder.
+	refs := []FrameRef{
+		{Dir: dir, Hash: frame.Hash},
+		{Dir: dir, Hash: frame.Hash},
+		{Dir: dir + "/.", Hash: frame.Hash},
+	}
+	batch, err := apply.ApplyScope(refs)
+	if err != nil {
+		t.Fatalf("ApplyScope: %v", err)
+	}
+	// The paired frame is three files; a duplicated plan would be six.
+	if len(batch.Actions) != 3 {
+		t.Fatalf("planned %d actions for one frame named three times, want 3: %+v", len(batch.Actions), batch.Actions)
+	}
+	for _, act := range batch.Actions {
+		if act.Outcome != "ok" {
+			t.Errorf("action failed: %+v", act)
+		}
+	}
+	// The cut was carried out in full, so it is spent.
+	reopened, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range reopened.Groups {
+		if g.Stem == frame.Stem && g.Verdict != "" {
+			t.Errorf("the applied cut was not cleared: %q", g.Verdict)
+		}
+	}
+}
