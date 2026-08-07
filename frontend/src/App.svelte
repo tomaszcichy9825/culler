@@ -67,7 +67,7 @@
     watchScanStream,
   } from "./lib/actions";
   import { flush } from "./lib/decisions";
-  import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
+  import { buildLookup, eventSignature, inMapRegion, ownsKeys } from "./lib/keymap";
   import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
   import type { Pane } from "./lib/shell.svelte";
   import { app, picker, tree } from "./lib/state.svelte";
@@ -220,6 +220,20 @@
     untrack(() => showSearchResults(open, results));
   });
 
+  // EXIF drafts are scoped to the folder context they were typed in: the open
+  // folder, or the search while it is up (its results can span folders, so it
+  // is one scope of its own). A context change — a folder picked from the
+  // tree, a search result, a session, a map pin, opening or closing the
+  // search — prunes every draft; a rail reload within one context keeps them.
+  // The rule itself is documented on ExifState.setScope; this effect runs in
+  // every mode, because drafts survive leaving EXIF and the folder can change
+  // from any of them. Reopening the same folder keeps the drafts: the files
+  // they belong to are still the files on screen.
+  $effect(() => {
+    const scope = library.searchOpen ? "search" : `dir:${app.folder?.dir ?? ""}`;
+    untrack(() => exifState.setScope(scope));
+  });
+
   // EXIF mode edits what the grid had selected (or focused). The panes are
   // mounted individually, so the shell owns the effect that keeps the rail
   // fed — the same one-per-frame path list the assembled mode used, JPEG
@@ -227,7 +241,8 @@
   // is compared against what was last loaded so a streamed grid reassigning
   // its array on every batch does not re-read the same frames again and
   // again. Leaving the mode clears the rail but keeps the drafts: they are
-  // committed-but-unwritten work, and ⌘S is what lets go of them.
+  // committed-but-unwritten work, and ⌘S is what lets go of them — unless the
+  // folder context changes underneath them, which the effect above handles.
   let lastExifKey = "";
   $effect(() => {
     if (shell.mode !== "exif") {
@@ -543,6 +558,15 @@
       if (e.key === "Escape") (e.target as HTMLElement).blur();
       return;
     }
+    // The map wrap (data-keys="map") claims its own keys — f, −/+, ⏎ — and
+    // stops their propagation, so anything arriving here from inside it is
+    // unclaimed and the global chords must keep working: ⌘Z, ⌃1, /, ?, Esc in
+    // one press, and ⏎ for the geotag confirm, which the wrap deliberately
+    // lets bubble while the dialog is up. Two keys stay out of the keymap
+    // there: Tab, because it is the only way the pins are reached at all, and
+    // the arrows, which are the map's no-op rather than a licence to drive
+    // the hidden grid's focus from a screen that does not show it.
+    if (inMapRegion(e.target) && (e.key === "Tab" || e.key.startsWith("Arrow"))) return;
     // Compare owns the keyboard while it is up: its keys are its own, not the
     // grid's underneath. Anything it does not claim — modifier chords included,
     // which would open the palette under the overlay and strand its focus — is

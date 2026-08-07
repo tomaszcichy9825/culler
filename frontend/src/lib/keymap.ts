@@ -180,3 +180,19 @@ export function ownsKeys(target: EventTarget | null): boolean {
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return true;
   return target.closest('[data-keys="local"]') !== null;
 }
+
+/**
+ * inMapRegion reports whether the event landed inside MAP's wrap, which is
+ * marked data-keys="map": a region whose own handler claims a handful of keys
+ * (f, −/+, ⏎) and stops their propagation, deliberately letting everything
+ * else bubble so the global chords keep working. It is distinct from
+ * data-keys="local", which exists so typing in a field does not trigger the
+ * keymap — the map is not a text input, and marking it local swallowed every
+ * unclaimed key: ⌘Z, ⌃1, /, ?, Esc-in-one-press and the geotag dialog's ⏎
+ * all died while the map held focus. The global listener processes whatever
+ * bubbles out of this region, with the few browser-default exceptions it
+ * names itself (Tab, which walks the pins).
+ */
+export function inMapRegion(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('[data-keys="map"]') !== null;
+}

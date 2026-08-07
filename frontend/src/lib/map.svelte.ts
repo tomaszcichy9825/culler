@@ -459,6 +459,13 @@ class MapState {
       this.frameIndex = 0;
     } catch (error) {
       if (seq !== this.#loadSeq) return;
+      // The claim taken on `dir` above only stands for a read that answered.
+      // A failed read hands it back — otherwise the guard would short-circuit
+      // every later run of the pane's effect, pinning the error on screen with
+      // no retry until the user navigated away. The pane's effect re-fires on
+      // each batch of a streamed scan, so the next batch (or the next visit)
+      // simply tries again.
+      this.dir = "";
       this.error = message(error);
       this.positions = [];
       this.total = 0;

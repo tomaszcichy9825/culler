@@ -421,6 +421,36 @@ class ExifState {
     this.plan = null;
   }
 
+  /** The folder context the current drafts were typed in. See setScope. */
+  #draftScope: string | null = null;
+
+  /**
+   * setScope names the folder context the editor is working in, and prunes
+   * every draft when that context changes. The rule: a draft survives rail
+   * reloads and mode switches WITHIN one context — that is what lets ⌘S pick
+   * up an edit made three frames ago — but never a change of context. Without
+   * the prune, switching folders in EXIF left the chip counting edits against
+   * files no longer on screen, and ⌘S wrote into the previous folder with
+   * only base filenames in the plan to say so.
+   *
+   * The context is a key the shell computes, not a path this module inspects:
+   * the open folder's dir, or the search scope while the search bar is up.
+   * Keying on the folder rather than the frame list is deliberate — arrowing
+   * around a folder reloads the rail without changing what the drafts belong
+   * to. The search is one context of its own because its results can span
+   * folders: drafts made across them are written together while it is open,
+   * and dropped together when it closes or a folder is opened, so a prune
+   * scoped to "the previous folder's paths" would still have left cross-folder
+   * strays behind. Every way into a folder — the tree, a search result, a
+   * session, a map pin, an import — funnels through the same app.folder
+   * change, so one key covers them all.
+   */
+  setScope(scope: string) {
+    if (this.#draftScope === scope) return;
+    this.#draftScope = scope;
+    this.discard();
+  }
+
   // ---- talking to the backend -----------------------------------------------
 
   /**
