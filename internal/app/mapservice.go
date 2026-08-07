@@ -191,7 +191,9 @@ type scopeFolder struct {
 //
 // Dir is set only when the whole scope is one folder, so the pane can name it;
 // a scope spanning folders has no single folder and leaves it empty. Total,
-// Positioned, Unpositioned and Unreadable count the named frames alone.
+// Positioned, Unpositioned and Unreadable count the named frames alone. A
+// folder that cannot be scanned costs the scope only its own frames, which are
+// counted unreadable; the rest of the scope is still read and plotted.
 //
 // Progress arrives on EventMapProgress against the scope's total as the reads
 // complete, folder by folder.
@@ -213,18 +215,25 @@ func (s *MapService) PositionsScope(refs []ScopeRef) (PositionsDTO, error) {
 	// Scan and filter each folder once, so the read pass below knows the scope's
 	// total before it reports any progress against it.
 	var folders []scopeFolder
-	total := 0
+	total, unreadable := 0, 0
 	for _, dir := range order {
-		info, err := os.Stat(dir)
-		if err != nil {
-			return PositionsDTO{}, fmt.Errorf("open folder: %w", err)
+		info, statErr := os.Stat(dir)
+		var groups []scan.PhotoGroup
+		var scanErr error
+		if statErr != nil {
+			scanErr = statErr
+		} else if !info.IsDir() {
+			scanErr = fmt.Errorf("%s is not a folder", dir)
+		} else {
+			groups, scanErr = scan.ScanDir(dir, s.app.Config().ScanConfig())
 		}
-		if !info.IsDir() {
-			return PositionsDTO{}, fmt.Errorf("%s is not a folder", dir)
-		}
-		groups, err := scan.ScanDir(dir, s.app.Config().ScanConfig())
-		if err != nil {
-			return PositionsDTO{}, fmt.Errorf("scan %s: %w", dir, err)
+		if scanErr != nil {
+			// One bad folder must not take the rest of the scope off the map.
+			// Its named frames could not be read, which is what Unreadable
+			// already says about a single file that would not open.
+			total += len(wanted[dir])
+			unreadable += len(wanted[dir])
+			continue
 		}
 		var selected []scan.PhotoGroup
 		for _, g := range groups {
@@ -236,7 +245,7 @@ func (s *MapService) PositionsScope(refs []ScopeRef) (PositionsDTO, error) {
 		total += len(selected)
 	}
 
-	out := PositionsDTO{Total: total, Frames: []PositionDTO{}}
+	out := PositionsDTO{Total: total, Unreadable: unreadable, Frames: []PositionDTO{}}
 	if len(order) == 1 {
 		out.Dir = order[0]
 	}
@@ -245,7 +254,9 @@ func (s *MapService) PositionsScope(refs []ScopeRef) (PositionsDTO, error) {
 		return out, nil
 	}
 
-	base := 0
+	// Frames in folders that could not be scanned are already accounted for,
+	// so progress starts past them and still reaches the scope's total.
+	base := unreadable
 	for _, f := range folders {
 		if len(f.groups) == 0 {
 			continue
