@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -205,7 +207,9 @@ func TestStandaloneDestination(t *testing.T) {
 		dest string
 		want bool
 	}{
-		{"/library/portraits", true},
+		// Absolute for the running platform: bare "/library" is not absolute
+		// where paths need a drive, which is exactly the function's point.
+		{filepath.VolumeName(os.TempDir()) + "/library/portraits", true},
 		{"~", true},
 		{"~/photos", true},
 		{"2026/portraits", false},

@@ -349,12 +349,8 @@ func TestReindexKeepsTheRowOfAnUnreadableFile(t *testing.T) {
 	}
 
 	// Rewritten, so the pass must re-read it — and unreadable, so it cannot.
-	locked := filepath.Join(root, "DSCF0002.RAF")
 	writeFrame(t, root, "DSCF0002", 150, 0, shotAt(9, 30))
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+	unreadable(t, filepath.Join(root, "DSCF0002.RAF"))
 
 	stats, err := s.Index(root, IndexOptions{})
 	if err != nil {

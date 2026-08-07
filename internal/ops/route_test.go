@@ -174,12 +174,11 @@ func TestRouteRefusesADestinationThatLosesEveryFolder(t *testing.T) {
 
 	// One live literal segment is a real destination and must still plan.
 	// The temp volume's drive prefix keeps the path absolute on Windows too.
-	vol := filepath.VolumeName(os.TempDir())
-	live, err := CopyTo{Dest: vol + "/{camera}/keepers", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+	live, err := CopyTo{Dest: dest("/{camera}/keepers"), Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
 	if err != nil {
 		t.Fatalf("refused a destination that still has a live folder: %v", err)
 	}
-	if want := filepath.FromSlash(vol + "/keepers/DSCF0001.RAF"); live[0].Dst != want {
+	if want := plannedAt("/keepers/DSCF0001.RAF"); live[0].Dst != want {
 		t.Errorf("planned %q, want %q", live[0].Dst, want)
 	}
 }
@@ -222,6 +221,18 @@ func TestExpandTemplateKeepsRelativeTemplatesRelative(t *testing.T) {
 
 /* ---- planning ---- */
 
+// vol makes the "/library" fixtures absolute on every platform: empty on
+// Unix, the temp drive ("C:") on Windows. Plans are pure, so none of these
+// paths have to exist.
+var vol = filepath.VolumeName(os.TempDir())
+
+// dest is a destination template as a user would write it.
+func dest(p string) string { return vol + p }
+
+// planned is an action's destination, which route builds with filepath.Join
+// and so carries the platform's separators.
+func plannedAt(p string) string { return filepath.FromSlash(vol + p) }
+
 func destPaths(actions []FileAction) []string {
 	out := make([]string, 0, len(actions))
 	for _, a := range actions {
@@ -244,19 +255,19 @@ func TestCopyToPlansTheSurvivingHalves(t *testing.T) {
 		want   []string
 	}{
 		{HalvesBoth, []string{
-			"/library/2026/DSCF0001.RAF",
-			"/library/2026/DSCF0001.JPG",
-			"/library/2026/DSCF0001.RAF.xmp",
+			plannedAt("/library/2026/DSCF0001.RAF"),
+			plannedAt("/library/2026/DSCF0001.JPG"),
+			plannedAt("/library/2026/DSCF0001.RAF.xmp"),
 		}},
 		{HalvesRAW, []string{
-			"/library/2026/DSCF0001.RAF",
-			"/library/2026/DSCF0001.RAF.xmp",
+			plannedAt("/library/2026/DSCF0001.RAF"),
+			plannedAt("/library/2026/DSCF0001.RAF.xmp"),
 		}},
 		// Sidecars belong to the RAW, so a JPEG-only import leaves them.
-		{HalvesJPEG, []string{"/library/2026/DSCF0001.JPG"}},
+		{HalvesJPEG, []string{plannedAt("/library/2026/DSCF0001.JPG")}},
 	}
 	for _, c := range cases {
-		actions, err := CopyTo{Dest: "/library/{date:2006}", Halves: c.halves}.Plan([]scan.PhotoGroup{g})
+		actions, err := CopyTo{Dest: dest("/library/{date:2006}"), Halves: c.halves}.Plan([]scan.PhotoGroup{g})
 		if err != nil {
 			t.Fatalf("%s: %v", c.halves, err)
 		}
@@ -280,7 +291,7 @@ func TestCopyToPlansTheSurvivingHalves(t *testing.T) {
 
 func TestCopyToKeepsTheSourcePaths(t *testing.T) {
 	g := datedGroup("/card")
-	actions, err := CopyTo{Dest: "/library", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{g})
+	actions, err := CopyTo{Dest: dest("/library"), Halves: HalvesBoth}.Plan([]scan.PhotoGroup{g})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,11 +307,11 @@ func TestCopyToTakesSidecarsWithAJPEGOnlyFrame(t *testing.T) {
 	g := jpegOnlyGroup("/card")
 	g.Sidecars = []scan.FileRef{{Path: "/card/IMG_0002.xmp"}}
 
-	actions, err := CopyTo{Dest: "/library", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{g})
+	actions, err := CopyTo{Dest: dest("/library"), Halves: HalvesBoth}.Plan([]scan.PhotoGroup{g})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/library/IMG_0002.JPG", "/library/IMG_0002.xmp"}
+	want := []string{plannedAt("/library/IMG_0002.JPG"), plannedAt("/library/IMG_0002.xmp")}
 	got := destPaths(actions)
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("a frame with no RAW still takes its sidecar: got %v, want %v", got, want)
@@ -308,7 +319,7 @@ func TestCopyToTakesSidecarsWithAJPEGOnlyFrame(t *testing.T) {
 }
 
 func TestMoveToPlansMoves(t *testing.T) {
-	actions, err := MoveTo{Dest: "/library", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+	actions, err := MoveTo{Dest: dest("/library"), Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +333,7 @@ func TestMoveToPlansMoves(t *testing.T) {
 func TestRoutingAsksForMetadataOnlyOncePerFrame(t *testing.T) {
 	calls := 0
 	op := CopyTo{
-		Dest:   "/library/{camera}",
+		Dest:   dest("/library/{camera}"),
 		Halves: HalvesBoth,
 		Metadata: func(scan.PhotoGroup) (string, string) {
 			calls++
@@ -336,17 +347,17 @@ func TestRoutingAsksForMetadataOnlyOncePerFrame(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("read metadata %d times for one frame, want 1", calls)
 	}
-	if actions[0].Dst != "/library/X-T5/DSCF0001.RAF" {
+	if actions[0].Dst != plannedAt("/library/X-T5/DSCF0001.RAF") {
 		t.Errorf("planned %q", actions[0].Dst)
 	}
 }
 
 func TestRoutingWithoutMetadataCollapsesTheSegment(t *testing.T) {
-	actions, err := CopyTo{Dest: "/library/{camera}", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+	actions, err := CopyTo{Dest: dest("/library/{camera}"), Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actions[0].Dst != "/library/DSCF0001.RAF" {
+	if actions[0].Dst != plannedAt("/library/DSCF0001.RAF") {
 		t.Errorf("planned %q, want the camera segment gone", actions[0].Dst)
 	}
 }

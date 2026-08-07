@@ -26,6 +26,19 @@ jobs:
       - name: Test
         run: go test -race ./internal/...
 
+  test-windows:
+    name: Go tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./internal/...
+      - name: Test
+        run: go test ./internal/...
+
   build:
     name: App build (macOS)
     runs-on: macos-latest

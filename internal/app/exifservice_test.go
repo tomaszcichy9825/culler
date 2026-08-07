@@ -802,10 +802,7 @@ func TestExifApplyFailedBackupSkipsTheInstall(t *testing.T) {
 	if err := os.MkdirAll(svc.backupDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(svc.backupDir(), 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(svc.backupDir(), 0o755) })
+	unwritableDir(t, svc.backupDir())
 
 	batch, err := svc.Apply([]ExifEditDTO{{Path: jpg, Artist: str("Someone")}})
 	if err == nil {
