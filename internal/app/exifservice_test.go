@@ -14,6 +14,21 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
 
+// strippedJPEG is a JPEG with no EXIF APP1 segment at all — what an editor's
+// "export without metadata" produces. There is nowhere in it to write.
+func strippedJPEG() []byte {
+	seg := func(marker byte, payload []byte) []byte {
+		out := []byte{0xFF, marker, 0, 0}
+		binary.BigEndian.PutUint16(out[2:], uint16(len(payload)+2))
+		return append(out, payload...)
+	}
+	out := []byte{0xFF, 0xD8}
+	out = append(out, seg(0xE0, append([]byte("JFIF\x00"), 1, 2, 0, 0, 1, 0, 1, 0, 0))...)
+	out = append(out, seg(0xDA, []byte{1, 0, 0, 0, 63, 0})...)
+	out = append(out, 0xAB, 0xCD, 0xEF)
+	return append(out, 0xFF, 0xD9)
+}
+
 // jpegFixture builds a small but complete JPEG carrying an EXIF APP1 with
 // Make, Artist and DateTimeOriginal, an ICC segment and an entropy-coded
 // stream. The service tests need a real file to edit, and a real camera is not
@@ -386,6 +401,75 @@ func TestExifSetGPSWritesSidecarForRAW(t *testing.T) {
 	}
 }
 
+// A sidecar that already exists belongs to whoever wrote it. An edit merges
+// into it — Lightroom's rating, its keywords, an earlier culler edit — rather
+// than replacing the file with a fresh document that knows none of them.
+func TestExifApplyMergesIntoAnExistingSidecar(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	raf := filepath.Join(dir, "DSCF0002.RAF")
+	const foreign = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 6.0">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:Rating>4</xmp:Rating>
+      <dc:subject>
+        <rdf:Bag>
+          <rdf:li>gulls</rdf:li>
+        </rdf:Bag>
+      </dc:subject>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+`
+	if err := os.WriteFile(raf+".xmp", []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path:   raf,
+		SetGPS: &GPSCoordDTO{Latitude: 51.5066667, Longitude: -0.1275},
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	sidecar, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<xmp:Rating>4</xmp:Rating>", "<rdf:li>gulls</rdf:li>", "<exif:GPSLatitude>"} {
+		if !bytes.Contains(sidecar, []byte(want)) {
+			t.Errorf("merged sidecar is missing %q:\n%s", want, sidecar)
+		}
+	}
+}
+
+func TestExifApplySuccessiveEditsAccumulateInTheSidecar(t *testing.T) {
+	a := testApp(t)
+	raf := filepath.Join(frames(t), "DSCF0002.RAF")
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{Path: raf, Artist: str("Tomasz Cichy")}}); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{Path: raf, Copyright: str("© 2026")}}); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+
+	sidecar, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(sidecar, []byte("Tomasz Cichy")) {
+		t.Errorf("the second edit destroyed the first:\n%s", sidecar)
+	}
+	if !bytes.Contains(sidecar, []byte("© 2026")) {
+		t.Errorf("the second edit did not land:\n%s", sidecar)
+	}
+}
+
 func TestExifSetGPSRejectsAnImpossibleLocation(t *testing.T) {
 	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
 	_, err := NewExifService(testApp(t)).Apply([]ExifEditDTO{{
@@ -405,6 +489,181 @@ func TestExifSetGPSRejectsAnAbsurdAltitude(t *testing.T) {
 	}})
 	if err == nil {
 		t.Error("an altitude that would wrap the uint32 encoder was accepted")
+	}
+}
+
+// jpegFixture's capture time carries no offset tag, and the camera that wrote
+// it never said which zone it was in. Editing the time must not invent one:
+// the form shows the wall clock without a zone, an edit sent back without one
+// writes no OffsetTimeOriginal, and the file reads back with the zone still
+// honestly unknown.
+func TestExifCaptureTimeWithoutAZoneStaysUnzoned(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	jpg := filepath.Join(dir, "DSCF0001.JPG")
+
+	read, err := NewExifService(a).Read([]string{jpg})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for _, f := range read[jpg].Fields {
+		if f.Tag == "DateTimeOriginal" && f.Value != "2026-08-03T19:42:07" {
+			t.Errorf("capture time = %q; a zone the file never recorded must not be shown", f.Value)
+		}
+	}
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path: jpg, DateTimeOriginal: str("2026-08-05T10:11:12"),
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	f, err := exif.Read(jpg)
+	if err != nil {
+		t.Fatalf("exif.Read: %v", err)
+	}
+	if !f.DateTimeOriginal.Present {
+		t.Fatal("the new capture time did not land")
+	}
+	if got := f.DateTimeOriginal.Value.Format("2006-01-02T15:04:05"); got != "2026-08-05T10:11:12" {
+		t.Errorf("capture time = %s, want 2026-08-05T10:11:12", got)
+	}
+	if f.DateTimeOriginal.HasOffset {
+		t.Errorf("an offset %q was invented for a frame whose zone was never recorded", f.DateTimeOriginal.Offset)
+	}
+}
+
+// A time typed with an offset keeps it: the user stated the zone, so it is a
+// fact the file can carry.
+func TestExifCaptureTimeWithAZoneWritesTheOffset(t *testing.T) {
+	a := testApp(t)
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path: jpg, DateTimeOriginal: str("2026-08-05T10:11:12+02:00"),
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	f, err := exif.Read(jpg)
+	if err != nil {
+		t.Fatalf("exif.Read: %v", err)
+	}
+	if !f.DateTimeOriginal.HasOffset || f.DateTimeOriginal.Offset != "+02:00" {
+		t.Errorf("offset = %q (has %v), want +02:00", f.DateTimeOriginal.Offset, f.DateTimeOriginal.HasOffset)
+	}
+}
+
+// A frame the writer will refuse — a JPEG with no EXIF segment to write into
+// — must be discovered when the plan is made, not after the user has
+// confirmed it: the plan shows the frame skipped with the reason, and the
+// apply writes the frames that can be written.
+func TestExifPlanSkipsAFrameThatCannotBeRewritten(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	good := filepath.Join(dir, "DSCF0001.JPG")
+	raf := filepath.Join(dir, "DSCF0002.RAF")
+	bad := filepath.Join(dir, "DSCF0003.JPG")
+	if err := os.WriteFile(bad, strippedJPEG(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edits := []ExifEditDTO{
+		{Path: good, Artist: str("Tomasz Cichy")},
+		{Path: bad, Artist: str("Tomasz Cichy")},
+		{Path: raf, Artist: str("Tomasz Cichy")},
+	}
+
+	plan, err := NewExifService(a).Plan(edits)
+	if err != nil {
+		t.Fatalf("one unwritable frame must not fail the whole plan: %v", err)
+	}
+	methods := map[string]string{}
+	for _, row := range plan.Rows {
+		methods[row.Target] = row.Method
+	}
+	if methods["DSCF0003.JPG"] != "skipped" {
+		t.Errorf("the unwritable frame's method = %q, want skipped", methods["DSCF0003.JPG"])
+	}
+	if methods["DSCF0001.JPG"] != "in place" || methods["DSCF0002.RAF.xmp"] != "sidecar" {
+		t.Errorf("the writable frames were dragged down: %v", methods)
+	}
+	reasoned := false
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "DSCF0003.JPG") {
+			reasoned = true
+		}
+	}
+	if !reasoned {
+		t.Errorf("the plan does not say why the frame is skipped: %v", plan.Warnings)
+	}
+
+	before, err := os.ReadFile(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := NewExifService(a).Apply(edits)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for _, act := range batch.Actions {
+		if act.Outcome != journal.OutcomeOK {
+			t.Errorf("action failed: %+v", act)
+		}
+	}
+	edited, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(edited, []byte("Tomasz Cichy")) {
+		t.Error("the writable JPEG was not written")
+	}
+	if _, err := os.Lstat(raf + ".xmp"); err != nil {
+		t.Error("the writable RAW's sidecar was not written")
+	}
+	after, err := os.ReadFile(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the unwritable frame was written to anyway")
+	}
+}
+
+// A sidecar that does not parse refuses its frame at plan time and is never
+// written over — a file whose contents cannot be read cannot be promised to
+// survive a merge.
+func TestExifPlanRefusesToOverwriteAnUnreadableSidecar(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	raf := filepath.Join(dir, "DSCF0002.RAF")
+	garbage := []byte("<not xml \x00\x01\x02 at all")
+	if err := os.WriteFile(raf+".xmp", garbage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edits := []ExifEditDTO{{Path: raf, Artist: str("Tomasz Cichy")}}
+
+	plan, err := NewExifService(a).Plan(edits)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	skipped := false
+	for _, row := range plan.Rows {
+		if row.Target == "DSCF0002.RAF.xmp" && row.Method == "skipped" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("the frame with the unreadable sidecar is not skipped: %+v", plan.Rows)
+	}
+
+	if _, err := NewExifService(a).Apply(edits); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	after, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(garbage, after) {
+		t.Errorf("the unreadable sidecar was written over:\n%s", after)
 	}
 }
 

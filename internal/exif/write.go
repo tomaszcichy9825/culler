@@ -18,12 +18,13 @@ import (
 // frame, empty leaves them alone" — so it is modelled here rather than guessed
 // at by each caller.
 //
-// Writing DateTimeOriginal also writes OffsetTimeOriginal from the time's own
-// zone, and writes or clears SubSecTimeOriginal to match its fraction. A time
-// written without its offset is ambiguous, and a sub-second left behind from
-// the old value would silently qualify the new one.
+// Writing DateTimeOriginal also writes or removes the two tags that qualify
+// it: OffsetTimeOriginal follows the CaptureTime's own rule, and
+// SubSecTimeOriginal is written or cleared to match the fraction — a
+// sub-second left behind from the old value would silently qualify the new
+// one.
 type Changes struct {
-	DateTimeOriginal *time.Time
+	DateTimeOriginal *CaptureTime
 	Artist           *string
 	Copyright        *string
 	StripGPS         bool
@@ -31,6 +32,19 @@ type Changes struct {
 	// has none. It wins over StripGPS: a caller that asked for both meant to set
 	// the location it just chose, and losing that is the worse surprise.
 	SetGPS *GPSCoord
+}
+
+// CaptureTime is a value for DateTimeOriginal. HasOffset says whether the
+// time's zone is a recorded fact. When it is, OffsetTimeOriginal is written
+// from Value's own zone; when it is not — a frame whose file never carried an
+// offset, edited by a user who did not state one — no offset tag is written
+// and any OffsetTimeOriginal already in the file is removed, because an old
+// zone would qualify the new time with a fact nobody stated. The reader keeps
+// the same distinction the other way round, so a zone-unknown time survives a
+// round trip as exactly that.
+type CaptureTime struct {
+	Value     time.Time
+	HasOffset bool
 }
 
 // GPSCoord is a location to write: decimal degrees, signed by hemisphere, with
@@ -244,7 +258,7 @@ func (ed *editor) applyGPS(g GPSCoord) error {
 	}
 	gpsOff := ed.pointerOf(d, tagGPSIFD)
 	if gpsOff == 0 {
-		created, err := ed.newIFD(nil, changes, 0)
+		created, err := ed.newIFD(nil, additionsOnly(changes), 0)
 		if err != nil {
 			return err
 		}
@@ -278,12 +292,19 @@ func (ed *editor) editIFD0(changes []change) error {
 
 // applyTimes writes DateTimeOriginal and the two tags that qualify it into the
 // EXIF IFD, creating that directory if the file has none.
-func (ed *editor) applyTimes(when time.Time) error {
+func (ed *editor) applyTimes(when CaptureTime) error {
 	changes := []change{
-		asciiChange(tagDateTimeOriginal, when.Format(exifTimeLayout)),
-		asciiChange(tagOffsetTimeOriginal, formatOffset(when)),
+		asciiChange(tagDateTimeOriginal, when.Value.Format(exifTimeLayout)),
 	}
-	if sub := formatSubSec(when); sub != "" {
+	if when.HasOffset {
+		changes = append(changes, asciiChange(tagOffsetTimeOriginal, formatOffset(when.Value)))
+	} else {
+		// The zone is not known, so no offset is written — and an offset left
+		// over from the old time would qualify the new one with a fact nobody
+		// stated, the same hazard as a stale sub-second.
+		changes = append(changes, change{tag: tagOffsetTimeOriginal, del: true})
+	}
+	if sub := formatSubSec(when.Value); sub != "" {
 		changes = append(changes, asciiChange(tagSubSecTimeOriginal, sub))
 	} else {
 		// A sub-second left over from the old value would qualify the new one.
@@ -296,7 +317,7 @@ func (ed *editor) applyTimes(when time.Time) error {
 	}
 	exifOff := ed.pointerOf(d, tagExifIFD)
 	if exifOff == 0 {
-		created, err := ed.newIFD(nil, changes, 0)
+		created, err := ed.newIFD(nil, additionsOnly(changes), 0)
 		if err != nil {
 			return err
 		}
@@ -311,6 +332,21 @@ func (ed *editor) applyTimes(when time.Time) error {
 		return ed.editIFD0([]change{ed.longChange(tagExifIFD, moved)})
 	}
 	return nil
+}
+
+// additionsOnly drops the deletions from a set of changes. A directory being
+// created from nothing has nothing to delete, and a deletion serialised anyway
+// would land as a type-0, count-0 entry a strict reader treats as corruption.
+// applyTo filters deletions itself; this is for the call sites that hand a raw
+// change set straight to newIFD.
+func additionsOnly(changes []change) []change {
+	out := make([]change, 0, len(changes))
+	for _, ch := range changes {
+		if !ch.del {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // applyTo edits the IFD at off and returns where it now lives. An edit that
@@ -383,6 +419,14 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 		return nil
 	}
 	old := d.entries[index]
+	// The old value's out-of-line bytes, cleared below once nothing points at
+	// them any more. A value that merely became unreachable would still be
+	// sitting in the file for anyone with a hex editor — the same reasoning
+	// that has eraseGPS zero the coordinates, applied to every replacement.
+	var stale span
+	if !old.inline && old.span != nil {
+		stale = span{at: old.at, length: uint32(len(old.span))}
+	}
 
 	var inline [4]byte
 	switch {
@@ -397,6 +441,7 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 			ed.buf[i] = 0
 		}
 		ed.order.PutUint32(inline[:], at)
+		stale = span{} // the old span now holds the new value
 	default:
 		at, err := ed.appendBlob(ch.data)
 		if err != nil {
@@ -411,6 +456,12 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 	ed.order.PutUint16(p[2:], ch.typ)
 	ed.order.PutUint32(p[4:], ch.count)
 	copy(p[8:12], inline[:])
+
+	// With the entry repointed, the old span is unreachable unless a second
+	// entry shares those bytes, in which case they are the survivor's to keep.
+	if stale.length > 0 && !overlapsAny(stale.at, stale.length, ed.reachableSpans(0)) {
+		ed.zero(stale.at, stale.length)
+	}
 	return nil
 }
 
@@ -545,8 +596,8 @@ func (ed *editor) reachableSpans(skip uint32) []span {
 			if !e.inline && e.span != nil {
 				out = append(out, span{at: e.at, length: uint32(len(e.span))})
 			}
-			if e.tag == tagExifIFD {
-				queue = append(queue, ed.pointerOf(d, tagExifIFD))
+			if e.tag == tagExifIFD || e.tag == tagGPSIFD {
+				queue = append(queue, ed.pointerOf(d, e.tag))
 			}
 		}
 		if d.next != 0 {
@@ -700,58 +751,129 @@ func formatSubSec(t time.Time) string {
 
 // --- XMP --------------------------------------------------------------------
 
-// RenderXMP builds a minimal, well-formed XMP sidecar carrying the changes. It
-// is what a RAW frame gets instead of a rewrite: the RAW itself is never
-// opened for writing, so the edit lives beside it in a file every other tool
-// already knows how to read.
-//
-// Only the fields this package writes appear. A sidecar is not a copy of the
-// frame's metadata and does not pretend to be one.
-func RenderXMP(c Changes) []byte {
-	var b strings.Builder
-	b.WriteString("<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n")
-	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="culler">` + "\n")
-	b.WriteString(`  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
-	b.WriteString(`    <rdf:Description rdf:about=""` + "\n")
-	b.WriteString(`        xmlns:dc="http://purl.org/dc/elements/1.1/"` + "\n")
-	b.WriteString(`        xmlns:exif="http://ns.adobe.com/exif/1.0/"` + "\n")
-	b.WriteString(`        xmlns:xmp="http://ns.adobe.com/xap/1.0/">` + "\n")
+// The namespaces the sidecar properties live in, and the RDF namespace whose
+// Seq and Alt containers structure two of them.
+const (
+	nsDC       = "http://purl.org/dc/elements/1.1/"
+	nsEXIF     = "http://ns.adobe.com/exif/1.0/"
+	nsXMPBasic = "http://ns.adobe.com/xap/1.0/"
+)
 
+// XMPProperty is one property of a frame's sidecar this package writes: the
+// namespace and name that identify it, and its content. The list a Changes
+// produces is the single statement of what an edit means in XMP \u2014 RenderXMP
+// serialises it into a fresh document, and internal/xmpexport splices it into
+// a sidecar that already exists, so the two can never say different things.
+type XMPProperty struct {
+	// Space is the namespace URI, Local the property name within it.
+	Space, Local string
+	// Inner renders the element's content given the prefix the target
+	// document binds the RDF namespace to \u2014 the one foreign namespace a value
+	// nests, for the Seq and Alt containers. Nil removes the property and
+	// writes nothing in its place.
+	Inner func(rdfPrefix string) string
+}
+
+// XMPProperties is the sidecar rendering of the changes: only the properties
+// this edit touches, so merging one edit into a sidecar leaves what an earlier
+// edit \u2014 or another tool \u2014 put there.
+func (c Changes) XMPProperties() []XMPProperty {
+	text := func(s string) func(string) string {
+		return func(string) string { return s }
+	}
+	var out []XMPProperty
 	if c.DateTimeOriginal != nil {
-		when := escapeXML(formatXMPTime(*c.DateTimeOriginal))
-		b.WriteString("      <exif:DateTimeOriginal>" + when + "</exif:DateTimeOriginal>\n")
-		b.WriteString("      <xmp:CreateDate>" + when + "</xmp:CreateDate>\n")
+		when := text(escapeXML(formatXMPTime(*c.DateTimeOriginal)))
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "DateTimeOriginal", Inner: when},
+			XMPProperty{Space: nsXMPBasic, Local: "CreateDate", Inner: when},
+		)
 	}
-	if c.Artist != nil && *c.Artist != "" {
-		b.WriteString("      <dc:creator>\n        <rdf:Seq>\n")
-		b.WriteString("          <rdf:li>" + escapeXML(*c.Artist) + "</rdf:li>\n")
-		b.WriteString("        </rdf:Seq>\n      </dc:creator>\n")
+	if c.Artist != nil {
+		p := XMPProperty{Space: nsDC, Local: "creator"}
+		if *c.Artist != "" {
+			name := escapeXML(*c.Artist)
+			p.Inner = func(rdf string) string {
+				return fmt.Sprintf("<%s:Seq><%s:li>%s</%s:li></%s:Seq>", rdf, rdf, name, rdf, rdf)
+			}
+		}
+		out = append(out, p)
 	}
-	if c.Copyright != nil && *c.Copyright != "" {
-		b.WriteString("      <dc:rights>\n        <rdf:Alt>\n")
-		b.WriteString(`          <rdf:li xml:lang="x-default">` + escapeXML(*c.Copyright) + "</rdf:li>\n")
-		b.WriteString("        </rdf:Alt>\n      </dc:rights>\n")
+	if c.Copyright != nil {
+		p := XMPProperty{Space: nsDC, Local: "rights"}
+		if *c.Copyright != "" {
+			rights := escapeXML(*c.Copyright)
+			p.Inner = func(rdf string) string {
+				return fmt.Sprintf(`<%s:Alt><%s:li xml:lang="x-default">%s</%s:li></%s:Alt>`, rdf, rdf, rights, rdf, rdf)
+			}
+		}
+		out = append(out, p)
 	}
-	if c.SetGPS != nil {
+	switch {
+	case c.SetGPS != nil:
 		// The sidecar is where a RAW frame's location lives: the RAW is never
 		// rewritten, so the position it should carry is written beside it in the
 		// form every other tool reads, "degrees,decimal-minutes" with the
 		// hemisphere letter.
-		b.WriteString("      <exif:GPSLatitude>" + xmpCoord(c.SetGPS.Latitude, "N", "S") + "</exif:GPSLatitude>\n")
-		b.WriteString("      <exif:GPSLongitude>" + xmpCoord(c.SetGPS.Longitude, "E", "W") + "</exif:GPSLongitude>\n")
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "GPSLatitude", Inner: text(xmpCoord(c.SetGPS.Latitude, "N", "S"))},
+			XMPProperty{Space: nsEXIF, Local: "GPSLongitude", Inner: text(xmpCoord(c.SetGPS.Longitude, "E", "W"))},
+		)
 		if c.SetGPS.HasAltitude {
 			alt, ref := c.SetGPS.Altitude, "0"
 			if alt < 0 {
 				alt, ref = -alt, "1"
 			}
-			b.WriteString(fmt.Sprintf("      <exif:GPSAltitude>%d/100</exif:GPSAltitude>\n", int64(math.Round(alt*100))))
-			b.WriteString("      <exif:GPSAltitudeRef>" + ref + "</exif:GPSAltitudeRef>\n")
+			out = append(out,
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitude", Inner: text(fmt.Sprintf("%d/100", int64(math.Round(alt*100))))},
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitudeRef", Inner: text(ref)},
+			)
+		} else {
+			// No altitude with the new position, so any altitude the sidecar
+			// already carried must go \u2014 a leftover would silently qualify the
+			// new coordinates.
+			out = append(out,
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitude"},
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitudeRef"},
+			)
 		}
-	} else if c.StripGPS {
+	case c.StripGPS:
 		// A sidecar cannot remove what is inside the RAW, so it records the
 		// intent as an empty position rather than claiming the file was edited.
-		b.WriteString("      <exif:GPSLatitude></exif:GPSLatitude>\n")
-		b.WriteString("      <exif:GPSLongitude></exif:GPSLongitude>\n")
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "GPSLatitude", Inner: text("")},
+			XMPProperty{Space: nsEXIF, Local: "GPSLongitude", Inner: text("")},
+		)
+	}
+	return out
+}
+
+// RenderXMP builds a minimal, well-formed XMP sidecar carrying the changes. It
+// is what a RAW frame gets instead of a rewrite when no sidecar exists yet:
+// the RAW itself is never opened for writing, so the edit lives beside it in a
+// file every other tool already knows how to read. A sidecar that does exist
+// is merged into instead \u2014 see internal/xmpexport.
+//
+// Only the fields this package writes appear. A sidecar is not a copy of the
+// frame's metadata and does not pretend to be one.
+func RenderXMP(c Changes) []byte {
+	prefixes := map[string]string{nsDC: "dc", nsEXIF: "exif", nsXMPBasic: "xmp"}
+
+	var b strings.Builder
+	b.WriteString("<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n")
+	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="culler">` + "\n")
+	b.WriteString(`  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
+	b.WriteString(`    <rdf:Description rdf:about=""` + "\n")
+	b.WriteString(`        xmlns:dc="` + nsDC + `"` + "\n")
+	b.WriteString(`        xmlns:exif="` + nsEXIF + `"` + "\n")
+	b.WriteString(`        xmlns:xmp="` + nsXMPBasic + `">` + "\n")
+
+	for _, p := range c.XMPProperties() {
+		if p.Inner == nil {
+			continue // a removal has nothing to remove from a fresh document
+		}
+		name := prefixes[p.Space] + ":" + p.Local
+		b.WriteString("      <" + name + ">" + p.Inner("rdf") + "</" + name + ">\n")
 	}
 
 	b.WriteString("    </rdf:Description>\n  </rdf:RDF>\n</x:xmpmeta>\n")
@@ -772,12 +894,17 @@ func xmpCoord(v float64, pos, neg string) string {
 }
 
 // formatXMPTime is the ISO 8601 rendering XMP asks for, keeping the fraction
-// only when there is one.
-func formatXMPTime(t time.Time) string {
-	if t.Nanosecond() == 0 {
-		return t.Format("2006-01-02T15:04:05-07:00")
+// only when there is one and the zone only when it is a recorded fact — XMP's
+// date form makes the time zone optional for exactly this case.
+func formatXMPTime(t CaptureTime) string {
+	layout := "2006-01-02T15:04:05"
+	if t.Value.Nanosecond() != 0 {
+		layout += ".999999999"
 	}
-	return t.Format("2006-01-02T15:04:05.999999999-07:00")
+	if t.HasOffset {
+		layout += "-07:00"
+	}
+	return t.Value.Format(layout)
 }
 
 // escapeXML escapes what a user typed into a form. A copyright line with an

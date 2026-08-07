@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
+	"github.com/tomaszcichy9825/culler/internal/exif"
 )
 
 const (
@@ -38,17 +39,23 @@ type field struct {
 	value string
 }
 
-// ours reports whether a local name in the XMP basic namespace is one of the
-// two fields this package writes. Everything else in that namespace —
-// xmp:CreatorTool, xmp:ModifyDate — belongs to whoever put it there.
-func ours(local string) bool {
-	return local == "Rating" || local == "Label"
-}
-
 // element renders the field under a prefix. Both values come from a closed set
 // — an integer and one of two colour names — so there is nothing to escape.
 func (f field) element(prefix string) string {
 	return fmt.Sprintf("<%s:%s>%s</%s:%s>", prefix, f.name, f.value, prefix, f.name)
+}
+
+// Property is one XMP property a merge owns, identified by namespace URI and
+// local name. Every owned property is removed from the existing sidecar
+// wherever it appears — element form or attribute form — and Render, when it
+// is not nil, produces the inner XML of the element written in its place.
+// Render's prefix argument reports what the target block binds a namespace
+// to, declaring a fresh binding when the file has none, so nested containers
+// like rdf:Seq come out in the file's own prefixes.
+type Property struct {
+	Space string
+	Local string
+	Render func(prefix func(uri string) string) string
 }
 
 // fields is what a record exports as, in the order it is written. A record
@@ -80,34 +87,91 @@ type description struct {
 	start, startEnd int // the span of its start tag
 	endAt           int // where its end tag begins, -1 when self-closing
 	selfClosing     bool
-	// prefix is what our namespace is already bound to in this block's scope,
-	// empty when it is not bound at all.
-	prefix string
+	// scope is the namespace bindings visible inside this block, innermost
+	// last, so a splice can write fields in the prefixes the file itself uses.
+	scope []map[string]string
 	// taken is every prefix bound in that scope, so a new binding does not
 	// steal a name the file is already using for something else.
 	taken map[string]bool
 }
 
-// Merge returns existing with our fields replaced by the record's, and every
-// other byte reproduced exactly.
-//
-// It works on the raw bytes rather than re-serialising a parse tree: an XMP
-// packet carries formatting, comments, unusual prefixes and namespaces this
-// app has never heard of, and a round trip through an encoder would quietly
-// rewrite all of it. The parser is used to find our fields — in element form
-// and in the attribute form Lightroom writes — and the bytes it points at are
-// the only ones that move.
+// Merge returns existing with our two decision fields replaced by the
+// record's, and every other byte reproduced exactly.
 //
 // A record with nothing in it removes our fields and adds none, which is how a
 // cleared decision leaves a foreign sidecar intact.
 func Merge(existing []byte, rec decide.Record) ([]byte, error) {
-	want := fields(rec)
-	edits, descs, err := survey(existing)
+	// Both fields are owned whether or not the record carries them, which is
+	// what makes an empty record a removal rather than a no-op.
+	props := []Property{
+		{Space: xmpNS, Local: "Rating"},
+		{Space: xmpNS, Local: "Label"},
+	}
+	for _, f := range fields(rec) {
+		value := f.value
+		for i := range props {
+			if props[i].Local == f.name {
+				// Values come from a closed set — an integer and two colour
+				// names — so there is nothing to escape.
+				props[i].Render = func(func(string) string) string { return value }
+			}
+		}
+	}
+	return MergeProperties(existing, props)
+}
+
+// MergeChanges merges a metadata edit into a sidecar that already exists: the
+// edit's properties replace their previous values and every other byte of the
+// file — Lightroom's develop settings, keywords, an earlier edit's fields —
+// is reproduced exactly. A sidecar this package cannot parse is refused, and
+// the caller must not write over it: a file whose contents cannot be read
+// cannot be promised to survive.
+func MergeChanges(existing []byte, c exif.Changes) ([]byte, error) {
+	var props []Property
+	for _, p := range c.XMPProperties() {
+		prop := Property{Space: p.Space, Local: p.Local}
+		if p.Inner != nil {
+			inner := p.Inner
+			prop.Render = func(prefix func(uri string) string) string {
+				return inner(prefix(rdfNS))
+			}
+		}
+		props = append(props, prop)
+	}
+	return MergeProperties(existing, props)
+}
+
+// MergeProperties returns existing with the owned properties replaced and
+// every other byte reproduced exactly.
+//
+// It works on the raw bytes rather than re-serialising a parse tree: an XMP
+// packet carries formatting, comments, unusual prefixes and namespaces this
+// app has never heard of, and a round trip through an encoder would quietly
+// rewrite all of it. The parser is used to find the owned properties — in
+// element form and in the attribute form Lightroom writes — and the bytes it
+// points at are the only ones that move.
+func MergeProperties(existing []byte, props []Property) ([]byte, error) {
+	owned := func(space, local string) bool {
+		for _, p := range props {
+			if p.Space == space && p.Local == local {
+				return true
+			}
+		}
+		return false
+	}
+	var want []Property
+	for _, p := range props {
+		if p.Render != nil {
+			want = append(want, p)
+		}
+	}
+
+	edits, descs, err := survey(existing, owned)
 	if err != nil {
 		return nil, err
 	}
 	if len(want) > 0 {
-		target, ok := insertionPoint(descs)
+		target, ok := insertionPoint(descs, want)
 		if !ok {
 			return nil, ErrNoDescription
 		}
@@ -116,9 +180,9 @@ func Merge(existing []byte, rec decide.Record) ([]byte, error) {
 	return apply(existing, edits)
 }
 
-// survey walks the packet, collecting the edits that remove our fields and the
-// description blocks that could hold them.
-func survey(data []byte) ([]edit, []description, error) {
+// survey walks the packet, collecting the edits that remove the owned
+// properties and the description blocks that could hold their replacements.
+func survey(data []byte, owned func(space, local string) bool) ([]edit, []description, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	var (
 		edits []edit
@@ -150,7 +214,7 @@ func survey(data []byte) ([]edit, []description, error) {
 		case xml.StartElement:
 			scope = append(scope, bindings(t))
 
-			if t.Name.Space == xmpNS && ours(t.Name.Local) {
+			if owned(t.Name.Space, t.Name.Local) {
 				if err := d.Skip(); err != nil {
 					return nil, nil, fmt.Errorf("%w: %v", ErrNotXMP, err)
 				}
@@ -171,10 +235,10 @@ func survey(data []byte) ([]edit, []description, error) {
 					startEnd:    end,
 					endAt:       -1,
 					selfClosing: bytes.HasSuffix(raw, []byte("/>")),
-					prefix:      prefixFor(scope, xmpNS),
+					scope:       append([]map[string]string(nil), scope...),
 					taken:       prefixes(scope),
 				})
-				for _, span := range ourAttributes(raw, scope) {
+				for _, span := range ownedAttributes(raw, scope, owned) {
 					edits = append(edits, edit{at: start + span.at, end: start + span.end})
 				}
 			}
@@ -197,12 +261,14 @@ func survey(data []byte) ([]edit, []description, error) {
 	return edits, descs, nil
 }
 
-// insertionPoint picks the block our fields go in: the first one that already
-// binds our namespace, otherwise the first block there is.
-func insertionPoint(descs []description) (description, bool) {
+// insertionPoint picks the block the properties go in: the first one that
+// already binds one of their namespaces, otherwise the first block there is.
+func insertionPoint(descs []description, want []Property) (description, bool) {
 	for _, d := range descs {
-		if d.prefix != "" {
-			return d, true
+		for _, p := range want {
+			if prefixFor(d.scope, p.Space) != "" {
+				return d, true
+			}
 		}
 	}
 	if len(descs) > 0 {
@@ -211,23 +277,49 @@ func insertionPoint(descs []description) (description, bool) {
 	return description{}, false
 }
 
-// splice builds the edits that put our fields into a description block: the
-// elements themselves, a namespace binding when the file has none, and the end
-// tag a self-closing block has to grow before it can hold anything.
-func splice(data []byte, d description, want []field) []edit {
-	prefix, declare := d.prefix, ""
-	if prefix == "" {
-		prefix = freePrefix(d.taken)
-		declare = fmt.Sprintf(` xmlns:%s="%s"`, prefix, xmpNS)
+// renderProperties produces the elements for the properties in the prefixes
+// the block binds, and the xmlns declarations for the namespaces it does not.
+func renderProperties(d description, want []Property) (elements []string, declare string) {
+	taken := map[string]bool{}
+	for p := range d.taken {
+		taken[p] = true
 	}
+	bound := map[string]string{}
+	var declared []string
+	prefix := func(uri string) string {
+		if p := prefixFor(d.scope, uri); p != "" {
+			return p
+		}
+		if p, ok := bound[uri]; ok {
+			return p
+		}
+		p := freePrefix(taken, suggestedPrefix(uri))
+		taken[p] = true
+		bound[uri] = p
+		declared = append(declared, fmt.Sprintf(` xmlns:%s="%s"`, p, uri))
+		return p
+	}
+
+	for _, pr := range want {
+		p := prefix(pr.Space)
+		elements = append(elements, fmt.Sprintf("<%s:%s>%s</%s:%s>", p, pr.Local, pr.Render(prefix), p, pr.Local))
+	}
+	return elements, strings.Join(declared, "")
+}
+
+// splice builds the edits that put the properties into a description block:
+// the elements themselves, namespace bindings when the file lacks them, and
+// the end tag a self-closing block has to grow before it can hold anything.
+func splice(data []byte, d description, want []Property) []edit {
+	elements, declare := renderProperties(d, want)
 
 	if d.selfClosing {
 		indent := lineIndent(data[:d.start])
 		var b strings.Builder
 		b.WriteString(declare)
 		b.WriteString(">")
-		for _, f := range want {
-			b.WriteString("\n" + indent + "  " + f.element(prefix))
+		for _, e := range elements {
+			b.WriteString("\n" + indent + "  " + e)
 		}
 		b.WriteString("\n" + indent + "</" + tagName(data[d.start:d.startEnd]) + ">")
 		// The "/>" is what turns into the rest of the block.
@@ -241,12 +333,12 @@ func splice(data []byte, d description, want []field) []edit {
 	if strings.Contains(ws, "\n") {
 		closing := ws[strings.LastIndexByte(ws, '\n')+1:]
 		indent := childIndent(data[d.startEnd:d.endAt], closing+"  ")
-		for _, f := range want {
-			b.WriteString("\n" + indent + f.element(prefix))
+		for _, e := range elements {
+			b.WriteString("\n" + indent + e)
 		}
 	} else {
-		for _, f := range want {
-			b.WriteString(f.element(prefix))
+		for _, e := range elements {
+			b.WriteString(e)
 		}
 	}
 	edits := []edit{{at: d.endAt - len(ws), end: d.endAt - len(ws), text: b.String()}}
@@ -322,18 +414,34 @@ func prefixes(scope []map[string]string) map[string]bool {
 	return out
 }
 
-// freePrefix is the name to bind our namespace to: "xmp" unless the file has
-// already used it for something else.
-func freePrefix(taken map[string]bool) string {
-	if !taken[defaultPrefix] {
-		return defaultPrefix
+// freePrefix is the name to bind a namespace to: the suggestion, unless the
+// file has already used it for something else.
+func freePrefix(taken map[string]bool, base string) string {
+	if !taken[base] {
+		return base
 	}
 	for n := 2; ; n++ {
-		candidate := defaultPrefix + strconv.Itoa(n)
+		candidate := base + strconv.Itoa(n)
 		if !taken[candidate] {
 			return candidate
 		}
 	}
+}
+
+// suggestedPrefix is the conventional prefix for a namespace this package may
+// have to declare, so a merged sidecar reads the way every other tool writes.
+func suggestedPrefix(uri string) string {
+	switch uri {
+	case xmpNS:
+		return defaultPrefix
+	case rdfNS:
+		return "rdf"
+	case "http://purl.org/dc/elements/1.1/":
+		return "dc"
+	case "http://ns.adobe.com/exif/1.0/":
+		return "exif"
+	}
+	return "ns"
 }
 
 // --- raw tag reading --------------------------------------------------------
@@ -341,23 +449,23 @@ func freePrefix(taken map[string]bool) string {
 // span is a byte range within a start tag.
 type span struct{ at, end int }
 
-// ourAttributes finds our fields written as attributes on a start tag, which
-// is the compact form Lightroom writes. The parser gives attribute values but
-// not where they sit, so the tag is read again here; it has already parsed, so
-// this reader only has to agree with it, not to validate it.
+// ownedAttributes finds owned properties written as attributes on a start
+// tag, which is the compact form Lightroom writes. The parser gives attribute
+// values but not where they sit, so the tag is read again here; it has already
+// parsed, so this reader only has to agree with it, not to validate it.
 //
 // The span returned takes the whitespace in front of the attribute with it, so
 // removing one does not leave a double space behind.
-func ourAttributes(tag []byte, scope []map[string]string) []span {
+func ownedAttributes(tag []byte, scope []map[string]string, owned func(space, local string) bool) []span {
 	var out []span
 	for _, a := range attributes(tag) {
 		prefix, local, ok := strings.Cut(a.name, ":")
 		// An unprefixed attribute is in no namespace at all, whatever default
-		// the element declares, so it can never be one of ours.
-		if !ok || prefix == "xmlns" || !ours(local) {
+		// the element declares, so it can never be an owned one.
+		if !ok || prefix == "xmlns" {
 			continue
 		}
-		if resolve(scope, prefix) == xmpNS {
+		if owned(resolve(scope, prefix), local) {
 			out = append(out, a.span)
 		}
 	}

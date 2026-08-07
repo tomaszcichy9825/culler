@@ -54,7 +54,7 @@ func TestRewriteJPEGLeavesEveryOtherByteAlone(t *testing.T) {
 func TestRewriteJPEGRoundTripsEveryWritableTag(t *testing.T) {
 	when := time.Date(2026, 8, 3, 19, 42, 7, 370000000, time.FixedZone("", 2*3600))
 	after, err := RewriteJPEG(jpegWith(fullTIFF(binary.LittleEndian)), Changes{
-		DateTimeOriginal: &when,
+		DateTimeOriginal: &CaptureTime{Value: when, HasOffset: true},
 		Artist:           ptr("Tomasz Cichy"),
 		Copyright:        ptr("© 2026 Tomasz Cichy"),
 	})
@@ -87,6 +87,71 @@ func TestRewriteJPEGRoundTripsEveryWritableTag(t *testing.T) {
 	}
 }
 
+// A frame whose file never recorded a zone must not gain one from an edit:
+// writing a zone-unknown time writes no OffsetTimeOriginal at all, and the
+// time reads back with the zone still honestly unknown.
+func TestRewriteJPEGDoesNotInventAZone(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	exifIFD := b.ifd([]tag{ascii(tagDateTimeOriginal, "2020:01:01 00:00:00")}, 0)
+	ifd0 := b.ifd([]tag{ascii(tagMake, "FUJIFILM"), b.long(tagExifIFD, exifIFD)}, 0)
+	before := jpegWith(b.done(ifd0))
+
+	when := time.Date(2026, 8, 5, 10, 11, 12, 0, time.UTC)
+	after, err := RewriteJPEG(before, Changes{DateTimeOriginal: &CaptureTime{Value: when}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+
+	f, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !f.DateTimeOriginal.Value.Equal(when) {
+		t.Errorf("DateTimeOriginal = %s, want %s", f.DateTimeOriginal.Value, when)
+	}
+	if f.DateTimeOriginal.HasOffset {
+		t.Errorf("an offset %q was invented for a frame that never had one", f.DateTimeOriginal.Offset)
+	}
+	for _, e := range directoryOf(t, after, tagExifIFD).entries {
+		if e.tag == tagOffsetTimeOriginal {
+			t.Error("OffsetTimeOriginal was written for a zone-unknown time")
+		}
+	}
+}
+
+// The reverse hazard: a file that does carry an offset, edited to a time whose
+// zone is unknown, must lose the old offset rather than keep a zone that now
+// qualifies a time nobody stated it for.
+func TestRewriteJPEGRemovesAStaleOffsetForAZoneUnknownTime(t *testing.T) {
+	when := time.Date(2026, 8, 5, 10, 11, 12, 0, time.UTC)
+	after, err := RewriteJPEG(jpegWith(fullTIFF(binary.LittleEndian)),
+		Changes{DateTimeOriginal: &CaptureTime{Value: when}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+	f, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if f.DateTimeOriginal.HasOffset {
+		t.Errorf("the old offset %q survived a zone-unknown edit", f.DateTimeOriginal.Offset)
+	}
+	if !f.DateTimeOriginal.Value.Equal(when) {
+		t.Errorf("DateTimeOriginal = %s, want %s", f.DateTimeOriginal.Value, when)
+	}
+}
+
+func TestRenderXMPWritesNoZoneForAZoneUnknownTime(t *testing.T) {
+	when := time.Date(2026, 8, 5, 10, 11, 12, 0, time.UTC)
+	doc := string(RenderXMP(Changes{DateTimeOriginal: &CaptureTime{Value: when}}))
+	if !strings.Contains(doc, ">2026-08-05T10:11:12<") {
+		t.Errorf("the wall clock is missing or carries a zone:\n%s", doc)
+	}
+	if strings.Contains(doc, "10:11:12Z") || strings.Contains(doc, "10:11:12+00:00") {
+		t.Errorf("a zone was invented in the sidecar:\n%s", doc)
+	}
+}
+
 // A MakerNote is a private blob full of offsets relative to the TIFF header.
 // The rewrite must not relocate it, or every camera vendor's own tool stops
 // being able to read it.
@@ -116,7 +181,7 @@ func TestRewriteJPEGAddsATagTheFileNeverHad(t *testing.T) {
 	after, err := RewriteJPEG(bare, Changes{
 		Artist:           ptr("Someone"),
 		Copyright:        ptr("Rights"),
-		DateTimeOriginal: &when,
+		DateTimeOriginal: &CaptureTime{Value: when, HasOffset: true},
 	})
 	if err != nil {
 		t.Fatalf("RewriteJPEG: %v", err)
@@ -153,6 +218,43 @@ func TestRewriteJPEGClearsATagWithAnEmptyValue(t *testing.T) {
 	}
 }
 
+// Replacing a string must clear the old value's bytes whichever way the new
+// one is stored — in the entry itself, over the old span, or appended at the
+// end of the block. A name shortened to an initial that leaves the full name
+// readable in a hex editor has not been replaced, the same way GPS that is
+// merely unhooked has not been stripped.
+func TestPatchClearsTheOldValueInEveryBranch(t *testing.T) {
+	cases := []struct {
+		name   string
+		artist string // the replacement; "Old Artist" is what fullTIFF carries
+	}{
+		{name: "shrinks into the entry", artist: "T"},
+		{name: "fits the old span", artist: "New Art"},
+		{name: "grows past the old span", artist: "a considerably longer artist string than before"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			after, err := RewriteJPEG(jpegWith(fullTIFF(binary.LittleEndian)), Changes{Artist: ptr(tc.artist)})
+			if err != nil {
+				t.Fatalf("RewriteJPEG: %v", err)
+			}
+			if bytes.Contains(after, []byte("Old Artist")) {
+				t.Error("the replaced value is still sitting in the file")
+			}
+			f, err := Parse(after)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if f.Artist.Value != tc.artist {
+				t.Errorf("Artist = %q, want %q", f.Artist.Value, tc.artist)
+			}
+			if f.Copyright.Value != "Old Copyright" || f.Model.Value != "X-T5" {
+				t.Errorf("clearing the old value damaged an unrelated tag: %+v", f)
+			}
+		})
+	}
+}
+
 func TestRewriteJPEGStripsGPSFromTheBytesNotJustThePointer(t *testing.T) {
 	before := jpegWith(fullTIFF(binary.BigEndian))
 	if !bytes.Contains(before, []byte("N\x00")) {
@@ -178,6 +280,91 @@ func TestRewriteJPEGStripsGPSFromTheBytesNotJustThePointer(t *testing.T) {
 	}
 	if f.Model.Value != "X-T5" || f.ISO.Value != 640 {
 		t.Errorf("stripping GPS damaged the rest: %+v", f)
+	}
+}
+
+// directoryOf re-reads a directory a rewrite left behind, straight from the
+// written bytes, so a test can assert on what a stricter reader than ours
+// would find there.
+func directoryOf(t *testing.T, jpeg []byte, pointerTag uint16) *directory {
+	t.Helper()
+	block := firstEXIFSegment(jpeg)
+	if block == nil {
+		t.Fatal("no EXIF segment in the written file")
+	}
+	r, ifd0Off, ok := newReader(block)
+	if !ok {
+		t.Fatal("the written TIFF block has no readable header")
+	}
+	ifd0, ok := r.readIFD(ifd0Off)
+	if !ok {
+		t.Fatal("the written IFD0 is unreadable")
+	}
+	off := r.pointer(ifd0, pointerTag)
+	if off == 0 {
+		t.Fatalf("IFD0 carries no pointer 0x%04X", pointerTag)
+	}
+	d, ok := r.readIFD(off)
+	if !ok {
+		t.Fatalf("the directory 0x%04X points at is unreadable", pointerTag)
+	}
+	return d
+}
+
+// Creating a directory from nothing must not serialise the deletions that ride
+// along with the additions — a location without an altitude deletes the two
+// altitude tags, and in a directory that never existed there is nothing to
+// delete. Serialising them anyway writes type-0, count-0 entries that a strict
+// reader treats as corruption.
+func TestCreatingAGPSIFDSerialisesNoDeletions(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	ifd0 := b.ifd([]tag{ascii(tagMake, "FUJIFILM")}, 0)
+	bare := jpegWith(b.done(ifd0))
+
+	after, err := RewriteJPEG(bare, Changes{SetGPS: &GPSCoord{
+		Latitude:    51.5066667,
+		Longitude:   -0.1275,
+		HasAltitude: false,
+	}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+
+	d := directoryOf(t, after, tagGPSIFD)
+	// Version, both references, both coordinates — and nothing else.
+	if len(d.entries) != 5 {
+		t.Errorf("created GPS IFD has %d entries, want 5", len(d.entries))
+	}
+	for _, e := range d.entries {
+		if e.typ == 0 || e.count == 0 {
+			t.Errorf("entry 0x%04X was written with type %d count %d — a deletion was serialised", e.tag, e.typ, e.count)
+		}
+		if e.tag == tagGPSAltitudeRef || e.tag == tagGPSAltitude {
+			t.Errorf("tag 0x%04X was written into a directory it was being deleted from", e.tag)
+		}
+	}
+}
+
+func TestCreatingAnExifIFDSerialisesNoDeletions(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	ifd0 := b.ifd([]tag{ascii(tagMake, "FUJIFILM")}, 0)
+	bare := jpegWith(b.done(ifd0))
+
+	// A whole second: the sub-second tag is a deletion, not a value.
+	when := time.Date(2026, 8, 3, 19, 42, 7, 0, time.FixedZone("", 2*3600))
+	after, err := RewriteJPEG(bare, Changes{DateTimeOriginal: &CaptureTime{Value: when, HasOffset: true}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+
+	d := directoryOf(t, after, tagExifIFD)
+	for _, e := range d.entries {
+		if e.typ == 0 || e.count == 0 {
+			t.Errorf("entry 0x%04X was written with type %d count %d — a deletion was serialised", e.tag, e.typ, e.count)
+		}
+		if e.tag == tagSubSecTimeOriginal {
+			t.Error("SubSecTimeOriginal was written into a directory it was being deleted from")
+		}
 	}
 }
 
@@ -246,7 +433,7 @@ func TestWriteJPEGReplacesInPlaceAndLeavesNoLitter(t *testing.T) {
 func TestRenderXMPIsWellFormedAndCarriesTheValues(t *testing.T) {
 	when := time.Date(2026, 8, 3, 19, 42, 7, 370000000, time.FixedZone("", 2*3600))
 	doc := RenderXMP(Changes{
-		DateTimeOriginal: &when,
+		DateTimeOriginal: &CaptureTime{Value: when, HasOffset: true},
 		Artist:           ptr("Tomasz Cichy"),
 		Copyright:        ptr("© 2026"),
 	})

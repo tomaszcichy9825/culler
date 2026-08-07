@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/ops"
 	"github.com/tomaszcichy9825/culler/internal/scan"
+	"github.com/tomaszcichy9825/culler/internal/xmpexport"
 )
 
 // Where the metadata writer keeps its two working directories, both inside the
@@ -64,8 +66,10 @@ type FrameExifDTO struct {
 // them alone" — carried all the way to the writer.
 type ExifEditDTO struct {
 	Path string `json:"path"`
-	// DateTimeOriginal is RFC3339. The offset it carries is written out as
-	// OffsetTimeOriginal, so a time never lands in the file unqualified.
+	// DateTimeOriginal is RFC3339, or the same shape with the offset left off
+	// for a frame whose zone is unknown. An offset it carries is written out as
+	// OffsetTimeOriginal; a time without one writes no offset tag at all,
+	// because the zone the file never recorded is not this app's to invent.
 	DateTimeOriginal *string `json:"dateTimeOriginal"`
 	Artist           *string `json:"artist"`
 	Copyright        *string `json:"copyright"`
@@ -280,17 +284,18 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 	backup := s.backupDir()
 	var actions []ops.FileAction
 	var installs []string
+	// One frame's failure is that frame's failure: the rest of the batch is
+	// still written, and the error comes back beside the batch rather than in
+	// front of it.
+	var frameErrs []error
 	for i, t := range targets {
 		if t.skip != "" {
 			continue
 		}
-		body, err := t.render()
-		if err != nil {
-			return BatchDTO{}, fmt.Errorf("%s: %w", filepath.Base(t.path), err)
-		}
 		staged := filepath.Join(staging, fmt.Sprintf("%03d-%s", i, filepath.Base(t.write)))
-		if err := exif.WriteFile(staged, body, t.mode); err != nil {
-			return BatchDTO{}, fmt.Errorf("stage %s: %w", filepath.Base(t.write), err)
+		if err := exif.WriteFile(staged, t.rendered, t.mode); err != nil {
+			frameErrs = append(frameErrs, fmt.Errorf("stage %s: %w", filepath.Base(t.write), err))
+			continue
 		}
 		// A file that is being replaced is moved aside first; a sidecar that
 		// does not exist yet has no original to keep. The install is tied to
@@ -310,7 +315,7 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 		installs = append(installs, t.write)
 	}
 	if len(actions) == 0 {
-		return BatchDTO{}, nil
+		return BatchDTO{}, errors.Join(frameErrs...)
 	}
 	if err := os.MkdirAll(backup, 0o755); err != nil {
 		return BatchDTO{}, fmt.Errorf("create backup directory: %w", err)
@@ -325,9 +330,9 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 	batch, applyErr := executor.Apply(plan.Description, actions)
 	dto := batchDTO(batch)
 	if applyErr != nil {
-		return dto, applyErr
+		return dto, errors.Join(append(frameErrs, applyErr)...)
 	}
-	return dto, checkInstalled(batch, installs)
+	return dto, errors.Join(append(frameErrs, checkInstalled(batch, installs))...)
 }
 
 // checkInstalled confirms every rewritten file landed on the path it was meant
@@ -367,12 +372,29 @@ type target struct {
 	change exif.Changes
 	rows   []ExifWriteRowDTO
 	skip   string // why this frame is being left alone, if it is
+	// rendered is the bytes that will replace the file, produced when the
+	// frame is resolved: a frame the writer would refuse — a JPEG with no
+	// EXIF segment, a sidecar that does not parse — has to surface in the
+	// plan the user confirms, not as a failure after they have.
+	rendered []byte
 }
 
-// render produces the bytes that will replace the target's file.
+// render produces the bytes that will replace the target's file. A RAW
+// frame's sidecar may already exist — written by Lightroom, by the XMP
+// export, or by an earlier edit here — and it belongs to whoever wrote it:
+// the edit is merged into it, and a sidecar that cannot be parsed refuses the
+// frame rather than being written over. Only a frame with no sidecar at all
+// gets a fresh document.
 func (t target) render() ([]byte, error) {
 	if t.raw {
-		return exif.RenderXMP(t.change), nil
+		existing, err := os.ReadFile(t.write)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return exif.RenderXMP(t.change), nil
+		case err != nil:
+			return nil, err
+		}
+		return xmpexport.MergeChanges(existing, t.change)
 	}
 	data, err := os.ReadFile(t.path)
 	if err != nil {
@@ -429,9 +451,26 @@ func resolveOne(edit ExifEditDTO, cfg scan.Config) (target, error) {
 		return target{}, err
 	}
 	if reason := writeBarrier(t); reason != "" {
-		t.skip, t.method = reason, "skipped"
+		t.markSkipped(reason)
+	}
+	if t.skip == "" && !t.change.Empty() {
+		body, err := t.render()
+		if err != nil {
+			t.markSkipped(err.Error())
+		} else {
+			t.rendered = body
+		}
 	}
 	return t, nil
+}
+
+// markSkipped records why the frame is being left alone, on the target and on
+// every plan row already drawn for it.
+func (t *target) markSkipped(reason string) {
+	t.skip, t.method = reason, "skipped"
+	for i := range t.rows {
+		t.rows[i].Method = "skipped"
+	}
 }
 
 // applyEdit fills in the changes and the plan rows they produce. A tag the
@@ -449,12 +488,12 @@ func (t *target) applyEdit(edit ExifEditDTO) error {
 			// with no time at all sorts nowhere and cannot be found again.
 			return errors.New("the capture time cannot be cleared, only changed")
 		}
-		when, err := time.Parse(time.RFC3339, *edit.DateTimeOriginal)
+		when, err := parseCaptureTime(*edit.DateTimeOriginal)
 		if err != nil {
 			return fmt.Errorf("capture time %q: %w", *edit.DateTimeOriginal, err)
 		}
 		t.change.DateTimeOriginal = &when
-		row("+", "DateTimeOriginal", when.Format(time.RFC3339))
+		row("+", "DateTimeOriginal", renderCaptureTime(when))
 	}
 	if edit.Artist != nil {
 		t.change.Artist = edit.Artist
@@ -533,6 +572,9 @@ func (s *ExifService) describe(targets []target) ExifPlanDTO {
 		plan.Rows = append(plan.Rows, t.rows...)
 		if t.skip != "" {
 			skipped++
+			// The reason is part of the plan: a user deciding whether to
+			// confirm needs to know why a frame is being left out.
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s will be skipped: %s", filepath.Base(t.write), t.skip))
 			continue
 		}
 		plan.Writes += len(t.rows)
@@ -599,13 +641,43 @@ func sidecarPath(path string) string {
 	return path + ".xmp"
 }
 
-// formatCaptureTime renders the capture time for the form. It is RFC3339 so
-// that what the editor shows is what an edit can send straight back.
+// formatCaptureTime renders the capture time for the form: RFC3339, with the
+// offset left off when the file never recorded one, so that what the editor
+// shows is what an edit can send straight back — a frame whose zone is unknown
+// round-trips as exactly that rather than gaining a "Z" nobody stated.
 func formatCaptureTime(t exif.Timestamp) string {
+	layout := "2006-01-02T15:04:05"
 	if t.HasSubSec {
-		return t.Value.Format("2006-01-02T15:04:05.999999999Z07:00")
+		layout += ".999999999"
 	}
-	return t.Value.Format(time.RFC3339)
+	if t.HasOffset {
+		layout += "Z07:00"
+	}
+	return t.Value.Format(layout)
+}
+
+// parseCaptureTime reads an edit's time back in: RFC3339 when it names its
+// zone, the same shape without the suffix when it does not. The offset-less
+// form is parsed as a wall clock in UTC, mirroring how the reader holds a
+// zone-unknown time.
+func parseCaptureTime(s string) (exif.CaptureTime, error) {
+	if when, err := time.Parse(time.RFC3339, s); err == nil {
+		return exif.CaptureTime{Value: when, HasOffset: true}, nil
+	}
+	when, err := time.ParseInLocation("2006-01-02T15:04:05", s, time.UTC)
+	if err != nil {
+		return exif.CaptureTime{}, err
+	}
+	return exif.CaptureTime{Value: when, HasOffset: false}, nil
+}
+
+// renderCaptureTime is the plan dialog's rendering of the time being written,
+// in the same offset-or-nothing form the field itself uses.
+func renderCaptureTime(t exif.CaptureTime) string {
+	if t.HasOffset {
+		return t.Value.Format(time.RFC3339)
+	}
+	return t.Value.Format("2006-01-02T15:04:05")
 }
 
 // formatShutter renders an exposure the way a photographer reads it: 1/250 for
