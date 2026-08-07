@@ -157,3 +157,185 @@ func TestVerifiedMoveKeepsSourceWhenCopyIsCorrupt(t *testing.T) {
 		t.Errorf("source content changed: %q", read(t, src))
 	}
 }
+
+// Displacing a file is only half of overwrite's promise: undo must bring it
+// back. The trash location has to travel through the journal for that, or the
+// original is "recoverable" only to someone digging through the trash by hand.
+func TestOverwriteUndoRestoresTheDisplacedFile(t *testing.T) {
+	ex, _ := newExecutor(t)
+	ex.Collision = config.CollisionOverwrite
+	ex.Trasher = platform.DirTrasher{Dir: t.TempDir()}
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "new.jpg")
+	dst := filepath.Join(dir, "existing.jpg")
+	if err := os.WriteFile(src, []byte("incoming"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("valuable original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := ex.Apply("copy over", []FileAction{{Verb: VerbCopy, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.Undo(batch); err != nil {
+		t.Fatalf("Undo: %v", err)
+	}
+	if read(t, dst) != "valuable original" {
+		t.Errorf("undo did not put the displaced file back, dst holds %q", read(t, dst))
+	}
+}
+
+// A copy that fails after the overwrite policy has already trashed the
+// destination must put the displaced file straight back: the user asked to
+// replace it, not to lose it to a copy that never happened.
+func TestFailedCopyAfterDisplacementPutsTheFileBack(t *testing.T) {
+	ex, _ := newExecutor(t)
+	ex.Collision = config.CollisionOverwrite
+	ex.Trasher = platform.DirTrasher{Dir: t.TempDir()}
+	ex.Copier = func(src, dst string) error { return errors.New("reader dropped off the bus") }
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "new.jpg")
+	dst := filepath.Join(dir, "existing.jpg")
+	if err := os.WriteFile(src, []byte("incoming"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("valuable original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := ex.Apply("copy over", []FileAction{{Verb: VerbCopy, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != "error" {
+		t.Fatalf("the copy was supposed to fail: %+v", batch.Actions[0])
+	}
+	if read(t, dst) != "valuable original" {
+		t.Errorf("the displaced file was not put back after the failed copy, dst holds %q", read(t, dst))
+	}
+}
+
+// A cross-filesystem move whose source cannot be removed after the copy must
+// not leave the copy behind untracked: the journal records an error and denies
+// a destination, so a surviving copy would be invisible to undo and pile up a
+// numbered duplicate on every retry.
+func TestMoveThatCannotRemoveTheSourceLeavesNoUntrackedCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	ex, _ := newExecutor(t)
+	// No rename, so the move takes the copy-then-remove road.
+	ex.Renamer = func(src, dst string) error { return errors.New("cross-device") }
+
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "IMG_0001.JPG")
+	if err := os.WriteFile(src, []byte("shot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "IMG_0001.JPG")
+	// The copy out of srcDir works; deleting src needs write on srcDir and fails.
+	if err := os.Chmod(srcDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(srcDir, 0o755) })
+
+	batch, err := ex.Apply("move", []FileAction{{Verb: VerbMove, Src: src, Dst: dst}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != "error" {
+		t.Fatalf("the move was supposed to fail: %+v", batch.Actions[0])
+	}
+	if read(t, src) != "shot" {
+		t.Error("the source went missing during a failed move")
+	}
+	if _, err := os.Stat(dst); err == nil {
+		t.Error("a copy the journal denies exists was left at the destination")
+	}
+}
+
+// Between the collision check and the rename, another writer can land a file
+// on the same destination. The move must fail rather than silently swallow it:
+// a rename overwrites, and the first file's bytes would be gone for good.
+func TestMoveRefusesToClobberAFileThatAppearedLate(t *testing.T) {
+	ex, _ := newExecutor(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "incoming.jpg")
+	dst := filepath.Join(dir, "settled.jpg")
+	if err := os.WriteFile(src, []byte("incoming"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The file that appeared after clearTarget's check would have run.
+	if err := os.WriteFile(dst, []byte("already here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ex.move(src, dst); err == nil {
+		t.Fatal("the move clobbered a file that appeared at the destination")
+	}
+	if read(t, dst) != "already here" {
+		t.Errorf("the settled file was overwritten: %q", read(t, dst))
+	}
+	if read(t, src) != "incoming" {
+		t.Errorf("the source was consumed by a refused move: %q", read(t, src))
+	}
+}
+
+// Undo's move-back is the same only-copy-destroying road as a forward move,
+// so it takes the same verified path: a corrupt copy back must never cost the
+// one intact copy sitting in the trash.
+func TestUndoMoveBackIsVerified(t *testing.T) {
+	ex, j := newExecutor(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "IMG_0001.JPG")
+	if err := os.WriteFile(src, []byte("the only copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := ex.Apply("drop", []FileAction{{Verb: VerbTrash, Src: src}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trashed := batch.Actions[0].Dst
+
+	// The undo has to cross filesystems (rename refused) through a reader that
+	// corrupts what it copies. Verification is on: the corrupt copy-back must
+	// be noticed before the trash copy is removed.
+	undoEx := &Executor{
+		Journal: j,
+		Verify:  true,
+		Renamer: func(src, dst string) error { return errors.New("cross-device") },
+		Copier: func(src, dst string) error {
+			return os.WriteFile(dst, []byte("corrupted in transit"), 0o644)
+		},
+	}
+	if err := undoEx.Undo(batch); err == nil {
+		t.Fatal("an undo whose copy-back failed verification reported success")
+	}
+	if read(t, trashed) != "the only copy" {
+		t.Fatal("BUG: the only intact copy was removed after a corrupt copy-back")
+	}
+	if _, err := os.Stat(src); err == nil && read(t, src) == "corrupted in transit" {
+		t.Error("a corrupt copy was left at the restored path")
+	}
+}
+
+// A copy whose digest could never be read must not fall back to the legacy
+// remove-it-anyway undo: with no record of what we wrote, deleting whatever is
+// there now is exactly the replacement-deleting mistake digests exist to stop.
+func TestRemoveIfOurCopyRefusesAnUnrecordedDigest(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "library.jpg")
+	if err := os.WriteFile(dst, []byte("who knows whose"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIfOurCopy(dst, digestUnreadable); err == nil {
+		t.Fatal("an unreadable digest allowed an unconditional delete")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatal("the file was deleted on the strength of no digest at all")
+	}
+}
