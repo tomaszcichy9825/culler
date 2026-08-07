@@ -427,7 +427,13 @@ class MapState {
   async load(dir: string, force = false) {
     if (source === null || dir === "") return;
     this.#lastLoad = () => this.load(dir, true);
-    if (!force && dir === this.dir && this.positions.length > 0) return;
+    // The dir is claimed before the await, the way loadScope claims its scope
+    // key: the pane's effect re-runs on every batch of a streamed scan, and a
+    // guard that only held once the read had landed re-fired a full Positions
+    // read — and cleared the clusters — for each one, pinning the pane on
+    // "reading positions" for the length of the scan.
+    if (!force && dir === this.dir) return;
+    this.dir = dir;
 
     const seq = ++this.#loadSeq;
     this.loading = true;
@@ -441,9 +447,10 @@ class MapState {
       const got = await source.Positions(dir);
       // A newer read started while this one was in flight — opening B while A's
       // slow network read was still out — so its answer is stale and must not
-      // paint B's map with A's pins.
+      // paint B's map with A's pins. `dir` is not overwritten with the echo:
+      // the guard above compares against what the caller asks with, and a
+      // backend that resolved the path differently would defeat it.
       if (seq !== this.#loadSeq) return;
-      this.dir = got.dir;
       this.positions = got.frames ?? [];
       this.total = got.total;
       this.unpositioned = got.unpositioned;

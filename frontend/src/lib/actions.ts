@@ -11,7 +11,7 @@ import { tick } from "svelte";
 
 import { Clipboard, Events } from "@wailsio/runtime";
 
-import { table } from "../components/TableView.svelte";
+import { sortRows, table } from "../components/TableView.svelte";
 
 import { ApplyService, ConfigService, LibraryService, XMPExportService } from "./bindings";
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
@@ -731,6 +731,26 @@ let searchWasOpen = false;
 let preSearchGroups: GroupDTO[] = [];
 
 /**
+ * extendsShown reports whether results is the list already on the grid with
+ * more pages appended, which is what loadMore produces. The boundary frames
+ * are compared by identity rather than the whole list — a fresh query that
+ * happened to share both would be indistinguishable, and harmless.
+ */
+function extendsShown(shown: GroupDTO[], results: CatalogFrame[]): boolean {
+  if (shown.length === 0 || results.length <= shown.length) return false;
+  const first = results[0];
+  const last = results[shown.length - 1];
+  const shownFirst = shown[0];
+  const shownLast = shown[shown.length - 1];
+  return (
+    first.dir === shownFirst.dir &&
+    first.stem === shownFirst.stem &&
+    last.dir === shownLast.dir &&
+    last.stem === shownLast.stem
+  );
+}
+
+/**
  * showSearchResults puts what the index answered onto the grid, and takes it
  * off again when the search closes.
  *
@@ -747,7 +767,14 @@ export function showSearchResults(open: boolean, results: CatalogFrame[]) {
     // list itself is what has to be restored — there is nowhere else to read
     // it back from.
     if (!searchWasOpen) preSearchGroups = app.allGroups;
-    app.allGroups = results.map(frameToGroup);
+    if (searchWasOpen && extendsShown(app.allGroups, results)) {
+      // A further page of the same search: keep the groups already on screen
+      // — verdicts recorded on them since the search began live on those
+      // objects and would be wound back by remapping — and map the tail only.
+      app.allGroups = [...app.allGroups, ...results.slice(app.allGroups.length).map(frameToGroup)];
+    } else {
+      app.allGroups = results.map(frameToGroup);
+    }
     app.focusIndex = Math.max(0, Math.min(app.focusIndex, results.length - 1));
   } else if (searchWasOpen) {
     app.allGroups = preSearchGroups;
@@ -762,21 +789,39 @@ export function showSearchResults(open: boolean, results: CatalogFrame[]) {
 /** How far one arrow press pans the zoomed loupe, in image pixels. */
 const PAN_STEP = 120;
 
-function moveFocus(dx: number, dy: number) {
+/**
+ * tableOrders reports whether CULL's table is the thing on screen. The table
+ * sorts its own view of the frames, so while it is up anything that walks
+ * them — the arrows, a verdict's auto-advance — has to walk the order shown
+ * through its registered API rather than the raw array.
+ */
+function tableOrders(): boolean {
+  return shell.mode === "cull" && shell.layout === 2 && app.view === "grid";
+}
+
+/**
+ * advanceFocus steps the focus by whole frames in the order the user can see:
+ * the table's sort while the table is up, the array order everywhere else. It
+ * is the one stepper shared by the arrow keys and by the auto-advance after a
+ * verdict or a destination, so the two can never walk different orders.
+ */
+export function advanceFocus(delta: number) {
+  if (tableOrders()) {
+    table.move(delta);
+    return;
+  }
+  app.moveFocus(delta);
+}
+
+export function moveFocus(dx: number, dy: number) {
   if (app.view === "loupe" && app.zoom) {
     loupe.pan(-dx * PAN_STEP, -dy * PAN_STEP);
     return;
   }
-  // CULL's table sorts its own view of the frames, so while it is up the
-  // arrows walk the order on screen through its registered API — stepping
-  // through the raw array would hop between unrelated rows, and up and down
-  // would move by the grid's column count besides.
-  if (shell.mode === "cull" && shell.layout === 2 && app.view === "grid") {
-    table.move(dx + dy);
-    return;
-  }
-  const rowStep = app.view === "loupe" ? 1 : app.cols;
-  app.setFocus(app.focusIndex + dx + dy * rowStep);
+  // The table and the loupe both walk one frame per press whatever the axis;
+  // on the contact sheet a vertical step is a whole row of tiles.
+  const rowStep = tableOrders() || app.view === "loupe" ? 1 : app.cols;
+  advanceFocus(dx + dy * rowStep);
 }
 
 /**
@@ -1241,8 +1286,15 @@ function enterCompare() {
     app.compare = selected;
     return;
   }
-  const i = app.focusIndex;
-  const pair = app.groups.slice(i, i + 2);
+  // "Its neighbour" is the next frame the user can see. While the table is up
+  // that is the next row of the current sort, not the next of the raw array,
+  // which under a sort could be a frame from the other end of the shoot.
+  let pair = app.groups.slice(app.focusIndex, app.focusIndex + 2);
+  if (tableOrders()) {
+    const rows = sortRows(app.groups, table.sort());
+    const at = rows.findIndex((row) => row.index === app.focusIndex);
+    if (at >= 0) pair = rows.slice(at, at + 2).map((row) => row.group);
+  }
   if (pair.length < 2) {
     app.notify("nothing to compare this frame with");
     return;

@@ -10,6 +10,7 @@
   // − and + keycaps change that number — so the tiles divide whatever width
   // the pane has between them.
 
+  import { library } from "../lib/library.svelte";
   import { app, groupKey } from "../lib/state.svelte";
   import Tile from "./Tile.svelte";
 
@@ -82,6 +83,17 @@
     app.setFocus(index);
     app.view = "loupe";
   }
+
+  // While the grid is showing search results it is showing one page of them,
+  // and the index holds the rest: nearing the end of the sheet — by scrollbar
+  // or by arrowing, which drags the viewport along — asks for the next page,
+  // until the catalogue says it is complete. loadMore's own guards make the
+  // repeat calls this effect fires while a page is in flight free.
+  $effect(() => {
+    if (!library.searchOpen || library.loading || library.complete) return;
+    if (canvasHeight === 0) return;
+    if (scrollTop + viewportHeight >= canvasHeight - rowHeight) void library.loadMore();
+  });
 </script>
 
 <header class="sheet-head">

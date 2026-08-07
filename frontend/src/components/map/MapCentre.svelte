@@ -371,13 +371,34 @@
    * is a region full of Leaflet's own controls, not a widget with a role that
    * would justify a keyboard handler in the markup, and `data-keys="local"`
    * already tells the application's global listener to keep out.
+   *
+   * The wrap is also the pane's one focusable surface — Leaflet's own keyboard
+   * is off, and the markers only become reachable by Tab — so the keys only
+   * work at all while it holds the focus. It takes it when MAP comes up and
+   * reclaims it on a pointer press inside, which is also what makes
+   * data-keys="local" actually suppress the global map here.
    */
   $effect(() => {
     const region = wrap;
     if (region === null) return;
+    region.focus();
     region.addEventListener("keydown", onKeydown);
-    return () => region.removeEventListener("keydown", onKeydown);
+    region.addEventListener("pointerdown", claimKeys);
+    return () => {
+      region.removeEventListener("keydown", onKeydown);
+      region.removeEventListener("pointerdown", claimKeys);
+    };
   });
+
+  /** claimKeys hands the wrap the keyboard, unless something inside — a
+   *  tabbed-to marker — already has it. */
+  function claimKeys() {
+    const region = wrap;
+    if (region === null) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && region.contains(active)) return;
+    region.focus();
+  }
 
   function onKeydown(e: KeyboardEvent) {
     switch (e.key) {
@@ -407,7 +428,7 @@
   let folderLeaf = $derived(mapState.dir === "" ? "" : (mapState.dir.replace(/\/+$/, "").split("/").pop() ?? ""));
 </script>
 
-<div class="wrap" class:placing={geotag.armed} bind:this={wrap} data-keys="local">
+<div class="wrap" class:placing={geotag.armed} bind:this={wrap} data-keys="local" tabindex="-1">
   <div class="map" bind:this={host}></div>
   <canvas class="heat" class:on={layout === 1} bind:this={canvas}></canvas>
 

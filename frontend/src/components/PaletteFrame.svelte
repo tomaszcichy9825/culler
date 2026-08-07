@@ -30,11 +30,23 @@
   let { width, label, count, onrun, header, chips, body, footer }: Props = $props();
 
   let root = $state<HTMLElement | null>(null);
+  let bodyEl = $state<HTMLElement | null>(null);
 
   // Taking the keyboard is what makes ownsKeys() true for everything typed
   // here, which is what keeps the grid's bindings quiet behind the dialog.
   $effect(() => {
     root?.focus();
+  });
+
+  // The body scrolls, and the cursor must not walk out of it: whichever
+  // palette is drawing the rows marks the one under the cursor `.at`, so the
+  // frame can keep it in view as ↑↓ wrap and Home/End jump. `nearest` leaves
+  // the scroll alone for a row already visible, so the pointer setting the
+  // index on hover never yanks the list about.
+  $effect(() => {
+    void palette.index;
+    void count;
+    bodyEl?.querySelector(".at")?.scrollIntoView({ block: "nearest" });
   });
 
   function onKeydown(e: KeyboardEvent) {
@@ -64,7 +76,7 @@
   >
     <div class="head">{@render header()}</div>
     {#if chips}<div class="chips">{@render chips()}</div>{/if}
-    <div class="body">{@render body()}</div>
+    <div class="body" bind:this={bodyEl}>{@render body()}</div>
     <div class="foot">{@render footer()}</div>
   </div>
 </div>

@@ -70,6 +70,15 @@
 
   let frame = $derived(app.focused);
   let key = $derived(frame ? groupKey(frame) : "");
+
+  // The bars are only ever written by the preview's onload, so moving to a new
+  // frame has to take the old frame's histogram down itself — otherwise the
+  // pane shows the previous frame's bars until the new preview decodes, and
+  // "waiting for the preview" never appears at all.
+  $effect(() => {
+    void key;
+    bins = null;
+  });
   let url = $derived(frame ? previewURL(frame) : "");
   let verdict = $derived(frame ? verdictOf(frame) : "");
 

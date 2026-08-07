@@ -24,21 +24,21 @@
   import LoupeOverlay from "./components/LoupeOverlay.svelte";
   import Palettes from "./components/Palettes.svelte";
   import SettingsView from "./components/SettingsView.svelte";
-  import TableView, { table } from "./components/TableView.svelte";
-  import { runAction, openFolder as openFolderAction } from "./lib/actions";
+  import TableView from "./components/TableView.svelte";
+  import { moveFocus, runAction, openFolder as openFolderAction } from "./lib/actions";
   import { ExifService, ImportService, LibraryIndexService, MapService, RejectsService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
   import ImportCentre from "./components/import/ImportCentre.svelte";
   import ImportLeft from "./components/import/ImportLeft.svelte";
   import ImportRight from "./components/import/ImportRight.svelte";
-  import { connectImport, onOpenFolder as onImportOpen, watchImportProgress } from "./lib/import.svelte";
+  import { connectImport, importState, onOpenFolder as onImportOpen, watchImportProgress } from "./lib/import.svelte";
   import MapCentre from "./components/map/MapCentre.svelte";
   import MapLeft from "./components/map/MapLeft.svelte";
   import MapRight from "./components/map/MapRight.svelte";
   import GeotagDialog from "./components/map/GeotagDialog.svelte";
   import { geotag } from "./lib/geotag.svelte";
-  import { connectMap, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
+  import { connectMap, mapState, onOpenFrame, watchMapProgress } from "./lib/map.svelte";
   import RejectsDialog from "./components/RejectsDialog.svelte";
   import { connectRejects, rejects, watchRejectsProgress } from "./lib/rejects.svelte";
   import { connectCatalog, library, onOpenFolder, watchCatalogProgress } from "./lib/library.svelte";
@@ -70,7 +70,7 @@
   import { buildLookup, eventSignature, ownsKeys } from "./lib/keymap";
   import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
   import type { Pane } from "./lib/shell.svelte";
-  import { app, loupe, picker, tree } from "./lib/state.svelte";
+  import { app, picker, tree } from "./lib/state.svelte";
 
   /** How far one arrow press pans the zoomed loupe, in image pixels. */
   const PAN_STEP = 120;
@@ -102,23 +102,6 @@
 
   let path = $state(lastFolder());
   let lookup = $derived(buildLookup(app.keymap));
-
-  function moveFocus(dx: number, dy: number) {
-    if (app.view === "loupe" && app.zoom) {
-      loupe.pan(-dx * PAN_STEP, -dy * PAN_STEP);
-      return;
-    }
-    // CULL's table sorts its own view of the frames, so while it is up the
-    // arrows walk the order on screen through its registered API — stepping
-    // through the raw array would hop between unrelated rows, and up and down
-    // would move by the grid's column count besides.
-    if (shell.mode === "cull" && shell.layout === 2 && app.view === "grid") {
-      table.move(dx + dy);
-      return;
-    }
-    const rowStep = app.view === "loupe" ? 1 : app.cols;
-    app.setFocus(app.focusIndex + dx + dy * rowStep);
-  }
 
   /**
    * CULL's first two sub-layouts are the grid and one frame at a time, which
@@ -435,6 +418,23 @@
           void geotag.confirm();
           break;
         }
+        // Outside cull, ⏎ means what the pane on screen advertises — never the
+        // apply flow, which would put the trash confirm over a grid the user
+        // cannot see. The map opens the focused frame; IMPORT's screens each
+        // draw their own ⏎ button, so the press does what that button says.
+        if (shell.mode === "map") {
+          mapState.open();
+          break;
+        }
+        if (shell.mode === "import") {
+          if (shell.layout === 2) {
+            if (importState.ready) void importState.execute();
+          } else if (shell.layout === 0 || importState.hasUnrouted) {
+            importState.review();
+          }
+          break;
+        }
+        if (shell.mode !== "cull") break;
         // ⏎ confirms a plan that is up, then applies whatever has been decided
         // — a session or a search is a scope you cull like a folder, now that
         // apply spans folders. Only with nothing decided does ⏎ fall back to
@@ -713,11 +713,15 @@
         {/if}
       </div>
     </section>
-  </div>
 
-  {#if app.view === "loupe" && shell.mode === "cull" && shell.layout !== 1 && app.folder !== null && app.groups.length > 0}
-    <LoupeOverlay />
-  {/if}
+    <!-- Inside .body deliberately: the overlay covers the three panes and no
+         more, so the title bar and the status bar stay visible and clickable
+         — which is where the mode chip and the verdict keys are named, and
+         where the window is dragged from. -->
+    {#if app.view === "loupe" && shell.mode === "cull" && shell.layout !== 1 && app.folder !== null && app.groups.length > 0}
+      <LoupeOverlay />
+    {/if}
+  </div>
 
   {#if app.compare !== null}
     <div class="overlay-fill">
@@ -792,6 +796,9 @@
     flex: 1;
     min-height: 0;
     display: flex;
+    /* The containing block for the loupe overlay, which covers the panes and
+       leaves the title bar and status bar showing. */
+    position: relative;
   }
 
   .pane {
