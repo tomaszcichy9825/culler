@@ -71,6 +71,7 @@ var (
 	errNoSegment = errors.New("exif: this JPEG carries no EXIF segment to write into")
 	errBadTIFF   = errors.New("exif: the EXIF segment is not a readable TIFF block")
 	errTooLarge  = errors.New("exif: the edited metadata no longer fits an APP1 segment")
+	errEmptyIFD  = errors.New("exif: this edit would leave a metadata directory with no entries, which no reader accepts")
 )
 
 // RewriteJPEG returns data with its EXIF APP1 segment edited and every other
@@ -392,12 +393,36 @@ func (ed *editor) applyTo(off uint32, changes []change) (uint32, error) {
 		add = append(add, ch)
 	}
 	var keep []entry
+	var stale []span
 	for _, e := range d.entries {
 		if !drop[e.tag] {
 			keep = append(keep, e)
+			continue
+		}
+		if !e.inline && e.span != nil {
+			stale = append(stale, span{at: e.at, length: uint32(len(e.span))})
 		}
 	}
-	return ed.newIFD(keep, add, d.next)
+	moved, err := ed.newIFD(keep, add, d.next)
+	if err != nil {
+		return off, err
+	}
+	// A deleted entry's out-of-line value gets the same treatment patch gives
+	// a replaced one: once nothing else references those bytes they are
+	// zeroed, not left readable in the file. The old directory is still
+	// hooked up until the caller repoints it, so the walk skips exactly the
+	// entries this rebuild dropped and sees reachability as it is about to be.
+	if len(stale) > 0 {
+		reach := ed.reachableSpans(func(dir uint32, e entry) bool {
+			return dir == off && drop[e.tag]
+		})
+		for _, s := range stale {
+			if !overlapsAny(s.at, s.length, reach) {
+				ed.zero(s.at, s.length)
+			}
+		}
+	}
+	return moved, nil
 }
 
 // patch overwrites an existing entry's value. It writes into the old value's
@@ -459,7 +484,7 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 
 	// With the entry repointed, the old span is unreachable unless a second
 	// entry shares those bytes, in which case they are the survivor's to keep.
-	if stale.length > 0 && !overlapsAny(stale.at, stale.length, ed.reachableSpans(0)) {
+	if stale.length > 0 && !overlapsAny(stale.at, stale.length, ed.reachableSpans(nil)) {
 		ed.zero(stale.at, stale.length)
 	}
 	return nil
@@ -491,7 +516,13 @@ func (ed *editor) newIFD(keep []entry, add []change, next uint32) (uint32, error
 		}
 		rows = append(rows, r)
 	}
-	if len(rows) == 0 || len(rows) > maxIFDEntries {
+	// A directory with no entries at all is one this package's own reader —
+	// and most others — refuses as corrupt, so the edit that would produce
+	// one is refused with the truth rather than blamed on the segment size.
+	if len(rows) == 0 {
+		return 0, errEmptyIFD
+	}
+	if len(rows) > maxIFDEntries {
 		return 0, errTooLarge
 	}
 	// TIFF asks for entries in ascending tag order and some readers rely on it.
@@ -555,9 +586,12 @@ func (ed *editor) eraseGPS() {
 		return
 	}
 
-	// Everything still reachable once GPS is gone, so a file that points two
-	// tags at one blob never has the surviving one shot out from under it.
-	keep := ed.reachableSpans(gpsOff)
+	// Everything still reachable once the GPS pointer is unhooked from IFD0 —
+	// only that one edge goes, so a directory the Exif pointer shares, or a
+	// pointer aimed into the middle of a MakerNote, stays alive and untouched.
+	keep := ed.reachableSpans(func(dir uint32, e entry) bool {
+		return dir == ed.ifd0 && e.tag == tagGPSIFD
+	})
 	for _, e := range gps.entries {
 		if e.inline || e.span == nil {
 			continue
@@ -567,15 +601,24 @@ func (ed *editor) eraseGPS() {
 		}
 		ed.zero(e.at, uint32(len(e.span)))
 	}
-	ed.zero(gpsOff, uint32(2+len(gps.entries)*ifdEntrySize+4))
+	// The directory's own bytes get the same guard as its values: a span some
+	// other chain still reaches belongs to the survivor, not to this erase.
+	length := uint32(2 + len(gps.entries)*ifdEntrySize + 4)
+	if !overlapsAny(gpsOff, length, keep) {
+		ed.zero(gpsOff, length)
+	}
 }
 
 // span is a byte range inside the block.
 type span struct{ at, length uint32 }
 
-// reachableSpans lists every value and directory the block still reaches once
-// the directory at skip is unhooked.
-func (ed *editor) reachableSpans(skip uint32) []span {
+// reachableSpans lists every value and directory the block reaches, skipping
+// the entries except reports true for — the one pointer being unhooked, or
+// the entries a rebuild is dropping — so the caller sees reachability as it
+// will be once its own edit lands. Skipping an entry rather than a directory
+// is what keeps an aliased target alive: a directory two pointers share is
+// still reachable through the pointer that stays.
+func (ed *editor) reachableSpans(except func(dir uint32, e entry) bool) []span {
 	var out []span
 	seen := map[uint32]bool{}
 	queue := []uint32{ed.ifd0}
@@ -583,7 +626,7 @@ func (ed *editor) reachableSpans(skip uint32) []span {
 	for len(queue) > 0 && len(out) < maxValues {
 		off := queue[0]
 		queue = queue[1:]
-		if off == 0 || off == skip || seen[off] {
+		if off == 0 || seen[off] {
 			continue
 		}
 		seen[off] = true
@@ -593,11 +636,23 @@ func (ed *editor) reachableSpans(skip uint32) []span {
 		}
 		out = append(out, span{at: off, length: uint32(2 + len(d.entries)*ifdEntrySize + 4)})
 		for _, e := range d.entries {
+			if except != nil && except(off, e) {
+				continue
+			}
 			if !e.inline && e.span != nil {
 				out = append(out, span{at: e.at, length: uint32(len(e.span))})
 			}
-			if e.tag == tagExifIFD || e.tag == tagGPSIFD {
+			switch e.tag {
+			case tagExifIFD, tagGPSIFD, tagInteropIFD:
 				queue = append(queue, ed.pointerOf(d, e.tag))
+			case tagSubIFDs:
+				// One SubIFDs entry names a whole list of directories, and
+				// every one of them keeps its bytes alive.
+				for _, v := range (&reader{buf: ed.buf, order: ed.order}).ints(e) {
+					if v > 0 && v <= math.MaxUint32 {
+						queue = append(queue, uint32(v))
+					}
+				}
 			}
 		}
 		if d.next != 0 {

@@ -132,6 +132,116 @@ func TestMergeChangesWritesTheCaptureTimeTwice(t *testing.T) {
 	}
 }
 
+// Adobe writes structured values — xmpMM:DerivedFrom, Camera Raw's masks — as
+// a nested rdf:Description, usually self-closing. A merged property must land
+// in the outer description, after the structured value, never inside it.
+const derivedFrom = `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+    xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+   <xmpMM:DerivedFrom>
+    <rdf:Description stRef:instanceID="xmp.iid:0001" stRef:documentID="xmp.did:0002"/>
+   </xmpMM:DerivedFrom>
+   <dc:title>Harbour</dc:title>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+`
+
+func assertLandsOutsideTheStructuredValue(t *testing.T, body, closeTag string) {
+	t.Helper()
+	creator := strings.Index(body, "<dc:creator>")
+	structEnd := strings.Index(body, closeTag)
+	if creator < 0 {
+		t.Fatalf("the artist did not land:\n%s", body)
+	}
+	if structEnd < 0 {
+		t.Fatalf("the structured value did not survive:\n%s", body)
+	}
+	if creator < structEnd {
+		t.Errorf("the artist landed inside the structured value:\n%s", body)
+	}
+}
+
+func TestMergeChangesLandsAfterASelfClosingStructuredValue(t *testing.T) {
+	body := mergeChangesOK(t, derivedFrom, exif.Changes{Artist: strp("Tomasz Cichy")})
+
+	assertLandsOutsideTheStructuredValue(t, body, "</xmpMM:DerivedFrom>")
+	assertKeeps(t, body, []string{
+		`stRef:instanceID="xmp.iid:0001"`,
+		`stRef:documentID="xmp.did:0002"`,
+		"<dc:title>Harbour</dc:title>",
+	})
+}
+
+// The longhand form of the same structure — the nested description written
+// with its own end tag — is the control: it must land in the same place.
+func TestMergeChangesLandsAfterALonghandStructuredValue(t *testing.T) {
+	longhand := strings.Replace(derivedFrom,
+		`<rdf:Description stRef:instanceID="xmp.iid:0001" stRef:documentID="xmp.did:0002"/>`,
+		`<rdf:Description stRef:instanceID="xmp.iid:0001" stRef:documentID="xmp.did:0002"></rdf:Description>`, 1)
+	body := mergeChangesOK(t, longhand, exif.Changes{Artist: strp("Tomasz Cichy")})
+
+	assertLandsOutsideTheStructuredValue(t, body, "</xmpMM:DerivedFrom>")
+	assertKeeps(t, body, []string{`stRef:instanceID="xmp.iid:0001"`, "<dc:title>Harbour</dc:title>"})
+}
+
+// Camera Raw nests descriptions two deep for its mask corrections. Every end
+// tag has to be matched to the start it actually closes, or the merge picks
+// the wrong block to splice into.
+func TestMergeChangesLandsOutsideNestedDescriptions(t *testing.T) {
+	const nested = `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+   <crs:MaskGroupBasedCorrections>
+    <rdf:Description crs:What="Correction">
+     <crs:CorrectionMasks>
+      <rdf:Description crs:What="Mask"/>
+     </crs:CorrectionMasks>
+    </rdf:Description>
+   </crs:MaskGroupBasedCorrections>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+`
+	body := mergeChangesOK(t, nested, exif.Changes{Artist: strp("Tomasz Cichy")})
+
+	assertLandsOutsideTheStructuredValue(t, body, "</crs:MaskGroupBasedCorrections>")
+	assertKeeps(t, body, []string{`crs:What="Correction"`, `crs:What="Mask"`})
+}
+
+// A prefix is only usable where its innermost binding is the wanted
+// namespace. A description that rebinds exif: to something foreign has to get
+// a fresh prefix, not a property that reads back in the wrong namespace.
+func TestMergeChangesDoesNotUseAShadowedPrefix(t *testing.T) {
+	const shadowed = `<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:exif="http://ns.adobe.com/exif/1.0/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:exif="http://example.com/not-exif/">
+   <exif:Weird>kept</exif:Weird>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+`
+	body := mergeChangesOK(t, shadowed, exif.Changes{
+		SetGPS: &exif.GPSCoord{Latitude: 48.8584, Longitude: 2.2945},
+	})
+
+	if strings.Contains(body, "<exif:GPSLatitude>") {
+		t.Errorf("the property was written under a prefix the description rebinds to a foreign namespace:\n%s", body)
+	}
+	if !strings.Contains(body, `="http://ns.adobe.com/exif/1.0/"`) {
+		t.Errorf("no binding for the exif namespace was declared:\n%s", body)
+	}
+	if !strings.Contains(body, "GPSLatitude>48,") {
+		t.Errorf("the latitude is missing:\n%s", body)
+	}
+	assertKeeps(t, body, []string{"<exif:Weird>kept</exif:Weird>"})
+}
+
 func TestMergeChangesRefusesAFileThatIsNotXML(t *testing.T) {
 	if _, err := MergeChanges([]byte("JFIF not xml at all \x00\x01"), exif.Changes{Artist: strp("x")}); err == nil {
 		t.Error("want an error for a file that does not parse; overwriting it would destroy whatever it was")

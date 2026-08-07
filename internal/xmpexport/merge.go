@@ -188,6 +188,13 @@ func survey(data []byte, owned func(space, local string) bool) ([]edit, []descri
 		edits []edit
 		descs []description
 		scope []map[string]string // namespace bindings, one frame per open element
+		// open records, for every element currently open, which description it
+		// is — an index into descs, -1 for anything else. The decoder reports a
+		// self-closing element's EndElement at the same offset as its
+		// StartElement, so matching ends to starts by position alone would let
+		// a self-closing nested description donate its offset to the block
+		// enclosing it; the stack pairs each end with the start it closes.
+		open []int
 		// The span of the last run of whitespace, so removing an element takes
 		// its indentation with it rather than leaving a blank line behind.
 		wsAt, wsEnd = -1, -1
@@ -228,6 +235,7 @@ func survey(data []byte, owned func(space, local string) bool) ([]edit, []descri
 				wsAt, wsEnd = -1, -1
 				continue
 			}
+			idx := -1
 			if t.Name.Space == rdfNS && t.Name.Local == "Description" {
 				raw := data[start:end]
 				descs = append(descs, description{
@@ -238,22 +246,26 @@ func survey(data []byte, owned func(space, local string) bool) ([]edit, []descri
 					scope:       append([]map[string]string(nil), scope...),
 					taken:       prefixes(scope),
 				})
+				idx = len(descs) - 1
 				for _, span := range ownedAttributes(raw, scope, owned) {
 					edits = append(edits, edit{at: start + span.at, end: start + span.end})
 				}
 			}
+			open = append(open, idx)
 		case xml.EndElement:
 			scope = scope[:len(scope)-1]
-			if t.Name.Space == rdfNS && t.Name.Local == "Description" {
-				// The innermost block still waiting for its end tag is this
-				// one; a description nested in a structured value cannot
-				// close before the block holding it.
-				for i := len(descs) - 1; i >= 0; i-- {
-					if !descs[i].selfClosing && descs[i].endAt < 0 {
-						descs[i].endAt = start
-						break
-					}
-				}
+			if len(open) == 0 {
+				// Unreachable in well-formed XML, which is the only kind the
+				// decoder delivers; refusing beats indexing past the stack.
+				return nil, nil, fmt.Errorf("%w: end tag with no start", ErrNotXMP)
+			}
+			idx := open[len(open)-1]
+			open = open[:len(open)-1]
+			// A self-closing description has no end tag of its own: the
+			// decoder's synthetic EndElement sits at the start tag's offset
+			// and must not be recorded as anyone's endAt.
+			if idx >= 0 && !descs[idx].selfClosing {
+				descs[idx].endAt = start
 			}
 		}
 		wsAt, wsEnd = -1, -1
@@ -386,14 +398,17 @@ func bindings(t xml.StartElement) map[string]string {
 	return out
 }
 
-// prefixFor is the innermost prefix bound to uri, empty when there is none.
+// prefixFor is a prefix that means uri at the point scope describes, empty
+// when there is none. A prefix only counts if its innermost binding is the
+// wanted namespace: an outer binding shadowed by a rebinding further in would
+// put the property in whatever namespace the rebinding names.
 // The default namespace is not a candidate: our fields are written with a
 // prefix so they cannot be caught out by a default binding changing further
 // down the file.
 func prefixFor(scope []map[string]string, uri string) string {
 	for i := len(scope) - 1; i >= 0; i-- {
 		for prefix, bound := range scope[i] {
-			if prefix != "" && bound == uri {
+			if prefix != "" && bound == uri && resolve(scope, prefix) == uri {
 				return prefix
 			}
 		}

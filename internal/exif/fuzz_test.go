@@ -15,6 +15,18 @@ func seeds() [][]byte {
 		block := fullTIFF(order)
 		out = append(out, block, jpegWith(block))
 	}
+	// Offset tags whose digits carry inner signs, which a parse built on Atoi
+	// would tolerate: the strict grammar must refuse them rather than let the
+	// discarded re-parse zero the timestamp.
+	for _, offset := range []string{"++5:00", "+-5:00", "+05:+0"} {
+		b := newTIFF(binary.LittleEndian)
+		exifIFD := b.ifd([]tag{
+			ascii(tagDateTimeOriginal, "2026:08:03 19:42:07"),
+			ascii(tagOffsetTimeOriginal, offset),
+		}, 0)
+		block := b.done(b.ifd([]tag{b.long(tagExifIFD, exifIFD)}, 0))
+		out = append(out, block, jpegWith(block))
+	}
 	out = append(out,
 		[]byte{},
 		[]byte("II*\x00\x08\x00\x00\x00"),
