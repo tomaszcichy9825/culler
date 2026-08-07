@@ -85,6 +85,7 @@ const (
 	tagModel       = 0x0110
 	tagOrientation = 0x0112
 	tagArtist      = 0x013B
+	tagSubIFDs     = 0x014A
 	tagCopyright   = 0x8298
 	tagExifIFD     = 0x8769
 	tagGPSIFD      = 0x8825
@@ -100,6 +101,7 @@ const (
 	tagFocalLength        = 0x920A
 	tagPixelXDimension    = 0xA002
 	tagPixelYDimension    = 0xA003
+	tagInteropIFD         = 0xA005
 	tagLensModel          = 0xA434
 
 	// GPS IFD
@@ -347,13 +349,18 @@ func (r *reader) timestamp(exif *directory) Timestamp {
 
 	ts := Timestamp{Value: when, Present: true}
 	if off := r.textOf(exif, tagOffsetTimeOriginal); off.Present {
-		if zone, ok := parseOffset(off.Value); ok {
-			ts.Value = when.In(zone)
+		if _, ok := parseOffset(off.Value); ok {
 			// ParseInLocation read the wall clock as UTC; re-read it in the
-			// zone the file names so the instant, not just the label, is right.
-			ts.Value, _ = time.Parse(exifTimeLayout+" -07:00", strings.TrimSpace(raw.Value)+" "+off.Value)
-			ts.HasOffset = true
-			ts.Offset = off.Value
+			// zone the file names so the instant, not just the label, is
+			// right. An offset the re-parse cannot read leaves the timestamp
+			// a wall clock — never the zero time a discarded error would.
+			zoned, err := time.Parse(exifTimeLayout+" -07:00",
+				strings.TrimSpace(raw.Value)+" "+strings.TrimSpace(off.Value))
+			if err == nil {
+				ts.Value = zoned
+				ts.HasOffset = true
+				ts.Offset = off.Value
+			}
 		}
 	}
 	if sub := r.textOf(exif, tagSubSecTimeOriginal); sub.Present {
@@ -368,15 +375,23 @@ func (r *reader) timestamp(exif *directory) Timestamp {
 // exifTimeLayout is the fixed "YYYY:MM:DD HH:MM:SS" every body writes.
 const exifTimeLayout = "2006:01:02 15:04:05"
 
-// parseOffset turns "+02:00" into a fixed zone.
+// parseOffset turns "+02:00" into a fixed zone. The grammar is sign, two
+// digits, colon, two digits and nothing else: Atoi would wave through an
+// inner sign — "+-5:00" — and hand the caller an offset the stricter re-parse
+// downstream then chokes on.
 func parseOffset(s string) (*time.Location, bool) {
 	s = strings.TrimSpace(s)
 	if len(s) != 6 || (s[0] != '+' && s[0] != '-') || s[3] != ':' {
 		return nil, false
 	}
-	hours, err1 := strconv.Atoi(s[1:3])
-	mins, err2 := strconv.Atoi(s[4:6])
-	if err1 != nil || err2 != nil || hours > 23 || mins > 59 {
+	for _, i := range []int{1, 2, 4, 5} {
+		if s[i] < '0' || s[i] > '9' {
+			return nil, false
+		}
+	}
+	hours := int(s[1]-'0')*10 + int(s[2]-'0')
+	mins := int(s[4]-'0')*10 + int(s[5]-'0')
+	if hours > 23 || mins > 59 {
 		return nil, false
 	}
 	secs := hours*3600 + mins*60

@@ -193,6 +193,57 @@ func TestShotTimeFallsBackToNothing(t *testing.T) {
 	}
 }
 
+// Atoi tolerates an inner sign, so "+-5:00" would sail through a parse built
+// on it. The offset grammar is sign, two digits, colon, two digits — anything
+// else is not an offset.
+func TestParseOffsetRejectsMalformedValues(t *testing.T) {
+	for _, s := range []string{"++5:00", "+-5:00", "+05:+0", "+0a:00", "+05:0b", "005:00", "+24:00", "+05:60"} {
+		if _, ok := parseOffset(s); ok {
+			t.Errorf("parseOffset(%q) accepted a malformed offset", s)
+		}
+	}
+	zone, ok := parseOffset("-05:30")
+	if !ok {
+		t.Fatal("parseOffset rejected a well-formed offset")
+	}
+	if _, secs := time.Now().In(zone).Zone(); secs != -(5*3600 + 30*60) {
+		t.Errorf("offset -05:30 parsed to %d seconds", secs)
+	}
+}
+
+// A malformed offset tag must not turn the capture time into the zero time:
+// the timestamp stays a wall clock and the zone stays honestly unknown.
+func TestReadMalformedOffsetKeepsTheWallClock(t *testing.T) {
+	for _, offset := range []string{"++5:00", "+-5:00", "+05:+0"} {
+		t.Run(offset, func(t *testing.T) {
+			b := newTIFF(binary.LittleEndian)
+			exifIFD := b.ifd([]tag{
+				ascii(tagDateTimeOriginal, "2026:08:03 19:42:07"),
+				ascii(tagOffsetTimeOriginal, offset),
+			}, 0)
+			ifd0 := b.ifd([]tag{b.long(tagExifIFD, exifIFD)}, 0)
+
+			f, err := Parse(jpegWith(b.done(ifd0)))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if !f.DateTimeOriginal.Present {
+				t.Fatal("the capture time is gone")
+			}
+			if f.DateTimeOriginal.Value.IsZero() {
+				t.Fatal("a present timestamp cannot be the zero time")
+			}
+			want := time.Date(2026, 8, 3, 19, 42, 7, 0, time.UTC)
+			if !f.DateTimeOriginal.Value.Equal(want) {
+				t.Errorf("DateTimeOriginal = %s, want the wall clock %s", f.DateTimeOriginal.Value, want)
+			}
+			if f.DateTimeOriginal.HasOffset {
+				t.Errorf("the malformed offset %q was treated as a recorded zone", offset)
+			}
+		})
+	}
+}
+
 // Malformed containers must come back as errors or empty fields, never as a
 // panic and never as a read past the end of the buffer.
 func TestReadSurvivesTruncationAtEveryLength(t *testing.T) {
