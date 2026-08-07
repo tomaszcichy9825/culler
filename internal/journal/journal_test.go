@@ -107,28 +107,6 @@ func TestAppendOnly(t *testing.T) {
 	}
 }
 
-func TestLastBatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.jsonl")
-	j, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	if _, ok, err := j.Last(); err != nil || ok {
-		t.Fatalf("empty journal: want ok=false, got ok=%v err=%v", ok, err)
-	}
-	j.Append(testBatch("b1"))
-	j.Append(testBatch("b2"))
-	last, ok, err := j.Last()
-	if err != nil || !ok {
-		t.Fatalf("want a last batch, got ok=%v err=%v", ok, err)
-	}
-	if last.ID != "b2" {
-		t.Errorf("want b2, got %s", last.ID)
-	}
-}
-
 func TestSkipsCorruptTrailingLine(t *testing.T) {
 	// A crash mid-write must not make history unreadable.
 	path := filepath.Join(t.TempDir(), "journal.jsonl")

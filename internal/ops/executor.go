@@ -72,15 +72,24 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			// would act on a state that does not exist. Skipping is recorded as
 			// its own failure — and chains, so a further dependent skips too.
 			rec.Outcome = journal.OutcomeError
-			rec.Err = "skipped: the action before it failed"
+			rec.Err = "skipped: the action before it did not happen"
 			batch.Actions = append(batch.Actions, rec)
 			continue
 		}
 		dst, displaced, err := e.execute(a)
+		// A skipped action did not happen either, so anything depending on it
+		// must not run.
 		priorFailed = err != nil
 		rec.Dst = dst
 		rec.Displaced = displaced
-		if err != nil {
+		if errors.Is(err, errSkipped) {
+			// The policy's skip is its own outcome: not a success — nothing
+			// moved, and a success here would let the caller treat work that
+			// never happened as done — and not a failure worth retrying
+			// unchanged either.
+			rec.Outcome = journal.OutcomeSkipped
+			rec.Err = err.Error()
+		} else if err != nil {
 			rec.Outcome = journal.OutcomeError
 			rec.Err = err.Error()
 		} else {
@@ -112,20 +121,31 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 	return batch, nil
 }
 
+// errSkipped says the collision policy declined an action: the destination is
+// occupied and the policy is skip. The user's instruction was carried out, but
+// nothing moved and nothing of ours is at the destination, which is a fact the
+// journal has to carry as its own outcome rather than as a success.
+var errSkipped = errors.New("skipped: the destination is already occupied")
+
 // execute performs one action and returns where the file ended up, along with
 // the trash location of anything the overwrite policy displaced to make room.
-// An empty destination on a copy or a move means the collision policy skipped
-// it: the user's instruction carried out, with nothing of ours at the
-// destination for undo to take back.
+// An action the collision policy skips comes back as errSkipped, so the caller
+// can journal it as the nothing-happened it is.
 func (e *Executor) execute(a FileAction) (string, string, error) {
 	switch a.Verb {
 	case VerbTrash:
+		if e.Trasher == nil {
+			return "", "", errors.New("trashing needs a trash and has none")
+		}
 		dst, err := e.Trasher.Trash(a.Src)
 		return dst, "", err
 	case VerbMove:
 		dst, displaced, ok, err := e.clearTarget(a.Src, a.Dst)
-		if err != nil || !ok {
+		if err != nil {
 			return "", "", err
+		}
+		if !ok {
+			return "", "", errSkipped
 		}
 		if err := e.move(a.Src, dst); err != nil {
 			return "", "", e.undisplace(displaced, dst, err)
@@ -133,8 +153,11 @@ func (e *Executor) execute(a FileAction) (string, string, error) {
 		return dst, displaced, nil
 	case VerbCopy:
 		dst, displaced, ok, err := e.clearTarget(a.Src, a.Dst)
-		if err != nil || !ok {
+		if err != nil {
 			return "", "", err
+		}
+		if !ok {
+			return "", "", errSkipped
 		}
 		if err := e.copy(a.Src, dst); err != nil {
 			return "", "", e.undisplace(displaced, dst, err)
@@ -326,17 +349,28 @@ func verifyCopy(src, dst string) error {
 // never match a file, and undo refuses to delete rather than guessing.
 const digestUnreadable = "!unreadable"
 
+// errCopyKept marks a copy-undo that deliberately left the destination alone
+// rather than risk deleting a file the user may have replaced or edited. It is
+// a protective refusal, not an I/O failure: Undo does not count it as blocked,
+// because retrying cannot change what it protects.
+var errCopyKept = errors.New("left alone as a possible replacement")
+
 // removeIfOurCopy deletes path only if it still holds the bytes the copy
 // wrote, identified by the digest recorded at the time. A gone file is
 // nothing to undo. An empty digest is a pre-digest journal, removed as the old
-// undo did. A changed file is left alone with an error, so a replacement is
-// never destroyed.
+// undo did. A changed file is left alone with an errCopyKept, so a replacement
+// is never destroyed; any other error is a real failure the caller should
+// treat as retryable.
 func removeIfOurCopy(path, digest string) error {
 	if digest == digestUnreadable {
 		// What was written was never fingerprinted, so there is no telling our
 		// copy from a later replacement — and deleting a maybe-replacement is
-		// the mistake digests exist to prevent.
-		return fmt.Errorf("the copy's digest was never recorded; %s is left alone", path)
+		// the mistake digests exist to prevent. A file already gone is another
+		// matter: nothing to undo.
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("the copy's digest was never recorded, so %s is %w", path, errCopyKept)
 	}
 	if digest == "" {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -352,7 +386,7 @@ func removeIfOurCopy(path, digest string) error {
 		return err
 	}
 	if got != digest {
-		return fmt.Errorf("destination changed since it was copied: %s", path)
+		return fmt.Errorf("destination changed since it was copied, so %s is %w", path, errCopyKept)
 	}
 	return os.Remove(path)
 }
@@ -373,8 +407,8 @@ func contentDigest(path string) (string, error) {
 }
 
 // Undo reverses a batch: successful actions are replayed backwards in reverse
-// order; failed ones are skipped. The undo is itself journaled as a batch
-// with UndoOf set.
+// order; failed and skipped ones moved nothing and have nothing to reverse.
+// The undo is itself journaled as a batch with UndoOf set.
 func (e *Executor) Undo(b journal.Batch) error {
 	// A batch that destroyed files has nothing to replay: there is no
 	// destination to move back from. It is refused whole rather than
@@ -391,19 +425,23 @@ func (e *Executor) Undo(b journal.Batch) error {
 		Description: "Undo: " + b.Description,
 		UndoOf:      b.ID,
 	}
-	// reversed counts files actually put back or copies removed; blocked counts
-	// only restores stopped because something new occupies the path, which is
-	// the retry-worthy failure. A copy-undo that leaves a replacement alone is a
-	// deliberate protective skip, not a failure, and does not block the batch.
+	// reversed counts files actually put back or copies removed; blocked
+	// counts restores that failed for a reason worth retrying — an occupied
+	// path, a permission, a failing disk. The one failure that does not block
+	// is a copy-undo's deliberate protective skip: leaving a possible
+	// replacement alone is the point, and no retry changes it.
 	var reversed, blocked int
 	var firstErr string
 	for i := len(b.Actions) - 1; i >= 0; i-- {
 		a := b.Actions[i]
 		if a.Outcome != journal.OutcomeOK {
+			// Failed actions moved nothing, and a skipped action is the
+			// nothing-happened it was journalled as: no-ops either way.
 			continue
 		}
 		if a.Dst == "" && Verb(a.Verb) != VerbTrash {
-			// The collision policy skipped this one. Nothing of ours is at the
+			// A policy skip from a journal written before skips had their own
+			// outcome: recorded ok, but with nothing of ours at the
 			// destination, and the file that is there was never part of the
 			// batch.
 			continue
@@ -411,6 +449,7 @@ func (e *Executor) Undo(b journal.Batch) error {
 		rec := journal.Action{Verb: a.Verb, Src: a.Dst, Dst: a.Src}
 		var err error
 		restore := false
+		copyKept := false
 		switch Verb(a.Verb) {
 		case VerbTrash, VerbMove:
 			// Bring it back where it came from — unless something new now
@@ -429,19 +468,35 @@ func (e *Executor) Undo(b journal.Batch) error {
 			// longer matches, the user has replaced or edited it and undo
 			// leaves it alone rather than deleting work it never created. A
 			// journal written before digests were recorded keeps the old
-			// behaviour of removing unconditionally.
+			// behaviour of removing unconditionally. Only the protective
+			// refusal is exempt from counting as blocked; a removal or digest
+			// read that failed for a real reason must block the batch, or the
+			// failure would be journalled away as an undo that succeeded.
 			err = removeIfOurCopy(a.Dst, a.Digest)
 			rec.Dst = ""
+			copyKept = errors.Is(err, errCopyKept)
+			restore = !copyKept
 		default:
 			err = fmt.Errorf("unknown verb %q", a.Verb)
 		}
 		// With the action itself taken back, the file it displaced goes back
 		// where it was. This is a restore too: the displaced file is the one
-		// the overwrite promised was still recoverable.
-		if err == nil && a.Displaced != "" {
+		// the overwrite promised was still recoverable. A copy-undo that
+		// protectively kept a replacement still owes the displaced file the
+		// attempt — its old path is usually occupied by that same
+		// replacement, which is a blocked restore, not a success to report
+		// over a file stranded in the trash.
+		if a.Displaced != "" && (err == nil || copyKept) {
 			restore = true
-			if rerr := e.move(a.Displaced, a.Dst); rerr != nil {
+			if _, statErr := os.Lstat(a.Dst); statErr == nil {
+				err = fmt.Errorf("the displaced file was not restored: %s is occupied; it is still in the trash at %s", a.Dst, a.Displaced)
+			} else if rerr := e.move(a.Displaced, a.Dst); rerr != nil {
 				err = fmt.Errorf("the displaced file was not restored: %w", rerr)
+			} else {
+				// The displaced file is home. If the copy-undo had kept a
+				// replacement, that file is gone now anyway: the path held
+				// nothing when the restore ran.
+				err = nil
 			}
 		}
 		if err != nil {

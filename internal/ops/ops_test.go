@@ -72,6 +72,22 @@ func TestDropJPEGPlanLeavesSidecars(t *testing.T) {
 	}
 }
 
+func TestDropJPEGTakesSidecarsWhenThereIsNoRAW(t *testing.T) {
+	// Sidecars follow their parent file on every verb. With no RAW in the
+	// frame, the JPEG is their parent, so dropping it takes them too rather
+	// than orphaning them.
+	g := jpegOnlyGroup("/p")
+	g.Sidecars = []scan.FileRef{{Path: "/p/IMG_0002.xmp"}}
+	actions, err := DropJPEG{}.Plan([]scan.PhotoGroup{g})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := paths(actions)
+	if len(got) != 2 || got[0] != "IMG_0002.JPG" || got[1] != "IMG_0002.xmp" {
+		t.Fatalf("a frame with no RAW must take its sidecars with the JPEG: %v", got)
+	}
+}
+
 func TestDropBothPlan(t *testing.T) {
 	actions, err := DropBoth{}.Plan([]scan.PhotoGroup{pairedGroup("/p")})
 	if err != nil {

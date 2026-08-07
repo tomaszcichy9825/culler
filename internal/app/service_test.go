@@ -261,6 +261,78 @@ func TestApplyClearsTheVerdictAndKeepsTheRating(t *testing.T) {
 	}
 }
 
+// A move the collision policy skips never took the photo off the card, so the
+// apply must not spend the frame's verdict: a skip journalled as done is what
+// would let a later card format destroy the only copy.
+func TestSkippedMoveKeepsTheVerdictAndTheFile(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	library := NewLibraryService(a)
+	settings := NewConfigService(a)
+
+	libraryRoot := t.TempDir()
+	cfg, err := settings.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	cfg.Behaviour.LibraryRoot = libraryRoot
+	cfg.Behaviour.MoveOnImport = true
+	cfg.Behaviour.CollisionPolicy = config.CollisionSkip
+	if err := settings.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	frame := folder.Groups[1] // the JPEG-only DSCF0002
+	decisions := NewDecisionService(a)
+	if err := decisions.SetVerdict(frame.Hash, frame.Dir, frame.Stem, "keep", "rj"); err != nil {
+		t.Fatalf("SetVerdict: %v", err)
+	}
+	if err := decisions.SetDestination(frame.Hash, frame.Dir, frame.Stem, "keepers"); err != nil {
+		t.Fatalf("SetDestination: %v", err)
+	}
+
+	// The destination is already occupied by a different photograph.
+	occupied := filepath.Join(libraryRoot, "keepers", "DSCF0002.JPG")
+	if err := os.MkdirAll(filepath.Dir(occupied), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(occupied, []byte("someone else's photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := NewApplyService(a).Apply(dir, []string{frame.Hash})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(batch.Actions) != 1 || batch.Actions[0].Outcome != "skipped" {
+		t.Fatalf("want one skipped action, got %+v", batch.Actions)
+	}
+	if !exists(t, filepath.Join(dir, "DSCF0002.JPG")) {
+		t.Fatal("the skipped move took the photo off the card")
+	}
+
+	// The verdict survives, so the user can retry once the collision is
+	// resolved rather than losing the frame's decision to a move that never
+	// happened.
+	reopened, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder after apply: %v", err)
+	}
+	kept := false
+	for _, g := range reopened.Groups {
+		if g.Stem == "DSCF0002" {
+			kept = g.Verdict == "keep"
+		}
+	}
+	if !kept {
+		t.Error("the verdict was cleared although the move was skipped")
+	}
+}
+
 // Ratings are set and batched separately from verdicts, and a rating alone is
 // enough to remember a frame.
 func TestRatingServiceRoundTrip(t *testing.T) {
