@@ -42,8 +42,8 @@ type FileRef struct {
 // sidecars. Grouping key is (Dir, lowercase(Stem)) — case-insensitive because
 // exFAT and default macOS volumes are case-insensitive but ext4 is not.
 type PhotoGroup struct {
-	Dir      string    // absolute directory
-	Stem     string    // basename without extension, case-preserved
+	Dir      string // absolute directory
+	Stem     string // basename without extension, case-preserved
 	Kind     Kind
 	Raw      *FileRef  // nil if absent
 	Jpeg     *FileRef  // nil if absent
@@ -254,8 +254,20 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 		if err != nil {
 			continue // vanished mid-scan; skip rather than fail the whole walk
 		}
+		path := filepath.Join(dir, name)
+		if info.Mode()&os.ModeSymlink != 0 {
+			// A DirEntry's Info describes the link itself. The frame is the
+			// target: its size and mtime are what move when the file is
+			// edited, and a link that leads to a directory — which slips past
+			// IsDir above, lstat not following links — is no frame at all.
+			target, err := os.Stat(path)
+			if err != nil || target.IsDir() {
+				continue
+			}
+			info = target
+		}
 		ref := FileRef{
-			Path:    filepath.Join(dir, name),
+			Path:    path,
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 		}

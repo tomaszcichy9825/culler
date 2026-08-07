@@ -111,9 +111,10 @@ func searchWhere(text string, f Facets) (string, []any, error) {
 
 	if text != "" {
 		// Escaped so that a folder called "100%" is a search for that folder
-		// and not for everything.
+		// and not for everything. Folded through ulower on both sides, because
+		// SQLite's own lower() stops at ASCII and the query is folded in Go.
 		pattern := "%" + escapeLike(strings.ToLower(text)) + "%"
-		clauses = append(clauses, `(lower(stem) LIKE ? ESCAPE '\' OR lower(dir) LIKE ? ESCAPE '\')`)
+		clauses = append(clauses, `(ulower(stem) LIKE ? ESCAPE '\' OR ulower(dir) LIKE ? ESCAPE '\')`)
 		args = append(args, pattern, pattern)
 	}
 	if f.Kind != "" {

@@ -139,9 +139,20 @@ func (b *entryBucket) resolve() stemBucket {
 		if err != nil {
 			continue
 		}
+		path := filepath.Join(b.dir, s.name)
+		if info.Mode()&os.ModeSymlink != 0 {
+			// The link's own metadata is not the frame's. Stat the target the
+			// way ScanDir does, and drop a link that leads nowhere or to a
+			// directory.
+			target, err := os.Stat(path)
+			if err != nil || target.IsDir() {
+				continue
+			}
+			info = target
+		}
 		out.add(s.class, fileSlot{
 			file: FileRef{
-				Path:    filepath.Join(b.dir, s.name),
+				Path:    path,
 				Size:    info.Size(),
 				ModTime: info.ModTime(),
 			},

@@ -175,6 +175,35 @@ func TestRemoveRootOfAnUnknownPathIsNotAnError(t *testing.T) {
 	}
 }
 
+// The filesystem root is a legal root, and it is the one path whose child
+// prefix is not itself plus a separator. Both prefix helpers must agree on it,
+// or / would register with totals of nothing and RemoveRoot("/") would orphan
+// every row.
+func TestUnderRootOnTheFilesystemRoot(t *testing.T) {
+	if !under("/photos/trips", "/") {
+		t.Error("under says /photos/trips does not sit under /")
+	}
+	if !under("/", "/") {
+		t.Error("under says / does not sit under itself")
+	}
+
+	s := openStore(t)
+	if _, err := s.db.Exec(upsertFrameSQL,
+		"hash-under-root", "/photos/trips", "DSCF0001", "raw-only", int64(0),
+		"/photos/trips/DSCF0001.RAF", "", int64(100), int64(0),
+		int64(0), int64(0), 0, "", int64(0)); err != nil {
+		t.Fatal(err)
+	}
+	where, args := underRoot("/")
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE `+where, args...).Scan(&n); err != nil {
+		t.Fatalf("count under /: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("underRoot(\"/\") matched %d frames, want the 1 catalogued", n)
+	}
+}
+
 func TestVolumeOf(t *testing.T) {
 	tests := []struct{ path, want string }{
 		{"/Volumes/FUJI_SD/DCIM/100_FUJI", "/Volumes/FUJI_SD"},

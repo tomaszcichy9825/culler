@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,11 +22,11 @@ func syntheticTree(t *testing.T) string {
 	mkdir(t, day2)
 	mkdir(t, hidden)
 
-	writeFrame(t, day1, "DSCF0001", 3000, 900, shotAt(9, 0))  // paired
-	writeFrame(t, day1, "DSCF0002", 3100, 0, shotAt(9, 5))    // raw only
-	writeFrame(t, day2, "DSCF0100", 0, 950, shotAt(14, 0))    // jpeg only
-	writeFrame(t, hidden, "DSCF9999", 100, 0, shotAt(23, 0))  // inside a hidden dir
-	writeFrame(t, day1, "._DSCF0001", 100, 0, shotAt(9, 0))   // hidden file
+	writeFrame(t, day1, "DSCF0001", 3000, 900, shotAt(9, 0)) // paired
+	writeFrame(t, day1, "DSCF0002", 3100, 0, shotAt(9, 5))   // raw only
+	writeFrame(t, day2, "DSCF0100", 0, 950, shotAt(14, 0))   // jpeg only
+	writeFrame(t, hidden, "DSCF9999", 100, 0, shotAt(23, 0)) // inside a hidden dir
+	writeFrame(t, day1, "._DSCF0001", 100, 0, shotAt(9, 0))  // hidden file
 	if err := os.WriteFile(filepath.Join(day1, "notes.txt"), []byte("not a frame"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +217,157 @@ func TestReindexDropsFramesThatLeftTheDisk(t *testing.T) {
 	}
 	if res.Total != 1 || res.Frames[0].Stem != "DSCF0001" {
 		t.Errorf("frames after the deletions = %+v, want DSCF0001 alone", res.Frames)
+	}
+}
+
+// A directory that cannot be listed is not a directory that has left the
+// disk. Its frames must survive the pass: a permissions hiccup or a card
+// mid-unplug looks exactly like this, and forgetting a folder of photographs
+// on the strength of one failed listing would be the wrong guess.
+func TestReindexKeepsFramesOfAnUnreadableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	s := openStore(t)
+	root := t.TempDir()
+	open := filepath.Join(root, "open")
+	locked := filepath.Join(root, "locked")
+	mkdir(t, open)
+	mkdir(t, locked)
+	writeFrame(t, open, "OPEN0001", 100, 0, shotAt(9, 0))
+	writeFrame(t, locked, "LOCK0001", 100, 0, shotAt(9, 1))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 2 {
+		t.Errorf("catalogue holds %d frames after walking past an unreadable folder, want both: %v", res.Total, stems(res))
+	}
+}
+
+// The worst case of the same mistake: the root itself stops being readable,
+// the walk reaches nothing, and a prune keyed on what was reached would empty
+// the whole catalogue under it.
+func TestReindexKeepsEverythingWhenTheRootIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	s := openStore(t)
+	root := t.TempDir()
+	day := filepath.Join(root, "2026-05-01")
+	mkdir(t, day)
+	writeFrame(t, day, "DSCF0001", 100, 0, shotAt(9, 0))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if err := os.Chmod(root, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(root, 0o755) })
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Errorf("catalogue holds %d frames after a walk that could not start, want the 1 it held before", res.Total)
+	}
+}
+
+// seedDir files n synthetic rows under dir, bypassing the scanner: the prune
+// tests care about rows, not files on disk.
+func seedDir(t *testing.T, s *Store, dir string, n int) []string {
+	t.Helper()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	hashes := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		h := fmt.Sprintf("seed-%05d", i)
+		stem := fmt.Sprintf("SEED%05d", i)
+		if _, err := tx.Exec(upsertFrameSQL,
+			h, dir, stem, "raw-only", int64(i),
+			filepath.Join(dir, stem+".RAF"), "", int64(100), int64(0),
+			int64(0), int64(0), 0, "", int64(0)); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+		hashes = append(hashes, h)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return hashes
+}
+
+// A flat folder can hold more frames than the driver has parameter slots in
+// one statement, and the keep list must not be bound as one.
+func TestPruneDirSurvivesAKeepListPastTheParameterCeiling(t *testing.T) {
+	s := openStore(t)
+	dir := "/photos/flat"
+	keep := seedDir(t, s, dir, 40)
+	for i := len(keep); i < 33000; i++ {
+		keep = append(keep, fmt.Sprintf("ghost-%05d", i))
+	}
+
+	removed, err := s.pruneDir(dir, keep)
+	if err != nil {
+		t.Fatalf("pruneDir with %d survivors: %v", len(keep), err)
+	}
+	if removed != 0 {
+		t.Errorf("pruned %d frames, every one was in the keep list", removed)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE dir = ?`, dir).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 40 {
+		t.Errorf("%d rows survive, want all 40", n)
+	}
+}
+
+func TestPruneDirDropsAcrossChunks(t *testing.T) {
+	s := openStore(t)
+	dir := "/photos/flat"
+	hashes := seedDir(t, s, dir, 1200)
+	keep := hashes[:699] // dooms one full delete batch and a remainder
+
+	removed, err := s.pruneDir(dir, keep)
+	if err != nil {
+		t.Fatalf("pruneDir: %v", err)
+	}
+	if removed != 501 {
+		t.Errorf("pruned %d frames, want the 501 outside the keep list", removed)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE dir = ?`, dir).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 699 {
+		t.Errorf("%d rows survive, want the 699 kept", n)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE dir = ? AND hash = ?`, dir, keep[0]).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Error("a kept hash did not survive the prune")
 	}
 }
 

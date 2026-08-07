@@ -247,6 +247,51 @@ func TestGrouping(t *testing.T) {
 	})
 }
 
+// A symlinked frame is the target file wearing another name. The size and
+// modification time must be the target's: they are what the catalogue compares
+// on a rerun, and the link's own never change however the file is edited.
+func TestSymlinkedFileCarriesTheTargetsMetadata(t *testing.T) {
+	outside := t.TempDir()
+	target := filepath.Join(outside, "master.jpg")
+	if err := os.WriteFile(target, make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, "LINK0001.JPG")); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+
+	groups, err := ScanDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Jpeg == nil {
+		t.Fatalf("want the linked frame as one jpeg group, got %+v", groups)
+	}
+	if got := groups[0].Jpeg.Size; got != 1234 {
+		t.Errorf("size = %d, want the target's 1234, not the link's own", got)
+	}
+}
+
+// A symlink to a directory is not a directory by lstat, so it slips past the
+// IsDir check whatever it points at. Named like an image it must still not
+// become a phantom frame.
+func TestSymlinkToADirectoryIsNotAFrame(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "REAL0001.JPG")
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "FAKE.JPG")); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+
+	groups, err := ScanDir(dir, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Stem != "REAL0001" {
+		t.Errorf("groups = %+v, want REAL0001 alone — a link to a folder is not a frame", groups)
+	}
+}
+
 func TestHiddenFilesAreIgnored(t *testing.T) {
 	// macOS writes AppleDouble companions (._NAME.RAF) onto SMB and exFAT
 	// volumes; they carry real image extensions but are not images.

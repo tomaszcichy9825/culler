@@ -123,12 +123,17 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 	// Every directory the walk reached, so the prune afterwards can tell a
 	// directory that is now empty from one that is no longer there.
 	walked := make([]string, 0, 64)
+	// Every directory the walk could not list. Their subtrees are unknown, not
+	// gone, and the prune must leave them exactly as they were.
+	var failed []string
 
 	err = filepath.WalkDir(clean, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// A directory that cannot be read is skipped rather than failing
 			// the pass: one unreadable folder on a card should not cost the
-			// user the other forty.
+			// user the other forty. Its frames stay catalogued — unreadable is
+			// not the same as gone.
+			failed = append(failed, path)
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -145,7 +150,13 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 
 		groups, err := scan.ScanDir(path, cfg)
 		if err != nil {
-			return nil
+			// A listing that failed keeps its frames, for the same reason
+			// UpsertDir leaves an unreadable directory alone: forgetting a
+			// folder on the strength of one failed read would be the wrong
+			// guess. The walk cannot see inside it either, so the whole
+			// subtree is off limits to the prune.
+			failed = append(failed, path)
+			return fs.SkipDir
 		}
 		walked = append(walked, path)
 		stats.Dirs++
@@ -173,7 +184,7 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 		return stats, err
 	}
 
-	removed, err := s.pruneMissingDirs(clean, walked)
+	removed, err := s.pruneMissingDirs(clean, walked, failed)
 	if err != nil {
 		return stats, err
 	}
@@ -470,28 +481,69 @@ func (s *Store) pruneDir(dir string, keep []string) (int, error) {
 	return removed, tx.Commit()
 }
 
+// pruneDirTx works out the doomed rows in Go and deletes them in batches,
+// rather than binding the whole keep list into one NOT IN: a flat folder can
+// hold more frames than the driver has parameter slots in a statement.
 func pruneDirTx(tx *sql.Tx, dir string, keep []string) (int, error) {
-	query := `DELETE FROM frames WHERE dir = ?`
-	args := []any{dir}
-	if len(keep) > 0 {
-		query += ` AND hash NOT IN (?` + strings.Repeat(`,?`, len(keep)-1) + `)`
-		for _, h := range keep {
-			args = append(args, h)
+	if len(keep) == 0 {
+		res, err := tx.Exec(`DELETE FROM frames WHERE dir = ?`, dir)
+		if err != nil {
+			return 0, fmt.Errorf("catalog: prune %s: %w", dir, err)
 		}
+		n, err := res.RowsAffected()
+		return int(n), err
 	}
-	res, err := tx.Exec(query, args...)
+
+	keepSet := make(map[string]bool, len(keep))
+	for _, h := range keep {
+		keepSet[h] = true
+	}
+	rows, err := tx.Query(`SELECT hash FROM frames WHERE dir = ?`, dir)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: prune %s: %w", dir, err)
 	}
-	n, err := res.RowsAffected()
-	return int(n), err
+	var doomed []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if !keepSet[h] {
+			doomed = append(doomed, h)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	// Closed before the deletes: the store holds one connection, and nothing
+	// can execute on it while a result set is still open.
+	rows.Close()
+
+	for start := 0; start < len(doomed); start += chunk {
+		batch := doomed[start:min(start+chunk, len(doomed))]
+		args := make([]any, len(batch))
+		for i, h := range batch {
+			args[i] = h
+		}
+		query := `DELETE FROM frames WHERE hash IN (?` + strings.Repeat(`,?`, len(batch)-1) + `)`
+		if _, err := tx.Exec(query, args...); err != nil {
+			return 0, fmt.Errorf("catalog: prune %s: %w", dir, err)
+		}
+	}
+	return len(doomed), nil
 }
 
 // pruneMissingDirs drops the frames of directories that were under root and
 // are not any more. The walked list is bounded by the number of directories
 // rather than the number of frames, so it goes into a temporary table instead
 // of an ever-growing IN clause.
-func (s *Store) pruneMissingDirs(root string, walked []string) (int, error) {
+//
+// A directory in failed could not be listed, which is not the same as not
+// being there: everything under it — itself and the subtree the walk never
+// reached — keeps its rows.
+func (s *Store) pruneMissingDirs(root string, walked, failed []string) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -510,8 +562,13 @@ func (s *Store) pruneMissingDirs(root string, walked []string) (int, error) {
 		}
 	}
 	where, args := underRoot(root)
-	res, err := tx.Exec(
-		`DELETE FROM frames WHERE `+where+` AND dir NOT IN (SELECT dir FROM pass_dirs)`, args...)
+	query := `DELETE FROM frames WHERE ` + where + ` AND dir NOT IN (SELECT dir FROM pass_dirs)`
+	for _, dir := range failed {
+		fw, fa := underRoot(dir)
+		query += ` AND NOT ` + fw
+		args = append(args, fa...)
+	}
+	res, err := tx.Exec(query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: prune folders that left %s: %w", root, err)
 	}

@@ -11,14 +11,16 @@ package catalog
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // Verdict values a frame can carry in the catalogue. They mirror the decision
@@ -108,9 +110,27 @@ type Frame struct {
 // Bytes is everything the frame occupies on disk.
 func (f Frame) Bytes() int64 { return f.RawBytes + f.JpegBytes }
 
+// registerULower gives every connection a Unicode-aware lower(). SQLite's own
+// folds ASCII and nothing else, which would leave a stem like MÜNCHEN_001
+// unfindable by any casing of its own name. Registration is per-driver and
+// once per process; it has to land before the first connection is made,
+// because a connection picks its functions up as it opens.
+var registerULower = sync.OnceValue(func() error {
+	return sqlite.RegisterDeterministicScalarFunction("ulower", 1,
+		func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			if s, ok := args[0].(string); ok {
+				return strings.ToLower(s), nil
+			}
+			return args[0], nil
+		})
+})
+
 // Open opens the catalogue at path, creating the file and the schema if they
 // are not there yet.
 func Open(path string) (*Store, error) {
+	if err := registerULower(); err != nil {
+		return nil, fmt.Errorf("catalog: register ulower: %w", err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -236,9 +256,9 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// chunk is how many hashes go into one statement. SQLite's default parameter
-// ceiling is nine hundred and ninety-nine, and a batch is split rather than
-// risking the one statement that trips it.
+// chunk is how many hashes go into one statement. The driver's parameter
+// ceiling is 32766, and a batch is kept far below it rather than risking the
+// one statement that trips it.
 const chunk = 500
 
 // RemoveByHash forgets these frames. Hashes the catalogue does not hold are
@@ -517,7 +537,13 @@ func under(path, root string) bool {
 // name is allowed to contain every wildcard either of those understands.
 // SQLite's substr counts characters, so the length is measured in runes.
 func underRoot(root string) (string, []any) {
-	prefix := root + string(filepath.Separator)
+	sep := string(filepath.Separator)
+	prefix := root + sep
+	// The filesystem root already ends in the separator; doubling it would
+	// build a prefix no path carries. It is the same special case under makes.
+	if root == sep {
+		prefix = sep
+	}
 	return "(dir = ? OR substr(dir, 1, ?) = ?)",
 		[]any{root, utf8.RuneCountInString(prefix), prefix}
 }
