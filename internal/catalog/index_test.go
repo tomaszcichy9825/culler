@@ -475,6 +475,39 @@ func TestReindexKeepsTheVerdictOfAnUnreadableFrameWhoseContentDidNot(t *testing.
 	}
 }
 
+// The index walk skips hidden directories — they hold no photographs, and
+// .Trashes on a card holds files already thrown away — while UpsertDir used
+// to catalogue one happily. The two must agree, or a dot-folder flip-flops:
+// catalogued on open, forgotten by the next reindex. UpsertDir takes the
+// walk's side: a hidden folder is not the catalogue's business.
+func TestUpsertDirRefusesAHiddenDirectory(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "OPEN0001", 100, 0, shotAt(9, 0))
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+
+	hidden := filepath.Join(root, ".trip")
+	mkdir(t, hidden)
+	writeFrame(t, hidden, "HIDE0001", 100, 0, shotAt(9, 1))
+	stats, err := s.UpsertDir(hidden, IndexOptions{})
+	if err != nil {
+		t.Fatalf("UpsertDir: %v", err)
+	}
+	if stats != (Stats{}) {
+		t.Errorf("UpsertDir catalogued a hidden folder: %+v", stats)
+	}
+
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 || res.Frames[0].Stem != "OPEN0001" {
+		t.Errorf("catalogue holds %v, want OPEN0001 alone: the hidden folder is not its business", stems(res))
+	}
+}
+
 // A root that is itself a symlink used to be lstat'd by the walk and never
 // entered: zero directories reached, and the prune then emptied everything
 // under the link on every reindex. The root is an address the user gave, so

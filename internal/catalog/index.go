@@ -253,7 +253,10 @@ func (s *Store) IndexAll(roots []string, opts IndexOptions) (Stats, error) {
 //
 // A directory no registered root covers is not the catalogue's business, so
 // the call does nothing and says so with a zero result rather than an error:
-// opening a folder in CULL must not quietly start cataloguing it.
+// opening a folder in CULL must not quietly start cataloguing it. A hidden
+// directory is refused the same way: the index walk skips dot-folders, so
+// cataloguing one here would only flip-flop — present after the open, pruned
+// by the next reindex.
 func (s *Store) UpsertDir(dir string, opts IndexOptions) (Stats, error) {
 	clean, err := cleanRoot(dir)
 	if err != nil {
@@ -280,18 +283,36 @@ func (s *Store) UpsertDir(dir string, opts IndexOptions) (Stats, error) {
 }
 
 // covered reports whether dir is one of the registered roots or sits inside
-// one.
+// one — reachably: a folder only addressable through a hidden component is
+// one the index walk will never visit, so it does not count as covered.
 func (s *Store) covered(dir string) (bool, error) {
 	roots, err := rootPaths(s.db)
 	if err != nil {
 		return false, err
 	}
 	for _, root := range roots {
-		if under(dir, root) {
+		if under(dir, root) && !hiddenUnder(dir, root) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// hiddenUnder reports whether any folder between root and dir — dir itself
+// included, root excluded — is hidden. It is the lexical twin of the index
+// walk's dot-folder skip: what the walk will not enter, a folder open must
+// not catalogue, or the folder flip-flops between the two passes.
+func hiddenUnder(dir, root string) bool {
+	rel := strings.TrimPrefix(dir, childPrefix(root))
+	if rel == dir || rel == "" {
+		return false // dir is root itself, or not under it at all
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 const upsertFrameSQL = `
