@@ -284,17 +284,18 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 	backup := s.backupDir()
 	var actions []ops.FileAction
 	var installs []string
+	// One frame's failure is that frame's failure: the rest of the batch is
+	// still written, and the error comes back beside the batch rather than in
+	// front of it.
+	var frameErrs []error
 	for i, t := range targets {
 		if t.skip != "" {
 			continue
 		}
-		body, err := t.render()
-		if err != nil {
-			return BatchDTO{}, fmt.Errorf("%s: %w", filepath.Base(t.path), err)
-		}
 		staged := filepath.Join(staging, fmt.Sprintf("%03d-%s", i, filepath.Base(t.write)))
-		if err := exif.WriteFile(staged, body, t.mode); err != nil {
-			return BatchDTO{}, fmt.Errorf("stage %s: %w", filepath.Base(t.write), err)
+		if err := exif.WriteFile(staged, t.rendered, t.mode); err != nil {
+			frameErrs = append(frameErrs, fmt.Errorf("stage %s: %w", filepath.Base(t.write), err))
+			continue
 		}
 		// A file that is being replaced is moved aside first; a sidecar that
 		// does not exist yet has no original to keep. The install is tied to
@@ -314,7 +315,7 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 		installs = append(installs, t.write)
 	}
 	if len(actions) == 0 {
-		return BatchDTO{}, nil
+		return BatchDTO{}, errors.Join(frameErrs...)
 	}
 	if err := os.MkdirAll(backup, 0o755); err != nil {
 		return BatchDTO{}, fmt.Errorf("create backup directory: %w", err)
@@ -329,9 +330,9 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 	batch, applyErr := executor.Apply(plan.Description, actions)
 	dto := batchDTO(batch)
 	if applyErr != nil {
-		return dto, applyErr
+		return dto, errors.Join(append(frameErrs, applyErr)...)
 	}
-	return dto, checkInstalled(batch, installs)
+	return dto, errors.Join(append(frameErrs, checkInstalled(batch, installs))...)
 }
 
 // checkInstalled confirms every rewritten file landed on the path it was meant
@@ -371,6 +372,11 @@ type target struct {
 	change exif.Changes
 	rows   []ExifWriteRowDTO
 	skip   string // why this frame is being left alone, if it is
+	// rendered is the bytes that will replace the file, produced when the
+	// frame is resolved: a frame the writer would refuse — a JPEG with no
+	// EXIF segment, a sidecar that does not parse — has to surface in the
+	// plan the user confirms, not as a failure after they have.
+	rendered []byte
 }
 
 // render produces the bytes that will replace the target's file. A RAW
@@ -445,9 +451,26 @@ func resolveOne(edit ExifEditDTO, cfg scan.Config) (target, error) {
 		return target{}, err
 	}
 	if reason := writeBarrier(t); reason != "" {
-		t.skip, t.method = reason, "skipped"
+		t.markSkipped(reason)
+	}
+	if t.skip == "" && !t.change.Empty() {
+		body, err := t.render()
+		if err != nil {
+			t.markSkipped(err.Error())
+		} else {
+			t.rendered = body
+		}
 	}
 	return t, nil
+}
+
+// markSkipped records why the frame is being left alone, on the target and on
+// every plan row already drawn for it.
+func (t *target) markSkipped(reason string) {
+	t.skip, t.method = reason, "skipped"
+	for i := range t.rows {
+		t.rows[i].Method = "skipped"
+	}
 }
 
 // applyEdit fills in the changes and the plan rows they produce. A tag the
@@ -549,6 +572,9 @@ func (s *ExifService) describe(targets []target) ExifPlanDTO {
 		plan.Rows = append(plan.Rows, t.rows...)
 		if t.skip != "" {
 			skipped++
+			// The reason is part of the plan: a user deciding whether to
+			// confirm needs to know why a frame is being left out.
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s will be skipped: %s", filepath.Base(t.write), t.skip))
 			continue
 		}
 		plan.Writes += len(t.rows)
