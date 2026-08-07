@@ -205,32 +205,32 @@ func TestChildrenRejectsARelativePath(t *testing.T) {
 	}
 }
 
-func TestHashesUnderCoversTheWholeSubtree(t *testing.T) {
+func TestKeysUnderCoversTheWholeSubtree(t *testing.T) {
 	s, root := shootTree(t)
 
-	under, err := s.HashesUnder(filepath.Join(root, "2026-05"))
+	under, err := s.KeysUnder(filepath.Join(root, "2026-05"))
 	if err != nil {
-		t.Fatalf("HashesUnder: %v", err)
+		t.Fatalf("KeysUnder: %v", err)
 	}
 	if len(under) != 3 {
-		t.Errorf("2026-05 covers %d hashes, want its 2 plus the card's 1", len(under))
+		t.Errorf("2026-05 covers %d keys, want its 2 plus the card's 1", len(under))
 	}
-	seen := map[string]bool{}
-	for _, h := range under {
-		if h == "" {
-			t.Error("HashesUnder returned an empty hash")
+	seen := map[FrameKey]bool{}
+	for _, k := range under {
+		if k.Hash == "" || k.Dir == "" || k.Stem == "" {
+			t.Errorf("KeysUnder returned a partial key: %+v", k)
 		}
-		if seen[h] {
-			t.Errorf("HashesUnder returned %s twice", h)
+		if seen[k] {
+			t.Errorf("KeysUnder returned %+v twice", k)
 		}
-		seen[h] = true
+		seen[k] = true
 	}
 
-	all, err := s.HashesUnder(root)
+	all, err := s.KeysUnder(root)
 	if err != nil {
-		t.Fatalf("HashesUnder: %v", err)
+		t.Fatalf("KeysUnder: %v", err)
 	}
 	if len(all) != 5 {
-		t.Errorf("the root covers %d hashes, want 5", len(all))
+		t.Errorf("the root covers %d keys, want 5", len(all))
 	}
 }

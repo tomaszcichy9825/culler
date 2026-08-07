@@ -413,12 +413,14 @@ func (s *ImportService) cataloguedHashes() (map[string]bool, error) {
 	}
 	known := map[string]bool{}
 	for _, root := range roots {
-		hashes, err := store.HashesUnder(root.Path)
+		keys, err := store.KeysUnder(root.Path)
 		if err != nil {
 			return nil, err
 		}
-		for _, h := range hashes {
-			known[h] = true
+		// The question here is deliberately about content alone — "is this
+		// shot already in the library anywhere" — so only the hash matters.
+		for _, k := range keys {
+			known[k.Hash] = true
 		}
 	}
 	return known, nil

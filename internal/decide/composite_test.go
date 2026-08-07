@@ -61,32 +61,6 @@ func TestTwinsInTheSameFolderHoldSeparateVerdicts(t *testing.T) {
 	}
 }
 
-// GetAny answers "what was last decided about this content, wherever it was
-// seen" — the catalogue's overlay reads it while its own callbacks still key
-// on the hash alone.
-func TestGetAnyReturnsTheNewestRecordForContent(t *testing.T) {
-	s := openStore(t)
-
-	if err := s.SetVerdict("h1", "/cards/a", "DSCF0001", Cut, MaskBoth); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetVerdict("h1", "/cards/b", "DSCF0001", Keep, MaskBoth); err != nil {
-		t.Fatal(err)
-	}
-
-	r, ok, err := s.GetAny("h1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || r.Verdict != Keep {
-		t.Errorf("GetAny = %q (ok=%v), want the newest write", r.Verdict, ok)
-	}
-
-	if _, ok, err := s.GetAny("never-seen"); err != nil || ok {
-		t.Errorf("GetAny on unknown content: ok=%v err=%v", ok, err)
-	}
-}
-
 // A database written while the hash was the whole key must come through the
 // composite-key migration with every row intact and independence working from
 // then on.

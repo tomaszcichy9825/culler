@@ -368,7 +368,7 @@ type SessionOptions struct {
 	//
 	// It is called once per catalogued frame, so a caller that answers out of a
 	// database should know what that costs.
-	Verdict func(hash string) (string, bool)
+	Verdict func(hash, dir, stem string) (string, bool)
 }
 
 // Sessions returns every session in the catalogue, newest first. A gap of zero
@@ -416,7 +416,7 @@ func (s *Store) SessionsWith(opts SessionOptions) ([]Session, error) {
 		current.JpegBytes += f.JpegBytes
 		verdict := f.Verdict
 		if opts.Verdict != nil {
-			if live, ok := opts.Verdict(f.Hash); ok {
+			if live, ok := opts.Verdict(f.Hash, f.Dir, f.Stem); ok {
 				verdict = live
 			}
 		}

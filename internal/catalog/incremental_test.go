@@ -180,7 +180,7 @@ func TestReindexRefreshesDecisionsWithoutRereadingFiles(t *testing.T) {
 	s, root, _, _ := twoDayCard(t)
 
 	stats, err := s.Index(root, IndexOptions{
-		Lookup: func(string) (string, int) { return VerdictKeep, 3 },
+		Lookup: func(string, string, string) (string, int) { return VerdictKeep, 3 },
 	})
 	if err != nil {
 		t.Fatalf("second index: %v", err)
@@ -210,12 +210,12 @@ func TestReindexRebuildsAfterTheCatalogueIsEmptied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	var hashes []string
+	var keys []FrameKey
 	for _, f := range res.Frames {
-		hashes = append(hashes, f.Hash)
+		keys = append(keys, FrameKey{Hash: f.Hash, Dir: f.Dir, Stem: f.Stem})
 	}
-	if err := s.RemoveByHash(hashes); err != nil {
-		t.Fatalf("RemoveByHash: %v", err)
+	if err := s.RemoveFrames(keys); err != nil {
+		t.Fatalf("RemoveFrames: %v", err)
 	}
 
 	// A pass over a catalogue that has lost its rows has to put them back:
@@ -304,7 +304,7 @@ func TestUpsertDirOutsideEveryRootDoesNothing(t *testing.T) {
 	}
 }
 
-func TestRemoveByHashForgetsOnlyThoseFrames(t *testing.T) {
+func TestRemoveFramesForgetsOnlyThoseFrames(t *testing.T) {
 	s, _, _, _ := twoDayCard(t)
 
 	res, err := s.Search("DSCF0001", Facets{}, Page{})
@@ -314,8 +314,11 @@ func TestRemoveByHashForgetsOnlyThoseFrames(t *testing.T) {
 	if len(res.Frames) != 1 {
 		t.Fatalf("setup found %d frames for DSCF0001, want 1", len(res.Frames))
 	}
-	if err := s.RemoveByHash([]string{res.Frames[0].Hash, "a hash nothing carries"}); err != nil {
-		t.Fatalf("RemoveByHash: %v", err)
+	if err := s.RemoveFrames([]FrameKey{
+		{Hash: res.Frames[0].Hash, Dir: res.Frames[0].Dir, Stem: res.Frames[0].Stem},
+		{Hash: "a hash nothing carries", Dir: "/nowhere", Stem: "NOPE"},
+	}); err != nil {
+		t.Fatalf("RemoveFrames: %v", err)
 	}
 
 	after, err := s.Search("", Facets{}, Page{})
@@ -332,10 +335,10 @@ func TestRemoveByHashForgetsOnlyThoseFrames(t *testing.T) {
 	}
 }
 
-func TestRemoveByHashOfNothingIsNotAnError(t *testing.T) {
+func TestRemoveFramesOfNothingIsNotAnError(t *testing.T) {
 	s := openStore(t)
-	if err := s.RemoveByHash(nil); err != nil {
-		t.Errorf("RemoveByHash(nil): %v", err)
+	if err := s.RemoveFrames(nil); err != nil {
+		t.Errorf("RemoveFrames(nil): %v", err)
 	}
 }
 
@@ -347,7 +350,9 @@ func TestSetDecisionsOverwritesWhatTheIndexRecorded(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 	hash := res.Frames[0].Hash
-	if err := s.SetDecisions([]Decision{{Hash: hash, Verdict: VerdictCut, Rating: 5}}); err != nil {
+	if err := s.SetDecisions([]Decision{{
+		Hash: hash, Dir: res.Frames[0].Dir, Stem: res.Frames[0].Stem, Verdict: VerdictCut, Rating: 5,
+	}}); err != nil {
 		t.Fatalf("SetDecisions: %v", err)
 	}
 
@@ -365,7 +370,7 @@ func TestSetDecisionsOverwritesWhatTheIndexRecorded(t *testing.T) {
 
 func TestSetDecisionsRejectsAVerdictTheCatalogueCannotHold(t *testing.T) {
 	s, _, _, _ := twoDayCard(t)
-	if err := s.SetDecisions([]Decision{{Hash: "x", Verdict: "maybe"}}); err == nil {
+	if err := s.SetDecisions([]Decision{{Hash: "x", Dir: "/d", Stem: "S", Verdict: "maybe"}}); err == nil {
 		t.Error("a verdict outside the vocabulary was accepted")
 	}
 }

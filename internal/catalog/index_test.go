@@ -292,14 +292,14 @@ func TestReindexKeepsEverythingWhenTheRootIsUnreadable(t *testing.T) {
 
 // seedDir files n synthetic rows under dir, bypassing the scanner: the prune
 // tests care about rows, not files on disk.
-func seedDir(t *testing.T, s *Store, dir string, n int) []string {
+func seedDir(t *testing.T, s *Store, dir string, n int) []FrameKey {
 	t.Helper()
 	tx, err := s.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	hashes := make([]string, 0, n)
+	keys := make([]FrameKey, 0, n)
 	for i := 0; i < n; i++ {
 		h := fmt.Sprintf("seed-%05d", i)
 		stem := fmt.Sprintf("SEED%05d", i)
@@ -309,12 +309,12 @@ func seedDir(t *testing.T, s *Store, dir string, n int) []string {
 			int64(0), int64(0), 0, "", int64(0)); err != nil {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
-		hashes = append(hashes, h)
+		keys = append(keys, FrameKey{Hash: h, Dir: dir, Stem: stem})
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	return hashes
+	return keys
 }
 
 // A flat folder can hold more frames than the driver has parameter slots in
@@ -324,7 +324,9 @@ func TestPruneDirSurvivesAKeepListPastTheParameterCeiling(t *testing.T) {
 	dir := "/photos/flat"
 	keep := seedDir(t, s, dir, 40)
 	for i := len(keep); i < 33000; i++ {
-		keep = append(keep, fmt.Sprintf("ghost-%05d", i))
+		keep = append(keep, FrameKey{
+			Hash: fmt.Sprintf("ghost-%05d", i), Dir: dir, Stem: fmt.Sprintf("GHOST%05d", i),
+		})
 	}
 
 	removed, err := s.pruneDir(dir, keep)
@@ -363,7 +365,7 @@ func TestPruneDirDropsAcrossChunks(t *testing.T) {
 	if n != 699 {
 		t.Errorf("%d rows survive, want the 699 kept", n)
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE dir = ? AND hash = ?`, dir, keep[0]).Scan(&n); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE dir = ? AND hash = ?`, dir, keep[0].Hash).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -425,7 +427,7 @@ func TestIndexCarriesTheDecisionsTheLookupReturns(t *testing.T) {
 
 	// Every frame the lookup is asked about gets the same answer, so the test
 	// does not have to know the hashes in advance.
-	_, err := s.Index(root, IndexOptions{Lookup: func(hash string) (string, int) {
+	_, err := s.Index(root, IndexOptions{Lookup: func(hash, dir, stem string) (string, int) {
 		return "cut", 3
 	}})
 	if err != nil {

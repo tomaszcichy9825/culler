@@ -393,8 +393,8 @@ func (s *LibraryIndexService) reindex(root string) (catalog.Stats, error) {
 		// A network share stalls under parallel head reads, so the catalogue
 		// takes the same low worker cap a folder open does.
 		Workers: s.app.hashWorkers(root != "" && platform.IsNetwork(root)),
-		Lookup: func(hash string) (string, int) {
-			rec, ok, err := decisions.GetAny(hash)
+		Lookup: func(hash, dir, stem string) (string, int) {
+			rec, ok, err := decisions.Get(hash, dir, stem)
 			if err != nil || !ok {
 				return "", 0
 			}
@@ -462,7 +462,8 @@ func (s *LibraryIndexService) overlay(store *catalog.Store, frames []catalog.Fra
 		}
 		if frames[i].Verdict != verdict || frames[i].Rating != rating {
 			changed = append(changed, catalog.Decision{
-				Hash: frames[i].Hash, Verdict: verdict, Rating: rating,
+				Hash: frames[i].Hash, Dir: frames[i].Dir, Stem: frames[i].Stem,
+				Verdict: verdict, Rating: rating,
 			})
 		}
 		frames[i].Verdict = verdict
@@ -581,8 +582,8 @@ func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
 	}
 	sessions, err := store.SessionsWith(catalog.SessionOptions{
 		Gap: time.Duration(gapHours * float64(time.Hour)),
-		Verdict: func(hash string) (string, bool) {
-			rec, ok, err := decisions.GetAny(hash)
+		Verdict: func(hash, dir, stem string) (string, bool) {
+			rec, ok, err := decisions.Get(hash, dir, stem)
 			if err != nil || !ok {
 				// Nothing recorded is a real answer — the frame is undecided —
 				// and so is a read that failed, where the recorded verdict is
@@ -690,7 +691,7 @@ func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Nod
 	if n.Frames > limit {
 		return UndecidedUnknown, nil
 	}
-	hashes, err := store.HashesUnder(n.Path)
+	keys, err := store.KeysUnder(n.Path)
 	if err != nil {
 		return 0, err
 	}
@@ -699,8 +700,8 @@ func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Nod
 		return 0, err
 	}
 	undecided := 0
-	for _, hash := range hashes {
-		rec, ok, err := decisions.GetAny(hash)
+	for _, k := range keys {
+		rec, ok, err := decisions.Get(k.Hash, k.Dir, k.Stem)
 		if err != nil {
 			return 0, err
 		}
@@ -716,13 +717,15 @@ func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Nod
 // The catalogue describes what was on disk at index time, and a batch that has
 // been applied has just made some of that untrue. Waiting for the next index
 // pass would leave the trashed frames in search results, one keystroke from
-// opening a folder they are no longer in.
+// opening a folder they are no longer in. The keys are exact — a
+// byte-identical twin in another folder keeps its row, because its files
+// never moved.
 //
 // An app that has never opened the catalogue does not open one to do this:
 // there is nothing catalogued to forget, and creating the file would undo the
 // one thing that keeps a browse-only session from writing anything at all.
-func (s *LibraryIndexService) PruneApplied(hashes []string) error {
-	if len(hashes) == 0 {
+func (s *LibraryIndexService) PruneApplied(keys []catalog.FrameKey) error {
+	if len(keys) == 0 {
 		return nil
 	}
 	if !s.catalogueExists() {
@@ -732,7 +735,7 @@ func (s *LibraryIndexService) PruneApplied(hashes []string) error {
 	if err != nil {
 		return err
 	}
-	return store.RemoveByHash(hashes)
+	return store.RemoveFrames(keys)
 }
 
 // catalogueExists reports whether there is a catalogue to talk to, either
@@ -768,8 +771,8 @@ func (s *LibraryIndexService) UpsertDir(dir string) error {
 	_, err = store.UpsertDir(resolved, catalog.IndexOptions{
 		Scan:    s.app.Config().ScanConfig(),
 		Workers: s.app.hashWorkers(platform.IsNetwork(resolved)),
-		Lookup: func(hash string) (string, int) {
-			rec, ok, err := decisions.GetAny(hash)
+		Lookup: func(hash, dir, stem string) (string, int) {
+			rec, ok, err := decisions.Get(hash, dir, stem)
 			if err != nil || !ok {
 				return "", 0
 			}
