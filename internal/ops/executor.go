@@ -64,9 +64,20 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 		Time:        time.Now(),
 		Description: description,
 	}
+	priorFailed := false
 	for _, a := range actions {
 		rec := journal.Action{Verb: string(a.Verb), Src: a.Src}
+		if a.NeedsPrior && priorFailed {
+			// The action this one depends on did not happen, so running it
+			// would act on a state that does not exist. Skipping is recorded as
+			// its own failure — and chains, so a further dependent skips too.
+			rec.Outcome = journal.OutcomeError
+			rec.Err = "skipped: the action before it failed"
+			batch.Actions = append(batch.Actions, rec)
+			continue
+		}
 		dst, displaced, err := e.execute(a)
+		priorFailed = err != nil
 		rec.Dst = dst
 		rec.Displaced = displaced
 		if err != nil {

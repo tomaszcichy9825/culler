@@ -28,6 +28,13 @@ type FileAction struct {
 	Verb Verb
 	Src  string
 	Dst  string
+	// NeedsPrior ties this action to the one immediately before it in the
+	// batch: if that one failed, this one is skipped rather than attempted.
+	// The metadata writer is the customer — its "install the edited copy"
+	// only makes sense once its "move the original to backup" has happened,
+	// and installing anyway would file the edit beside the unmoved original
+	// under a numbered name, in a folder this app has no business writing to.
+	NeedsPrior bool
 }
 
 // Op plans file actions for a set of groups. Plan is pure: no side effects,

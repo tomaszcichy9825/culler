@@ -293,7 +293,10 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 			return BatchDTO{}, fmt.Errorf("stage %s: %w", filepath.Base(t.write), err)
 		}
 		// A file that is being replaced is moved aside first; a sidecar that
-		// does not exist yet has no original to keep.
+		// does not exist yet has no original to keep. The install is tied to
+		// its backup move: if the original could not be moved aside, installing
+		// anyway would file the edit beside it under a numbered name, in the
+		// photo folder — possibly the card — so the executor skips it instead.
 		if t.exists {
 			actions = append(actions, ops.FileAction{
 				Verb: ops.VerbMove,
@@ -301,7 +304,9 @@ func (s *ExifService) Apply(edits []ExifEditDTO) (BatchDTO, error) {
 				Dst:  filepath.Join(backup, filepath.Base(t.write)),
 			})
 		}
-		actions = append(actions, ops.FileAction{Verb: ops.VerbCopy, Src: staged, Dst: t.write})
+		actions = append(actions, ops.FileAction{
+			Verb: ops.VerbCopy, Src: staged, Dst: t.write, NeedsPrior: t.exists,
+		})
 		installs = append(installs, t.write)
 	}
 	if len(actions) == 0 {

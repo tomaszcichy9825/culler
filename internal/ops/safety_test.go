@@ -339,3 +339,56 @@ func TestRemoveIfOurCopyRefusesAnUnrecordedDigest(t *testing.T) {
 		t.Fatal("the file was deleted on the strength of no digest at all")
 	}
 }
+
+// An action marked NeedsPrior only makes sense after the one before it
+// succeeded. The metadata writer pairs "move the original to backup" with
+// "install the edited copy": installing without the backup would put the
+// edited file beside an original that never moved — on the card, under a
+// numbered name — so the install must be skipped, not attempted.
+func TestNeedsPriorSkipsAfterAFailedPredecessor(t *testing.T) {
+	ex, _ := newExecutor(t)
+
+	dir := t.TempDir()
+	original := filepath.Join(dir, "DSCF0001.JPG")
+	staged := filepath.Join(t.TempDir(), "staged.JPG")
+	if err := os.WriteFile(original, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The backup move fails: its destination's parent is a file, so nothing
+	// can be created under it.
+	blocked := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocked, []byte("in the way"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := ex.Apply("edit metadata", []FileAction{
+		{Verb: VerbMove, Src: original, Dst: filepath.Join(blocked, "DSCF0001.JPG")},
+		{Verb: VerbCopy, Src: staged, Dst: original, NeedsPrior: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Actions[0].Outcome != "error" {
+		t.Fatalf("the backup move was supposed to fail: %+v", batch.Actions[0])
+	}
+	if batch.Actions[1].Outcome != "error" {
+		t.Fatalf("the install must be skipped, not run: %+v", batch.Actions[1])
+	}
+	if read(t, original) != "original" {
+		t.Errorf("the original was disturbed: %q", read(t, original))
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("a stray file landed beside the original: %v", names)
+	}
+}
