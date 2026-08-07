@@ -505,13 +505,17 @@ func (t *target) applyEdit(edit ExifEditDTO) error {
 	}
 	if edit.SetGPS != nil {
 		g := *edit.SetGPS
-		if math.Abs(g.Latitude) > 90 || math.Abs(g.Longitude) > 180 {
+		// A NaN slips past the magnitude checks — every comparison with it is
+		// false — and would encode as a perfectly valid 0,0. It is refused
+		// here with the rest of the impossible coordinates.
+		if math.IsNaN(g.Latitude) || math.IsNaN(g.Longitude) ||
+			math.Abs(g.Latitude) > 90 || math.Abs(g.Longitude) > 180 {
 			return fmt.Errorf("location %.6f, %.6f is off the earth", g.Latitude, g.Longitude)
 		}
 		// The altitude encodes as hundredths of a metre in a uint32, so an absurd
 		// value would silently wrap to a wrong one. Anywhere a photograph is taken
 		// sits well inside this bound; a value past it is a mistake, not a place.
-		if g.HasAltitude && math.Abs(g.Altitude) > 100_000 {
+		if g.HasAltitude && (math.IsNaN(g.Altitude) || math.Abs(g.Altitude) > 100_000) {
 			return fmt.Errorf("altitude %.1f m is not a place on earth", g.Altitude)
 		}
 		// Setting a location works for a RAW too: unlike stripping, a sidecar can

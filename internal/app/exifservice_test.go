@@ -492,6 +492,67 @@ func TestExifSetGPSRejectsAnAbsurdAltitude(t *testing.T) {
 	}
 }
 
+// A NaN slips past the magnitude checks — NaN > 90 is false — and would be
+// written as a perfectly valid 0,0 position off the coast of Ghana. It is not
+// a place and must be refused with the other impossible coordinates.
+func TestExifSetGPSRejectsANaNCoordinate(t *testing.T) {
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+	svc := NewExifService(testApp(t))
+	cases := map[string]GPSCoordDTO{
+		"latitude":  {Latitude: math.NaN(), Longitude: 2.2945},
+		"longitude": {Latitude: 48.8584, Longitude: math.NaN()},
+		"altitude":  {Latitude: 48.8584, Longitude: 2.2945, Altitude: math.NaN(), HasAltitude: true},
+	}
+	for name, coord := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := coord
+			if _, err := svc.Apply([]ExifEditDTO{{Path: jpg, SetGPS: &c}}); err == nil {
+				t.Error("a NaN coordinate was accepted; it would have been written as 0,0")
+			}
+		})
+	}
+}
+
+// An edit whose fields are all nil plans nothing and stages nothing: resolve
+// filters it out before Apply, so a target with no rendered bytes can never
+// reach exif.WriteFile — a zero-byte file installed over a photograph after
+// its backup move would be the worst possible outcome.
+func TestExifAllNilEditPlansNothingAndStagesNothing(t *testing.T) {
+	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
+	before, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testApp(t)
+	svc := NewExifService(a)
+
+	plan, err := svc.Plan([]ExifEditDTO{{Path: jpg}})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Frames != 0 || plan.Writes != 0 || len(plan.Rows) != 0 {
+		t.Errorf("an all-nil edit planned work: %+v", plan)
+	}
+
+	batch, err := svc.Apply([]ExifEditDTO{{Path: jpg}})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(batch.Actions) != 0 {
+		t.Errorf("an all-nil edit produced %d actions", len(batch.Actions))
+	}
+	after, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("an all-nil edit rewrote the frame")
+	}
+	if _, err := os.Stat(filepath.Join(a.dataDir, backupRoot)); !os.IsNotExist(err) {
+		t.Error("a backup directory was created for a no-op")
+	}
+}
+
 // jpegFixture's capture time carries no offset tag, and the camera that wrote
 // it never said which zone it was in. Editing the time must not invent one:
 // the form shows the wall clock without a zone, an edit sent back without one
