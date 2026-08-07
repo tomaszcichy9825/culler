@@ -456,7 +456,7 @@ func TestExecuteClearsWhatItImportedAndLeavesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, ok, err := store.Get(routed.Hash)
+	rec, ok, err := store.Get(routed.Hash, routed.Dir, routed.Stem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestExecuteClearsWhatItImportedAndLeavesTheRest(t *testing.T) {
 	if rec.Destination != "" {
 		t.Errorf("the destination is consumed once the copy lands, got %q", rec.Destination)
 	}
-	if _, ok, err := store.Get(untouched.Hash); err != nil || ok {
+	if _, ok, err := store.Get(untouched.Hash, untouched.Dir, untouched.Stem); err != nil || ok {
 		t.Errorf("a frame nobody routed gained a record: %v %v", ok, err)
 	}
 }

@@ -316,7 +316,7 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 		if h == "" || (len(wanted) > 0 && !wanted[h]) {
 			continue
 		}
-		rec, ok, err := store.Get(h)
+		rec, ok, err := store.Get(h, g.Dir, g.Stem)
 		if err != nil {
 			return nil, fmt.Errorf("read decisions: %w", err)
 		}

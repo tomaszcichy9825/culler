@@ -16,11 +16,11 @@ func openStore(t *testing.T) *Store {
 	return s
 }
 
-func mustGet(t *testing.T, s *Store, hash string) (Record, bool) {
+func mustGet(t *testing.T, s *Store, hash, dir, stem string) (Record, bool) {
 	t.Helper()
-	r, ok, err := s.Get(hash)
+	r, ok, err := s.Get(hash, dir, stem)
 	if err != nil {
-		t.Fatalf("Get(%s): %v", hash, err)
+		t.Fatalf("Get(%s, %s, %s): %v", hash, dir, stem, err)
 	}
 	return r, ok
 }
@@ -31,7 +31,7 @@ func TestSetVerdictRoundTrip(t *testing.T) {
 	if err := s.SetVerdict("h1", "/photos", "DSCF1234", Keep, MaskJPEG); err != nil {
 		t.Fatal(err)
 	}
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234")
 	if !ok {
 		t.Fatal("record not found after SetVerdict")
 	}
@@ -46,7 +46,7 @@ func TestSetVerdictRoundTrip(t *testing.T) {
 func TestGetUnknownHash(t *testing.T) {
 	s := openStore(t)
 
-	r, ok := mustGet(t, s, "never-seen")
+	r, ok := mustGet(t, s, "never-seen", "/photos", "DSCF1234")
 	if ok {
 		t.Errorf("want ok=false for an unknown hash, got record %+v", r)
 	}
@@ -61,29 +61,29 @@ func TestUpsertOverwrites(t *testing.T) {
 	if err := s.SetVerdict("h1", "/photos", "DSCF1234", Cut, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-	// Same frame, seen at a new path, decided differently.
-	if err := s.SetVerdict("h1", "/photos/keep", "RENAMED", Keep, MaskBoth); err != nil {
+	// The same frame decided again replaces its own row.
+	if err := s.SetVerdict("h1", "/photos", "DSCF1234", Keep, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234")
 	if !ok || r.Verdict != Keep {
 		t.Fatalf("want keep, got %q (ok=%v)", r.Verdict, ok)
 	}
-	// The row moved with the file, so the old directory is now empty.
-	old, err := s.ForDir("/photos")
-	if err != nil {
+
+	// The same content seen at a new path is a new row, not a steal: the old
+	// place keeps its own verdict. This is the composite key doing its job.
+	if err := s.SetVerdict("h1", "/photos/keep", "RENAMED", Cut, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-	if len(old) != 0 {
-		t.Errorf("upsert must refresh dir/stem, old dir still holds %v", old)
+	if r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); !ok || r.Verdict != Keep {
+		t.Errorf("the original place lost its keep to a twin: %+v (ok=%v)", r, ok)
 	}
 	fresh, err := s.ForDir("/photos/keep")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh["RENAMED"].Verdict != Keep {
-		t.Errorf("want RENAMED->keep in the new dir, got %v", fresh)
+	if fresh["RENAMED"].Verdict != Cut {
+		t.Errorf("want RENAMED->cut in the new dir, got %v", fresh)
 	}
 }
 
@@ -97,14 +97,14 @@ func TestClearingVerdictDeletesAnUnratedFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if r, ok := mustGet(t, s, "h1"); ok {
+	if r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); ok {
 		t.Errorf("clearing the verdict of an unrated frame must delete the row, still got %+v", r)
 	}
 	// Undeciding a frame that was never decided is not an error.
 	if err := s.SetVerdict("h2", "/photos", "DSCF9999", Undecided, MaskBoth); err != nil {
 		t.Errorf("clearing an unknown frame: %v", err)
 	}
-	if _, ok := mustGet(t, s, "h2"); ok {
+	if _, ok := mustGet(t, s, "h2", "/photos", "DSCF9999"); ok {
 		t.Error("clearing an unknown frame created a row")
 	}
 }
@@ -124,7 +124,7 @@ func TestRatingSurvivesAClearedVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234")
 	if !ok {
 		t.Fatal("a rated frame must keep its row when the verdict is cleared")
 	}
@@ -143,7 +143,7 @@ func TestRatingIsIndependentOfVerdict(t *testing.T) {
 	if err := s.SetRating("h1", "/photos", "DSCF1234", 5); err != nil {
 		t.Fatal(err)
 	}
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234")
 	if !ok {
 		t.Fatal("rating an undecided frame must store it")
 	}
@@ -155,7 +155,7 @@ func TestRatingIsIndependentOfVerdict(t *testing.T) {
 	if err := s.SetVerdict("h1", "/photos", "DSCF1234", Cut, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := mustGet(t, s, "h1"); r.Rating != 5 || r.Verdict != Cut {
+	if r, _ := mustGet(t, s, "h1", "/photos", "DSCF1234"); r.Rating != 5 || r.Verdict != Cut {
 		t.Errorf("want rating 5 and a cut, got %+v", r)
 	}
 }
@@ -169,7 +169,7 @@ func TestClearingRatingDeletesAnUndecidedFrame(t *testing.T) {
 	if err := s.SetRating("h1", "/photos", "DSCF1234", 0); err != nil {
 		t.Fatal(err)
 	}
-	if r, ok := mustGet(t, s, "h1"); ok {
+	if r, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); ok {
 		t.Errorf("an undecided, unrated frame must not keep a row, got %+v", r)
 	}
 
@@ -183,7 +183,7 @@ func TestClearingRatingDeletesAnUndecidedFrame(t *testing.T) {
 	if err := s.SetRating("h2", "/photos", "DSCF9999", 0); err != nil {
 		t.Fatal(err)
 	}
-	r, ok := mustGet(t, s, "h2")
+	r, ok := mustGet(t, s, "h2", "/photos", "DSCF9999")
 	if !ok {
 		t.Fatal("clearing a rating must not discard the verdict")
 	}
@@ -204,7 +204,7 @@ func TestSetVerdictRejectsInvalidValues(t *testing.T) {
 	if err := s.SetVerdict("h1", "/photos", "DSCF1234", Keep, Mask("")); err == nil {
 		t.Error("want an error for a keep with no mask")
 	}
-	if _, ok := mustGet(t, s, "h1"); ok {
+	if _, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); ok {
 		t.Error("a rejected verdict must not be stored")
 	}
 }
@@ -217,7 +217,7 @@ func TestSetRatingRejectsValuesOffTheScale(t *testing.T) {
 			t.Errorf("rating %d accepted, want an error", n)
 		}
 	}
-	if _, ok := mustGet(t, s, "h1"); ok {
+	if _, ok := mustGet(t, s, "h1", "/photos", "DSCF1234"); ok {
 		t.Error("a rejected rating must not be stored")
 	}
 }
@@ -293,7 +293,7 @@ func TestSetVerdictBatch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if r, ok := mustGet(t, s, "h2"); ok {
+	if r, ok := mustGet(t, s, "h2", "/cardA", "DSCF0002"); ok {
 		t.Errorf("clearing in a batch must delete, still got %+v", r)
 	}
 
@@ -417,7 +417,7 @@ func TestClear(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := mustGet(t, s, "h1"); ok {
+	if _, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001"); ok {
 		t.Error("Clear left h1 behind")
 	}
 	got, err := s.ForDir("/cardB")
@@ -455,7 +455,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 	defer s2.Close()
 
-	r, ok := mustGet(t, s2, "h1")
+	r, ok := mustGet(t, s2, "h1", "/cardA", "DSCF0001")
 	if !ok || r.Verdict != Keep || r.Mask != MaskRAW || r.Rating != 2 {
 		t.Fatalf("record lost across reopen: %+v (ok=%v)", r, ok)
 	}
@@ -538,14 +538,14 @@ func TestMigrationFromTheOldSchema(t *testing.T) {
 		}
 	}
 
-	// The migrated rows are still keyed by hash, and still writable.
-	if r, ok := mustGet(t, s, "hash-DSCF0002"); !ok || r.Verdict != Keep || r.Mask != MaskJPEG {
+	// The migrated rows answer to their content and place, and are writable.
+	if r, ok := mustGet(t, s, "hash-DSCF0002", "/cardA", "DSCF0002"); !ok || r.Verdict != Keep || r.Mask != MaskJPEG {
 		t.Errorf("Get after migration: %+v (ok=%v)", r, ok)
 	}
 	if err := s.SetRating("hash-DSCF0002", "/cardA", "DSCF0002", 5); err != nil {
 		t.Fatalf("write to a migrated store: %v", err)
 	}
-	if r, _ := mustGet(t, s, "hash-DSCF0002"); r.Rating != 5 || r.Verdict != Keep {
+	if r, _ := mustGet(t, s, "hash-DSCF0002", "/cardA", "DSCF0002"); r.Rating != 5 || r.Verdict != Keep {
 		t.Errorf("rating a migrated row: %+v", r)
 	}
 }
@@ -571,7 +571,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	}
 	defer second.Close()
 
-	r, ok := mustGet(t, second, "hash-DSCF0001")
+	r, ok := mustGet(t, second, "hash-DSCF0001", "/cardA", "DSCF0001")
 	if !ok {
 		t.Fatal("the second Open lost the migrated row")
 	}
