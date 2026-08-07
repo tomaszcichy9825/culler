@@ -253,12 +253,15 @@ func survey(data []byte, owned func(space, local string) bool) ([]edit, []descri
 			}
 			open = append(open, idx)
 		case xml.EndElement:
-			scope = scope[:len(scope)-1]
+			// Guarded before the scope pop: both stacks grow and shrink
+			// together, so an end tag with no start would underflow the pop
+			// as surely as the index below. Unreachable in well-formed XML,
+			// which is the only kind the decoder delivers; refusing beats
+			// panicking either way.
 			if len(open) == 0 {
-				// Unreachable in well-formed XML, which is the only kind the
-				// decoder delivers; refusing beats indexing past the stack.
 				return nil, nil, fmt.Errorf("%w: end tag with no start", ErrNotXMP)
 			}
+			scope = scope[:len(scope)-1]
 			idx := open[len(open)-1]
 			open = open[:len(open)-1]
 			// A self-closing description has no end tag of its own: the

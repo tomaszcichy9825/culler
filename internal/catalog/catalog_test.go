@@ -215,16 +215,28 @@ func TestUnderRootOnTheFilesystemRoot(t *testing.T) {
 }
 
 func TestVolumeOf(t *testing.T) {
-	if filepath.Separator != '/' {
-		t.Skip("exercises the Unix mount-parent heuristics; Windows takes the drive-letter branch")
-	}
-	tests := []struct{ path, want string }{
-		{"/Volumes/FUJI_SD/DCIM/100_FUJI", "/Volumes/FUJI_SD"},
-		{"/Volumes/FUJI_SD", "/Volumes/FUJI_SD"},
-		{"/media/tomasz/CARD/DCIM", "/media/tomasz/CARD"},
-		{"/mnt/photos/2026", "/mnt/photos"},
-		{"/Users/tomasz/Pictures", "/"},
-		{"/", "/"},
+	// Unix paths take the mount-parent heuristics; drive-prefixed paths take
+	// the drive-letter branch, whose contract is the volume name plus the
+	// separator. Each shape is only constructible on its own platform, because
+	// filepath.VolumeName sees no volume in C:\ on Unix and no separators in a
+	// slashed path on Windows.
+	var tests []struct{ path, want string }
+	if filepath.Separator == '/' {
+		tests = []struct{ path, want string }{
+			{"/Volumes/FUJI_SD/DCIM/100_FUJI", "/Volumes/FUJI_SD"},
+			{"/Volumes/FUJI_SD", "/Volumes/FUJI_SD"},
+			{"/media/tomasz/CARD/DCIM", "/media/tomasz/CARD"},
+			{"/mnt/photos/2026", "/mnt/photos"},
+			{"/Users/tomasz/Pictures", "/"},
+			{"/", "/"},
+		}
+	} else {
+		tests = []struct{ path, want string }{
+			{`C:\Users\tomasz\Pictures`, `C:\`},
+			{`D:\DCIM\100_FUJI`, `D:\`},
+			{`D:\`, `D:\`},
+			{`\\server\photos\2026`, `\\server\photos\`},
+		}
 	}
 	for _, tt := range tests {
 		if got := volumeOf(tt.path); got != tt.want {

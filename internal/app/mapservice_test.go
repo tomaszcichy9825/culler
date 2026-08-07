@@ -396,6 +396,56 @@ func TestPositionsScopeSingleFolderNamesItAndFilters(t *testing.T) {
 	}
 }
 
+// One folder the scan cannot read costs the scope that folder's frames and
+// nothing else: they are counted unreadable — the same answer a single
+// unreadable file gets — and the rest of the scope is still plotted.
+func TestPositionsScopeSkipsAFolderItCannotScan(t *testing.T) {
+	s := NewMapService(testApp(t))
+	good := t.TempDir()
+	if err := os.WriteFile(filepath.Join(good, "DSCF0001.JPG"),
+		gpsJPEG(rynekLat, rynekLon, 0, false, "2026:07:18 19:42:07"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	locked := t.TempDir()
+	inside := filepath.Join(locked, "LOCK0001.RAF")
+	if err := os.WriteFile(inside, []byte("raw bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Listable but not traversable: the scan sees the names and fails every
+	// stat, which is the shape ScanDir refuses to guess about.
+	if err := os.Chmod(locked, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := os.Stat(inside); err == nil {
+		t.Skip("cannot make the directory untraversable on this platform")
+	}
+
+	got, err := s.PositionsScope([]ScopeRef{
+		{Dir: good, Stem: "DSCF0001"},
+		{Dir: locked, Stem: "LOCK0001"},
+	})
+	if err != nil {
+		t.Fatalf("PositionsScope with one unreadable folder: %v", err)
+	}
+	if len(got.Frames) != 1 || got.Frames[0].Stem != "DSCF0001" {
+		t.Fatalf("Frames = %+v, want the good folder's frame alone", got.Frames)
+	}
+	if got.Positioned != 1 {
+		t.Errorf("Positioned = %d, want 1", got.Positioned)
+	}
+	if got.Unreadable != 1 {
+		t.Errorf("Unreadable = %d, want the locked folder's named frame counted", got.Unreadable)
+	}
+	if got.Total != 2 {
+		t.Errorf("Total = %d, want both named frames accounted for", got.Total)
+	}
+	if sum := got.Positioned + got.Unpositioned + got.Unreadable; sum != got.Total {
+		t.Errorf("the three counts sum to %d, want Total %d", sum, got.Total)
+	}
+}
+
 func TestPositionsScopeEmpty(t *testing.T) {
 	s := NewMapService(testApp(t))
 	got, err := s.PositionsScope(nil)

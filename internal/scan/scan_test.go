@@ -292,6 +292,57 @@ func TestSymlinkToADirectoryIsNotAFrame(t *testing.T) {
 	}
 }
 
+// A symlink whose target cannot be statted is junk, not a frame: dangling,
+// looping, or pointing somewhere unreadable, there is nothing behind it to
+// cull. One piece of junk must not take a folder of readable frames down with
+// it — that is the regular-file rule, which guards against a directory that
+// fails every stat, not against a single broken link.
+func TestScanDirSkipsAJunkSymlink(t *testing.T) {
+	t.Run("self-referential loop", func(t *testing.T) {
+		dir := t.TempDir()
+		touch(t, dir, "DSCF0001.JPG")
+		touch(t, dir, "DSCF0002.JPG")
+		touch(t, dir, "DSCF0003.JPG")
+		loop := filepath.Join(dir, "LOOP.JPG")
+		if err := os.Symlink(loop, loop); err != nil {
+			t.Skipf("symlinks not available here: %v", err)
+		}
+
+		groups, err := ScanDir(dir, DefaultConfig())
+		if err != nil {
+			t.Fatalf("a looping link failed the whole folder: %v", err)
+		}
+		if len(groups) != 3 {
+			t.Errorf("got %d groups, want the 3 real frames with the loop skipped: %+v", len(groups), groups)
+		}
+	})
+
+	t.Run("link into an unreadable directory", func(t *testing.T) {
+		secret := t.TempDir()
+		target := touch(t, secret, "hidden.jpg")
+		dir := t.TempDir()
+		touch(t, dir, "REAL0001.JPG")
+		if err := os.Symlink(target, filepath.Join(dir, "LOCKED.JPG")); err != nil {
+			t.Skipf("symlinks not available here: %v", err)
+		}
+		if err := os.Chmod(secret, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(secret, 0o755) })
+		if _, err := os.Stat(target); err == nil {
+			t.Skip("cannot make the target unreadable on this platform")
+		}
+
+		groups, err := ScanDir(dir, DefaultConfig())
+		if err != nil {
+			t.Fatalf("a link into a locked folder failed the whole folder: %v", err)
+		}
+		if len(groups) != 1 || groups[0].Stem != "REAL0001" {
+			t.Errorf("groups = %+v, want REAL0001 alone with the locked link skipped", groups)
+		}
+	})
+}
+
 func TestHiddenFilesAreIgnored(t *testing.T) {
 	// macOS writes AppleDouble companions (._NAME.RAF) onto SMB and exFAT
 	// volumes; they carry real image extensions but are not images.

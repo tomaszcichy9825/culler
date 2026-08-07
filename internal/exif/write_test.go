@@ -541,6 +541,73 @@ func TestCreatingAnExifIFDSerialisesNoDeletions(t *testing.T) {
 	}
 }
 
+// The reachability walk is budgeted against a hostile container, and a walk
+// cut short has not seen every pointer: a span it failed to reach may still be
+// aliased by an entry it never visited. Zeroing on a truncated walk destroyed
+// exactly such a span, so every zeroing path must stand down when the walk was
+// cut short — the edit still lands, the stale bytes merely stay.
+func TestATruncatedReachabilityWalkSkipsZeroing(t *testing.T) {
+	order := binary.LittleEndian
+	b := newTIFF(order)
+	shared := append([]byte("Shared Name"), 0)
+	sharedAt := b.blob(shared)
+	padAt := b.blob(append([]byte("padding"), 0))
+	pointerTo := func(at uint32) []byte {
+		d := make([]byte, 4)
+		order.PutUint32(d, at)
+		return d
+	}
+	// An entry whose four inline bytes point at a blob the builder laid down
+	// earlier, so two entries can share one span.
+	aliased := func(id uint16, at uint32, length int) tag {
+		return tag{id: id, typ: typeASCII, count: uint32(length), data: pointerTo(at)}
+	}
+
+	// IFD1 aliases the very bytes IFD0's Artist owns. Enough padding entries
+	// sit between the walk's start and IFD1 that the span budget runs out
+	// before the walk ever reaches the alias.
+	ifd1 := b.ifd([]tag{aliased(tagMake, sharedAt, len(shared))}, 0)
+	entries := make([]tag, 0, maxIFDEntries)
+	entries = append(entries, aliased(tagArtist, sharedAt, len(shared)))
+	for i := 0; i < maxIFDEntries-1; i++ {
+		entries = append(entries, aliased(uint16(0x2000+i), padAt, 8))
+	}
+	ifd0 := b.ifd(entries, ifd1)
+
+	out, err := editTIFF(b.done(ifd0), Changes{Artist: ptr("A Name Longer Than The Old Span Holds")})
+	if err != nil {
+		t.Fatalf("editTIFF: %v", err)
+	}
+
+	r, at, ok := newReader(out)
+	if !ok {
+		t.Fatal("edited block does not read back")
+	}
+	d0, ok := r.readIFD(at)
+	if !ok {
+		t.Fatal("IFD0 does not read back")
+	}
+	if got, _ := r.text(mustGet(t, d0, tagArtist)); got != "A Name Longer Than The Old Span Holds" {
+		t.Errorf("Artist = %q, want the new value", got)
+	}
+	d1, ok := r.readIFD(d0.next)
+	if !ok {
+		t.Fatal("IFD1 does not read back")
+	}
+	if got, _ := r.text(mustGet(t, d1, tagMake)); got != "Shared Name" {
+		t.Errorf("IFD1's Make = %q, want the aliased bytes intact — a truncated walk must not zero", got)
+	}
+}
+
+func mustGet(t *testing.T, d *directory, tag uint16) entry {
+	t.Helper()
+	e, ok := d.get(tag)
+	if !ok {
+		t.Fatalf("tag %#04x is not in the directory", tag)
+	}
+	return e
+}
+
 func TestRewriteJPEGWithNoEXIFSegment(t *testing.T) {
 	_, err := RewriteJPEG(jpegWith(nil), Changes{Artist: ptr("Someone")})
 	if err == nil {

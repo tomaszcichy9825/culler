@@ -220,6 +220,41 @@ func TestReindexDropsFramesThatLeftTheDisk(t *testing.T) {
 	}
 }
 
+// One junk symlink in a folder must not park that folder in the failed list
+// forever: the scan skips the link and reads the frames around it, so a
+// reindex still notices when a real frame has genuinely left the disk.
+func TestReindexWithAJunkSymlinkStillPrunesDeletedFrames(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	day := filepath.Join(root, "2026-05-01")
+	mkdir(t, day)
+	writeFrame(t, day, "DSCF0001", 100, 0, shotAt(9, 0))
+	writeFrame(t, day, "DSCF0002", 100, 0, shotAt(9, 1))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	loop := filepath.Join(day, "LOOP.JPG")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+	if err := os.Remove(filepath.Join(day, "DSCF0002.RAF")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 || res.Frames[0].Stem != "DSCF0001" {
+		t.Errorf("frames after the deletion = %+v, want DSCF0001 alone — the junk link must not block the prune", res.Frames)
+	}
+}
+
 // A directory that cannot be listed is not a directory that has left the
 // disk. Its frames must survive the pass: a permissions hiccup or a card
 // mid-unplug looks exactly like this, and forgetting a folder of photographs

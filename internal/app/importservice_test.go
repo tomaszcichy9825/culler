@@ -228,6 +228,37 @@ func TestCardSummaryCountsEveryFolder(t *testing.T) {
 	}
 }
 
+// A folder the summary cannot read is still on the card: it appears in the
+// listing with zero frames rather than vanishing from the summary, because a
+// folder silently missing understates what an import is about to leave behind.
+func TestCardSummaryListsAFolderItCannotRead(t *testing.T) {
+	card := cardDir(t, 2, 3)
+	locked := imageDir(card, 1)
+	if err := os.Chmod(locked, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := os.Stat(filepath.Join(locked, "DSCF1001.RAF")); err == nil {
+		t.Skip("cannot make the directory untraversable on this platform")
+	}
+	a := importApp(t, t.TempDir())
+	s := importService(t, a)
+
+	got, err := s.CardSummary(card)
+	if err != nil {
+		t.Fatalf("CardSummary: %v", err)
+	}
+	if len(got.Dirs) != 2 {
+		t.Fatalf("folders = %d, want both listed, the unreadable one included: %+v", len(got.Dirs), got.Dirs)
+	}
+	if got.Dirs[1].Path != locked || got.Dirs[1].Frames != 0 {
+		t.Errorf("unreadable folder listed as %+v, want its path with zero frames", got.Dirs[1])
+	}
+	if got.Frames != 2 {
+		t.Errorf("frames = %d, want the 2 the readable folder holds", got.Frames)
+	}
+}
+
 func TestCardSummaryClustersShotTimesIntoSessions(t *testing.T) {
 	card := cardDir(t, 4)
 	dir := imageDir(card, 0)

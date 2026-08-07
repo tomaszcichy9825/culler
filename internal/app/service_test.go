@@ -101,6 +101,52 @@ func TestOpenFolderReportsFrames(t *testing.T) {
 	}
 }
 
+// A junk symlink — dangling, looping, or aimed somewhere unreadable — is not
+// a frame, and its presence must not cost the folder either its open or its
+// apply. The scan skips it; everything downstream sees the real frames.
+func TestJunkSymlinkDoesNotBlockOpenOrApply(t *testing.T) {
+	a := testApp(t)
+	dir := card(t)
+	loop := filepath.Join(dir, "LOOP.JPG")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+	library := NewLibraryService(a)
+	apply := NewApplyService(a, nil)
+
+	folder, err := library.OpenFolder(dir)
+	if err != nil {
+		t.Fatalf("OpenFolder with a junk link in the folder: %v", err)
+	}
+	if len(folder.Groups) != 2 {
+		t.Fatalf("%d frames, want the 2 real ones with the loop skipped: %+v", len(folder.Groups), folder.Groups)
+	}
+
+	frame := folder.Groups[1] // DSCF0002, the JPEG-only frame
+	if err := NewDecisionService(a).SetVerdict(frame.Hash, frame.Dir, frame.Stem, "cut", "rj"); err != nil {
+		t.Fatalf("SetVerdict: %v", err)
+	}
+	plan, err := apply.Plan(dir, nil)
+	if err != nil {
+		t.Fatalf("Plan with a junk link in the folder: %v", err)
+	}
+	if len(plan.Actions) != 1 {
+		t.Fatalf("%d planned actions, want the one cut JPEG: %+v", len(plan.Actions), plan.Actions)
+	}
+	if _, err := apply.Apply(dir, nil); err != nil {
+		t.Fatalf("Apply with a junk link in the folder: %v", err)
+	}
+	if exists(t, filepath.Join(dir, "DSCF0002.JPG")) {
+		t.Error("the cut frame is still on the card")
+	}
+	if !exists(t, filepath.Join(dir, "_Rejected", "DSCF0002.JPG")) {
+		t.Error("the cut frame did not land in the rejected folder")
+	}
+	if !exists(t, loop) {
+		t.Error("the apply touched the junk link itself")
+	}
+}
+
 func TestOpenFolderRejectsNonDirectories(t *testing.T) {
 	a := testApp(t)
 	dir := card(t)

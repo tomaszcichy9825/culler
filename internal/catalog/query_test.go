@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -477,9 +478,15 @@ func TestStorageSummaryIncludesAnUnindexedRoot(t *testing.T) {
 	if len(storage.Roots) != 1 || storage.Roots[0].Frames != 0 {
 		t.Errorf("summary = %+v, want the empty root listed", storage.Roots)
 	}
-	// Which volume that is belongs to TestVolumeOf; here the point is the
-	// unindexed root still appears under one.
-	if len(storage.Volumes) != 1 || storage.Volumes[0].Volume != volumeOf(root) {
-		t.Errorf("volumes = %+v, want the card's own volume %q", storage.Volumes, volumeOf(root))
+	// The expected volume is built by hand rather than by calling volumeOf,
+	// which is the code under test: the mount-parent branch keeps the whole
+	// /Volumes/FUJI_SD path on Unix, and the drive-letter branch reduces a
+	// fixture rooted on the temp drive to that drive's root on Windows.
+	want := "/Volumes/FUJI_SD"
+	if filepath.Separator != '/' {
+		want = filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	}
+	if len(storage.Volumes) != 1 || storage.Volumes[0].Volume != want {
+		t.Errorf("volumes = %+v, want the card's own volume %q", storage.Volumes, want)
 	}
 }

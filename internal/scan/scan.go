@@ -252,35 +252,37 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		info, err := e.Info()
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue // vanished mid-scan; gone is gone
-			}
-			// Any other stat failure hides a file that is still there — a
-			// directory with list permission but no traverse fails every one.
-			// Returning zero groups with a nil error would be indistinguishable
-			// from an emptied folder, which is grounds for a catalogue to
-			// forget frames that are still on disk. Failing is the honest
-			// answer: this scan cannot say what the directory holds.
-			return nil, fmt.Errorf("scan %s: %w", path, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			// A DirEntry's Info describes the link itself. The frame is the
-			// target: its size and mtime are what move when the file is
-			// edited, and a link that leads to a directory — which slips past
-			// IsDir above, lstat not following links — is no frame at all.
+		var info os.FileInfo
+		if e.Type()&os.ModeSymlink != 0 {
+			// A DirEntry describes the link itself. The frame is the target:
+			// its size and mtime are what move when the file is edited. A
+			// link whose target cannot be statted — dangling, looping, or
+			// aimed somewhere unreadable — is junk rather than a frame, and
+			// junk is skipped: one broken link must not take a folder of
+			// readable frames down with it. A link that leads to a directory
+			// — which slips past IsDir above, lstat not following links — is
+			// no frame either.
 			target, err := os.Stat(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					continue // dangling link: nothing behind it to scan
-				}
-				return nil, fmt.Errorf("scan %s: %w", path, err)
-			}
-			if target.IsDir() {
+			if err != nil || target.IsDir() {
 				continue
 			}
 			info = target
+		} else {
+			fi, err := e.Info()
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue // vanished mid-scan; gone is gone
+				}
+				// A stat failure on a regular entry hides a file that is still
+				// there — a directory with list permission but no traverse
+				// fails every one this way. Returning zero groups with a nil
+				// error would be indistinguishable from an emptied folder,
+				// which is grounds for a catalogue to forget frames that are
+				// still on disk. Failing is the honest answer: this scan
+				// cannot say what the directory holds.
+				return nil, fmt.Errorf("scan %s: %w", path, err)
+			}
+			info = fi
 		}
 		ref := FileRef{
 			Path:    path,
