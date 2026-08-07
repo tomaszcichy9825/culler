@@ -101,11 +101,32 @@
   // And a page is asked for at most once per scroll position: the next one
   // needs the scrollTop to actually move, so a page that comes back without
   // growing the sheet cannot re-arm the condition it just satisfied.
+  //
+  // The latch is measured against one result list, so it resets when that
+  // list is replaced (library.generation — a fresh query keeps the stale
+  // canvas and scrollTop for a beat, and a latch left armed there blocked
+  // the new search's first auto-page until a manual scroll) and on the
+  // branches where its premise is gone: a filter narrowing the sheet or a
+  // canvas not laid out yet, where the scroll position it recorded no longer
+  // describes the sheet it will next measure. It survives `loading` on
+  // purpose — that is the in-flight page it itself asked for, and forgetting
+  // it there would re-arm the condition a fruitless page just satisfied.
   let pagedAt = -1;
+  let pagedGeneration = -1;
   $effect(() => {
+    if (library.generation !== pagedGeneration) {
+      pagedGeneration = library.generation;
+      pagedAt = -1;
+    }
     if (!library.searchOpen || library.loading || library.complete) return;
-    if (app.groups.length !== library.results.length) return;
-    if (canvasHeight === 0) return;
+    if (app.groups.length !== library.results.length) {
+      pagedAt = -1;
+      return;
+    }
+    if (canvasHeight === 0) {
+      pagedAt = -1;
+      return;
+    }
     if (scrollTop + viewportHeight < canvasHeight - rowHeight) {
       pagedAt = -1;
       return;

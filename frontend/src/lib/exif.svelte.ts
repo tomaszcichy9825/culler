@@ -16,6 +16,7 @@
 // unwritten count and the dirty marks from needing a second implementation.
 
 import { shell } from "./shell.svelte";
+import { app } from "./state.svelte";
 
 /** The value shown for a field whose selected frames do not agree. */
 export const MIXED = "⟨mixed⟩";
@@ -117,6 +118,12 @@ export type WritableTag = (typeof WRITABLE_TAGS)[number];
 function isWritableTag(tag: string): tag is WritableTag {
   return (WRITABLE_TAGS as readonly string[]).includes(tag);
 }
+
+/**
+ * The pseudo-tag #searchDrafts uses to record a GPS strip drafted while the
+ * search was up. Real tags never start with "#", so it cannot collide.
+ */
+const STRIP_DRAFT = "#strip";
 
 /** How a field row is drawn: the four states screen 3a specifies. */
 export type FieldState = "clean" | "dirty" | "mixed" | "locked";
@@ -372,8 +379,13 @@ class ExifState {
     for (const frame of targets) {
       const current = valueOf(frame, tag);
       const draft = { ...(edits[frame.path] ?? {}) };
-      if (value === current) delete draft[tag];
-      else draft[tag] = value;
+      if (value === current) {
+        delete draft[tag];
+        this.#untagSearchDraft(frame.path, tag);
+      } else {
+        draft[tag] = value;
+        if (this.#searchOpen) this.#tagSearchDraft(frame.path, tag);
+      }
       if (Object.keys(draft).length === 0) delete edits[frame.path];
       else edits[frame.path] = draft;
     }
@@ -402,8 +414,13 @@ class ExifState {
     const on = !targets.every((f) => this.strip[f.path] === true);
     const strip = { ...this.strip };
     for (const frame of targets) {
-      if (on) strip[frame.path] = true;
-      else delete strip[frame.path];
+      if (on) {
+        strip[frame.path] = true;
+        if (this.#searchOpen) this.#tagSearchDraft(frame.path, STRIP_DRAFT);
+      } else {
+        delete strip[frame.path];
+        this.#untagSearchDraft(frame.path, STRIP_DRAFT);
+      }
     }
     this.strip = strip;
   }
@@ -417,38 +434,95 @@ class ExifState {
   discard() {
     this.edits = {};
     this.strip = {};
+    this.#searchDrafts.clear();
+    this.#draftGen++;
     this.editingTag = null;
     this.plan = null;
   }
 
-  /** The folder context the current drafts were typed in. See setScope. */
-  #draftScope: string | null = null;
+  /** The folder the current drafts were typed in. See setScope. */
+  #draftFolder: string | null = null;
+  /** Whether the search bar was up at the last setScope call. */
+  #searchOpen = false;
+  /** path → the tags drafted while the search was up. See setScope. */
+  #searchDrafts = new Map<string, Set<string>>();
+  /**
+   * Rises whenever drafts are pruned — a folder change, a search close, an
+   * explicit discard — so an awaited plan can tell that the drafts it
+   * describes no longer exist. See requestWrite.
+   */
+  #draftGen = 0;
+
+  #tagSearchDraft(path: string, tag: string) {
+    const tags = this.#searchDrafts.get(path) ?? new Set<string>();
+    tags.add(tag);
+    this.#searchDrafts.set(path, tags);
+  }
+
+  #untagSearchDraft(path: string, tag: string) {
+    const tags = this.#searchDrafts.get(path);
+    if (tags === undefined) return;
+    tags.delete(tag);
+    if (tags.size === 0) this.#searchDrafts.delete(path);
+  }
+
+  /** Throws away exactly the drafts that were typed while the search was up. */
+  #discardSearchDrafts() {
+    if (this.#searchDrafts.size === 0) return;
+    const edits = { ...this.edits };
+    const strip = { ...this.strip };
+    for (const [path, tags] of this.#searchDrafts) {
+      const draft = { ...(edits[path] ?? {}) };
+      for (const tag of tags) {
+        if (tag === STRIP_DRAFT) delete strip[path];
+        else delete draft[tag];
+      }
+      if (Object.keys(draft).length === 0) delete edits[path];
+      else edits[path] = draft;
+    }
+    this.edits = edits;
+    this.strip = strip;
+    this.#searchDrafts.clear();
+    this.#draftGen++;
+    // A plan put up before the prune describes drafts that are now gone.
+    this.plan = null;
+  }
 
   /**
-   * setScope names the folder context the editor is working in, and prunes
-   * every draft when that context changes. The rule: a draft survives rail
-   * reloads and mode switches WITHIN one context — that is what lets ⌘S pick
-   * up an edit made three frames ago — but never a change of context. Without
-   * the prune, switching folders in EXIF left the chip counting edits against
-   * files no longer on screen, and ⌘S wrote into the previous folder with
-   * only base filenames in the plan to say so.
+   * setScope tells the editor which folder is open and whether the search bar
+   * is up, and prunes drafts by one rule: the scope a draft belongs to is the
+   * folder it was typed in, so only an actual folder change — app.folder.dir
+   * changing, including opening a folder from a search result — discards
+   * everything. Opening or closing the search does NOT discard drafts while
+   * the folder stays the same: ⌘S must still pick up an edit made three
+   * frames ago, and a search glanced at and closed again must not eat it.
    *
-   * The context is a key the shell computes, not a path this module inspects:
-   * the open folder's dir, or the search scope while the search bar is up.
+   * Drafts typed WHILE the search is open are the exception: the rail is fed
+   * by the results then, which can span folders, so those drafts belong to
+   * that search. They are tagged as they are made (#searchDrafts) and exactly
+   * they are dropped when the search closes without the folder changing —
+   * which is what keeps a cross-folder stray from lingering into an
+   * unrelated ⌘S later. Without the folder-change prune, switching folders
+   * in EXIF left the chip counting edits against files no longer on screen,
+   * and ⌘S wrote into the previous folder with only base filenames in the
+   * plan to say so.
+   *
    * Keying on the folder rather than the frame list is deliberate — arrowing
    * around a folder reloads the rail without changing what the drafts belong
-   * to. The search is one context of its own because its results can span
-   * folders: drafts made across them are written together while it is open,
-   * and dropped together when it closes or a folder is opened, so a prune
-   * scoped to "the previous folder's paths" would still have left cross-folder
-   * strays behind. Every way into a folder — the tree, a search result, a
-   * session, a map pin, an import — funnels through the same app.folder
-   * change, so one key covers them all.
+   * to. Every way into a folder — the tree, a search result, a session, a
+   * map pin, an import — funnels through the same app.folder change, so one
+   * key covers them all.
    */
-  setScope(scope: string) {
-    if (this.#draftScope === scope) return;
-    this.#draftScope = scope;
-    this.discard();
+  setScope(dir: string, searchOpen: boolean) {
+    if (this.#draftFolder !== dir) {
+      this.#draftFolder = dir;
+      this.#searchOpen = searchOpen;
+      this.discard();
+      return;
+    }
+    if (this.#searchOpen === searchOpen) return;
+    this.#searchOpen = searchOpen;
+    if (!searchOpen) this.#discardSearchDrafts();
   }
 
   // ---- talking to the backend -----------------------------------------------
@@ -484,16 +558,24 @@ class ExifState {
   /**
    * requestWrite plans the draft and puts the plan up for confirmation. This
    * is ⌘S; nothing has touched a file when it resolves.
+   *
+   * The generation is captured before the await: a folder switch (or a search
+   * close) while the plan is in flight discards the drafts it describes, and
+   * a dialog for them could never be confirmed — confirmWrite would find
+   * nothing to write. The stale response is dropped instead of shown.
    */
   async requestWrite() {
     const edits = this.editsDTO;
     if (edits.length === 0) return;
     this.error = "";
     this.writing = true;
+    const gen = this.#draftGen;
     try {
-      this.plan = await this.#port.plan(edits);
+      const plan = await this.#port.plan(edits);
+      if (gen !== this.#draftGen) return; // the drafts were discarded meanwhile
+      this.plan = plan;
     } catch (err) {
-      this.error = message(err);
+      if (gen === this.#draftGen) this.error = message(err);
     } finally {
       this.writing = false;
     }
@@ -506,10 +588,18 @@ class ExifState {
    * the cull's apply follows.
    */
   async confirmWrite(): Promise<boolean> {
-    const edits = this.editsDTO;
     // A second Enter before the write resolves would re-run it against the
     // already-written files; the plan is only cleared after the await.
-    if (edits.length === 0 || this.plan === null || this.writing) return false;
+    if (this.plan === null || this.writing) return false;
+    const edits = this.editsDTO;
+    if (edits.length === 0) {
+      // The drafts the plan described were discarded while the dialog was up.
+      // Silently refusing would leave a confirm that never confirms; close it
+      // and say why, the way the other dialogs surface a dead end.
+      this.plan = null;
+      app.notify("nothing left to write — the drafts were discarded");
+      return false;
+    }
     this.writing = true;
     this.error = "";
     try {
@@ -519,6 +609,7 @@ class ExifState {
       if (failed === 0) {
         this.edits = {};
         this.strip = {};
+        this.#searchDrafts.clear();
       } else {
         this.error = `${failed} write(s) failed; those frames kept their edits`;
       }

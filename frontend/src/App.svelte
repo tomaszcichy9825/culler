@@ -25,7 +25,7 @@
   import Palettes from "./components/Palettes.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import TableView from "./components/TableView.svelte";
-  import { moveFocus, runAction, openFolder as openFolderAction } from "./lib/actions";
+  import { runAction, openFolder as openFolderAction } from "./lib/actions";
   import { ExifService, ImportService, LibraryIndexService, MapService, RejectsService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
   import { exifState } from "./lib/exif.svelte";
@@ -220,18 +220,19 @@
     untrack(() => showSearchResults(open, results));
   });
 
-  // EXIF drafts are scoped to the folder context they were typed in: the open
-  // folder, or the search while it is up (its results can span folders, so it
-  // is one scope of its own). A context change — a folder picked from the
-  // tree, a search result, a session, a map pin, opening or closing the
-  // search — prunes every draft; a rail reload within one context keeps them.
-  // The rule itself is documented on ExifState.setScope; this effect runs in
+  // EXIF drafts are scoped to the folder they were typed in. Only an actual
+  // folder change — picked from the tree, a search result, a session, a map
+  // pin, an import — prunes every draft; opening or closing the search keeps
+  // them, except the drafts typed while the search itself was up, which
+  // belong to the search and go when it closes. The rule is documented on
+  // ExifState.setScope; this effect just reports both facts, and runs in
   // every mode, because drafts survive leaving EXIF and the folder can change
   // from any of them. Reopening the same folder keeps the drafts: the files
   // they belong to are still the files on screen.
   $effect(() => {
-    const scope = library.searchOpen ? "search" : `dir:${app.folder?.dir ?? ""}`;
-    untrack(() => exifState.setScope(scope));
+    const dir = app.folder?.dir ?? "";
+    const searching = library.searchOpen;
+    untrack(() => exifState.setScope(dir, searching));
   });
 
   // EXIF mode edits what the grid had selected (or focused). The panes are
@@ -396,34 +397,20 @@
         if (runAction(action)) return;
     }
     switch (action) {
-      case "focus-left":
-        moveFocus(-1, 0);
-        break;
-      case "focus-right":
-        moveFocus(1, 0);
-        break;
-      case "focus-up":
-        moveFocus(0, -1);
-        break;
-      case "focus-down":
-        moveFocus(0, 1);
-        break;
       case "cycle-layout":
         cycleLayout();
         break;
       case "zoom":
+        // The loupe is cull's; from EXIF/MAP/IMPORT the key must not zoom a
+        // loupe the user cannot see (app.view survives a mode switch), and
+        // the map zooms with its own − and + keys.
+        if (shell.mode !== "cull") break;
         if (app.view !== "loupe") {
           app.notify("zoom works in the loupe — Tab to open it");
           break;
         }
         if (app.zoom) app.resetZoom();
         else app.zoom = true;
-        break;
-      case "toggle-select":
-        app.toggleSelect();
-        break;
-      case "select-all":
-        app.selectAll();
         break;
       case "escape":
         escape();
@@ -482,12 +469,14 @@
         void pickRoot();
         break;
       default:
-        // Verdict, mask, rating and selection are NOT handled here. They are
-        // registry actions guarded by `culling`, and runAction above is their
-        // one dispatcher — reaching this switch for one means the guard declined
-        // (not in cull, or a palette is open), so it must do nothing. Handling
-        // them here as a fallback drove the hidden grid from EXIF/MAP/IMPORT and
-        // recorded verdicts on frames the user could not see.
+        // Verdict, mask, rating, selection and focus movement are NOT handled
+        // here. They are registry actions guarded by `culling` (or hasFrames),
+        // and runAction above is their one dispatcher — reaching this switch
+        // for one means the guard declined (not in cull, no frames, or a
+        // palette is open), so it must do nothing. Handling them here as a
+        // fallback drove the hidden grid from EXIF/MAP/IMPORT: verdicts landed
+        // on frames the user could not see, and ⌘A in MAP selected the whole
+        // folder invisibly and armed "place N selected" over all of it.
         if (action in modeActions) {
           shell.setModeByIndex(modeActions[action]);
         } else if (action in paneActions) {
