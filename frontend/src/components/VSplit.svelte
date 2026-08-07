@@ -66,7 +66,10 @@
   }
 
   // The divider is keyboard-reachable so the split is not mouse-only. Up and
-  // down nudge it by a step, and the move is saved like a drag is.
+  // down nudge it by a step, and the move is saved like a drag is. It carries
+  // data-keys="local" so the global keymap stays out while it holds focus —
+  // without that the same arrow press also moved grid focus or panned the
+  // loupe, and Esc hands the keyboard back the way the tree's does.
   function onkeydown(e: KeyboardEvent) {
     const step = e.shiftKey ? 0.1 : 0.02;
     if (e.key === "ArrowUp") fraction = clamp(fraction - step);
@@ -92,6 +95,7 @@
     aria-orientation="horizontal"
     aria-label="Resize"
     tabindex="0"
+    data-keys="local"
     {onpointerdown}
     {onpointermove}
     {onpointerup}

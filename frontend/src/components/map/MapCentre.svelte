@@ -227,9 +227,17 @@
     const showing = layout === 0;
     if (map === null || pins === null) return;
 
+    // Rebuilding tears the old markers out of the DOM, and with them any
+    // keyboard focus a Tab had put on one — so note it now and hand it back to
+    // the rebuilt selected pin below, or Tab through the pins would reset to
+    // the top of the page every time the selection moved.
+    const active = document.activeElement;
+    const pinHadFocus = active instanceof HTMLElement && active.classList.contains("leaflet-marker-icon");
+
     pins.clearLayers();
     if (!showing) return;
 
+    const markers: L.Marker[] = [];
     clusters.forEach((cluster, index) => {
       const selected = index === focused;
       const marker = L.marker([cluster.latitude, cluster.longitude], {
@@ -248,13 +256,15 @@
         mapState.focusCluster(index);
         mapState.open(cluster.frames[0]);
       });
-      marker.on("keypress", (e: L.LeafletKeyboardEvent) => {
-        if (e.originalEvent.key !== "Enter") return;
-        mapState.focusCluster(index);
-        mapState.open(cluster.frames[0]);
-      });
       pins!.addLayer(marker);
+      // Tab moves DOM focus between markers, and the store has to follow it —
+      // otherwise the wrap-level Enter opens whichever pin was clicked last,
+      // not the one the focus ring is on. The element exists once the marker
+      // is on the map; the listener dies with it when the layer is cleared.
+      marker.getElement()?.addEventListener("focus", () => mapState.focusCluster(index));
+      markers.push(marker);
     });
+    if (pinHadFocus) markers[focused]?.getElement()?.focus();
   });
 
   // --- track -----------------------------------------------------------------

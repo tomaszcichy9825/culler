@@ -11,6 +11,8 @@ import { tick } from "svelte";
 
 import { Clipboard, Events } from "@wailsio/runtime";
 
+import { table } from "../components/TableView.svelte";
+
 import { ApplyService, ConfigService, LibraryService, XMPExportService } from "./bindings";
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
 import { exifState } from "./exif.svelte";
@@ -22,7 +24,7 @@ import { rejects } from "./rejects.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
-import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, loupe, picker, tree } from "./state.svelte";
+import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, groupKey, loupe, picker, tree } from "./state.svelte";
 import type { HashPatch } from "./state.svelte";
 import { MAX_RATING } from "./verdict";
 import type { Half } from "./verdict";
@@ -354,16 +356,26 @@ function focusWhenHashed(hash: string) {
 /**
  * tryPendingFocus focuses the awaited frame once it has arrived and been
  * identified — but only while the stream that requested it is still the one
- * on screen, and searching the whole folder rather than a filtered view so a
- * live filter cannot hide the target.
+ * on screen. The frame is looked for in the whole folder, so a live filter
+ * cannot hide the target from the search; but setFocus indexes the filtered
+ * view, so the find has to be resolved into app.groups before it is used —
+ * an allGroups index handed to setFocus lands on whatever frame happens to
+ * sit at that position of the filtered list.
  */
 function tryPendingFocus() {
   if (pendingFocus === null || stream === null || pendingFocus.token !== stream.token) return;
-  const i = app.allGroups.findIndex((g) => g.hash !== "" && g.hash === pendingFocus?.hash);
-  if (i >= 0) {
-    app.setFocus(i);
-    pendingFocus = null;
-  }
+  const found = app.allGroups.find((g) => g.hash !== "" && g.hash === pendingFocus?.hash);
+  if (found === undefined) return;
+  pendingFocus = null;
+  const key = groupKey(found);
+  // The filtered list is derived by an effect, which runs a tick after the
+  // stream that just landed the frame — resolving now would miss a frame no
+  // filter hides. After the tick, absence means the filter really hid it.
+  void tick().then(() => {
+    const i = app.groups.findIndex((g) => groupKey(g) === key);
+    if (i >= 0) app.setFocus(i);
+    else app.notify("that frame is hidden by the current filter");
+  });
 }
 
 /**
@@ -753,6 +765,14 @@ const PAN_STEP = 120;
 function moveFocus(dx: number, dy: number) {
   if (app.view === "loupe" && app.zoom) {
     loupe.pan(-dx * PAN_STEP, -dy * PAN_STEP);
+    return;
+  }
+  // CULL's table sorts its own view of the frames, so while it is up the
+  // arrows walk the order on screen through its registered API — stepping
+  // through the raw array would hop between unrelated rows, and up and down
+  // would move by the grid's column count besides.
+  if (shell.mode === "cull" && shell.layout === 2 && app.view === "grid") {
+    table.move(dx + dy);
     return;
   }
   const rowStep = app.view === "loupe" ? 1 : app.cols;

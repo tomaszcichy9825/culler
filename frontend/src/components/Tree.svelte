@@ -87,6 +87,18 @@
     return index;
   }
 
+  /**
+   * showingChildren is whether the row at index has any children on screen:
+   * the row below it, one level deeper. A folder can be expanded and show
+   * nothing — its listing came back with no subfolders — and the arrows must
+   * treat that the same as a leaf, not skip past it or collapse thin air.
+   */
+  function showingChildren(index: number): boolean {
+    const row = rows[index];
+    const next = rows[index + 1];
+    return row !== undefined && row.expanded && next !== undefined && next.depth > row.depth;
+  }
+
   function onKeydown(e: KeyboardEvent) {
     const row = rows[library.treeIndex];
     if (!row) return;
@@ -108,13 +120,13 @@
         // on a leaf that has no subfolders left to open, load its frames — the
         // rightmost thing there is to do with it.
         if (row.expandable && !row.expanded) void library.expandNode(row.node.path);
-        else if (row.expanded) focusRow(library.treeIndex + 1);
+        else if (showingChildren(library.treeIndex)) focusRow(library.treeIndex + 1);
         else library.openDir(row.node.path);
         break;
       case "ArrowLeft":
       case "h":
         e.preventDefault();
-        if (row.expanded) library.collapseNode(row.node.path);
+        if (showingChildren(library.treeIndex)) library.collapseNode(row.node.path);
         else focusRow(parentOf(library.treeIndex));
         break;
       case "Home":

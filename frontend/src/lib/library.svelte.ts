@@ -488,9 +488,12 @@ class LibraryState {
       this.results = [...this.results, ...(page.frames ?? [])];
       this.total = page.total;
     } catch (error) {
-      this.error = message(error);
+      // A stale page's failure is nobody's business: surfacing it would put an
+      // old error over a search that has moved on.
+      if (ticket === this.#ticket) this.error = message(error);
     } finally {
-      this.loading = false;
+      // Same guard: a newer search owns the spinner now.
+      if (ticket === this.#ticket) this.loading = false;
     }
   }
 
