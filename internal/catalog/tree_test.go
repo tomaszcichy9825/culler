@@ -241,9 +241,10 @@ func TestKeysUnderCoversTheWholeSubtree(t *testing.T) {
 // frames as having no children at all. A drive root like C:\ has the same
 // separator-terminated shape and rides the same code path.
 func TestChildrenOfTheFilesystemRoot(t *testing.T) {
+	fsRoot := fix("/") // the drive root on Windows, / everywhere else
 	s := openStore(t)
-	seedDir(t, s, "/photos", 2)
-	if _, err := s.AddRoot("/"); err != nil {
+	seedDir(t, s, fix("/photos"), 2)
+	if _, err := s.AddRoot(fsRoot); err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
 
@@ -255,14 +256,14 @@ func TestChildrenOfTheFilesystemRoot(t *testing.T) {
 		t.Fatalf("RootNodes = %+v, want the root holding both frames", nodes)
 	}
 
-	kids, err := s.Children("/")
+	kids, err := s.Children(fsRoot)
 	if err != nil {
 		t.Fatalf("Children: %v", err)
 	}
 	if len(kids) != 1 {
 		t.Fatalf("the filesystem root reports %d children, want the 1 RootNodes promised: %+v", len(kids), kids)
 	}
-	if kids[0].Name != "photos" || kids[0].Path != "/photos" || kids[0].Frames != 2 {
-		t.Errorf("child = %+v, want photos at /photos with 2 frames", kids[0])
+	if kids[0].Name != "photos" || kids[0].Path != fix("/photos") || kids[0].Frames != 2 {
+		t.Errorf("child = %+v, want photos at %s with 2 frames", kids[0], fix("/photos"))
 	}
 }

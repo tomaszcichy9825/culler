@@ -30,18 +30,18 @@ func frameCount(t *testing.T, s *Store) int {
 
 func TestAddRootUnderAnExistingRootIsANoOp(t *testing.T) {
 	s := openStore(t)
-	if _, err := s.AddRoot("/Volumes/shared/photos"); err != nil {
+	if _, err := s.AddRoot(fix("/Volumes/shared/photos")); err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
 
-	covering, err := s.AddRoot("/Volumes/shared/photos/2026")
+	covering, err := s.AddRoot(fix("/Volumes/shared/photos/2026"))
 	if err != nil {
 		t.Fatalf("AddRoot a folder already covered: %v", err)
 	}
-	if covering.Path != "/Volumes/shared/photos" {
+	if covering.Path != fix("/Volumes/shared/photos") {
 		t.Errorf("adding a covered folder returned %s, want the root that already covers it", covering.Path)
 	}
-	if got := rootList(t, s); len(got) != 1 || got[0] != "/Volumes/shared/photos" {
+	if got := rootList(t, s); len(got) != 1 || got[0] != fix("/Volumes/shared/photos") {
 		t.Errorf("roots = %v, want the one that was registered", got)
 	}
 }
@@ -96,12 +96,12 @@ func TestAddRootAboveExistingRootsAbsorbsThem(t *testing.T) {
 
 func TestAddRootDoesNotAbsorbASiblingSharingAPrefix(t *testing.T) {
 	s := openStore(t)
-	if _, err := s.AddRoot("/Volumes/CardTwo"); err != nil {
+	if _, err := s.AddRoot(fix("/Volumes/CardTwo")); err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
 	// Whole path segments: CardTwo does not live inside Card, and adding Card
 	// must neither absorb it nor be turned away by it.
-	if _, err := s.AddRoot("/Volumes/Card"); err != nil {
+	if _, err := s.AddRoot(fix("/Volumes/Card")); err != nil {
 		t.Fatalf("AddRoot a sibling: %v", err)
 	}
 	got := rootList(t, s)
@@ -112,15 +112,15 @@ func TestAddRootDoesNotAbsorbASiblingSharingAPrefix(t *testing.T) {
 
 func TestAddRootAbsorbsEverythingBelowIt(t *testing.T) {
 	s := openStore(t)
-	for _, path := range []string{"/a/b/c", "/a/b/d/e", "/a/other"} {
+	for _, path := range []string{fix("/a/b/c"), fix("/a/b/d/e"), fix("/a/other")} {
 		if _, err := s.AddRoot(path); err != nil {
 			t.Fatalf("AddRoot %s: %v", path, err)
 		}
 	}
-	if _, err := s.AddRoot("/a"); err != nil {
+	if _, err := s.AddRoot(fix("/a")); err != nil {
 		t.Fatalf("AddRoot the parent of them all: %v", err)
 	}
-	if got := rootList(t, s); len(got) != 1 || got[0] != "/a" {
+	if got := rootList(t, s); len(got) != 1 || got[0] != fix("/a") {
 		t.Errorf("roots = %v, want /a alone", got)
 	}
 }
@@ -166,7 +166,7 @@ func TestOpenCollapsesNestingLeftByAnOlderBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, root := range []string{"/photos", "/photos/2025", "/photos/2026", "/elsewhere"} {
+	for _, root := range []string{fix("/photos"), fix("/photos/2025"), fix("/photos/2026"), fix("/elsewhere")} {
 		if _, err := raw.Exec(
 			`INSERT INTO roots (path, added_at, last_indexed_at) VALUES (?, 1, 0)`, root); err != nil {
 			t.Fatalf("seed %s: %v", root, err)
@@ -193,12 +193,12 @@ func TestOpenCollapsesNestingLeftByAnOlderBuild(t *testing.T) {
 	for _, path := range got {
 		held[path] = true
 	}
-	for _, want := range []string{"/photos", "/elsewhere"} {
+	for _, want := range []string{fix("/photos"), fix("/elsewhere")} {
 		if !held[want] {
 			t.Errorf("%s did not survive the collapse: %v", want, got)
 		}
 	}
-	for _, gone := range []string{"/photos/2025", "/photos/2026"} {
+	for _, gone := range []string{fix("/photos/2025"), fix("/photos/2026")} {
 		if held[gone] {
 			t.Errorf("%s is still a root, though /photos contains it", gone)
 		}
@@ -220,8 +220,9 @@ func TestUnderComparesWholePathSegments(t *testing.T) {
 		{"/", "/", true},
 	}
 	for _, c := range cases {
-		if got := under(c.path, c.root); got != c.want {
-			t.Errorf("under(%q, %q) = %v, want %v", c.path, c.root, got, c.want)
+		// The comparison runs on native separators, so the fixtures do too.
+		if got := under(fix(c.path), fix(c.root)); got != c.want {
+			t.Errorf("under(%q, %q) = %v, want %v", fix(c.path), fix(c.root), got, c.want)
 		}
 	}
 }

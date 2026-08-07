@@ -681,7 +681,7 @@ func TestPruneDirDropsAcrossChunks(t *testing.T) {
 // directories must not fail the prune it was being protected by.
 func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 	s := openStore(t)
-	root := "/photos"
+	root := fix("/photos")
 
 	failed := make([]string, 0, 1100)
 	tx, err := s.db.Begin()
@@ -689,7 +689,7 @@ func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 1100; i++ {
-		dir := fmt.Sprintf("%s/locked/%04d", root, i)
+		dir := filepath.Join(root, "locked", fmt.Sprintf("%04d", i))
 		failed = append(failed, dir)
 		if _, err := tx.Exec(upsertFrameSQL,
 			fmt.Sprintf("lock-%04d", i), dir, fmt.Sprintf("LOCK%04d", i), "raw-only", int64(i),
@@ -699,8 +699,8 @@ func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 		}
 	}
 	if _, err := tx.Exec(upsertFrameSQL,
-		"gone-0000", root+"/gone", "GONE0000", "raw-only", int64(0),
-		root+"/gone/GONE.RAF", "", int64(100), int64(0),
+		"gone-0000", filepath.Join(root, "gone"), "GONE0000", "raw-only", int64(0),
+		filepath.Join(root, "gone", "GONE.RAF"), "", int64(100), int64(0),
 		int64(0), int64(0), 0, "", int64(0)); err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// fix makes a fixture path absolute for the running platform: drive-prefixed
+// and native-separated on Windows, unchanged on Unix. The catalogue's prefix
+// maths runs on native separators and absolute paths, so fixtures must too.
+// Nothing here has to exist on disk.
+func fix(p string) string {
+	return filepath.FromSlash(filepath.VolumeName(os.TempDir()) + p)
+}
+
 // openStore opens a catalogue in a temp directory and closes it with the test.
 func openStore(t *testing.T) *Store {
 	t.Helper()
@@ -25,7 +33,7 @@ func TestOpenTwiceKeepsTheData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := first.AddRoot("/cards/FUJI_SD"); err != nil {
+	if _, err := first.AddRoot(fix("/cards/FUJI_SD")); err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -42,7 +50,7 @@ func TestOpenTwiceKeepsTheData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Roots: %v", err)
 	}
-	if len(roots) != 1 || roots[0].Path != "/cards/FUJI_SD" {
+	if len(roots) != 1 || roots[0].Path != fix("/cards/FUJI_SD") {
 		t.Errorf("Roots after reopen = %+v, want the one added before the close", roots)
 	}
 }
@@ -66,7 +74,7 @@ func TestOpenRefusesANewerSchema(t *testing.T) {
 func TestAddRootIsIdempotentAndKeepsTheFirstAddedAt(t *testing.T) {
 	s := openStore(t)
 
-	first, err := s.AddRoot("/cards/FUJI_SD")
+	first, err := s.AddRoot(fix("/cards/FUJI_SD"))
 	if err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
@@ -77,7 +85,7 @@ func TestAddRootIsIdempotentAndKeepsTheFirstAddedAt(t *testing.T) {
 		t.Errorf("a root that has never been indexed reports LastIndexedAt = %v", first.LastIndexedAt)
 	}
 
-	again, err := s.AddRoot("/cards/FUJI_SD")
+	again, err := s.AddRoot(fix("/cards/FUJI_SD"))
 	if err != nil {
 		t.Fatalf("AddRoot again: %v", err)
 	}
@@ -170,7 +178,7 @@ func TestRemoveRootPrunesItsFramesOnly(t *testing.T) {
 
 func TestRemoveRootOfAnUnknownPathIsNotAnError(t *testing.T) {
 	s := openStore(t)
-	if err := s.RemoveRoot("/cards/never-added"); err != nil {
+	if err := s.RemoveRoot(fix("/cards/never-added")); err != nil {
 		t.Errorf("removing a root that was never added: %v", err)
 	}
 }
@@ -180,31 +188,36 @@ func TestRemoveRootOfAnUnknownPathIsNotAnError(t *testing.T) {
 // or / would register with totals of nothing and RemoveRoot("/") would orphan
 // every row.
 func TestUnderRootOnTheFilesystemRoot(t *testing.T) {
-	if !under("/photos/trips", "/") {
-		t.Error("under says /photos/trips does not sit under /")
+	fsRoot := fix("/") // the drive root on Windows, / everywhere else
+	trips := fix("/photos/trips")
+	if !under(trips, fsRoot) {
+		t.Errorf("under says %s does not sit under %s", trips, fsRoot)
 	}
-	if !under("/", "/") {
-		t.Error("under says / does not sit under itself")
+	if !under(fsRoot, fsRoot) {
+		t.Errorf("under says %s does not sit under itself", fsRoot)
 	}
 
 	s := openStore(t)
 	if _, err := s.db.Exec(upsertFrameSQL,
-		"hash-under-root", "/photos/trips", "DSCF0001", "raw-only", int64(0),
-		"/photos/trips/DSCF0001.RAF", "", int64(100), int64(0),
+		"hash-under-root", trips, "DSCF0001", "raw-only", int64(0),
+		filepath.Join(trips, "DSCF0001.RAF"), "", int64(100), int64(0),
 		int64(0), int64(0), 0, "", int64(0)); err != nil {
 		t.Fatal(err)
 	}
-	where, args := underRoot("/")
+	where, args := underRoot(fsRoot)
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM frames WHERE `+where, args...).Scan(&n); err != nil {
-		t.Fatalf("count under /: %v", err)
+		t.Fatalf("count under %s: %v", fsRoot, err)
 	}
 	if n != 1 {
-		t.Errorf("underRoot(\"/\") matched %d frames, want the 1 catalogued", n)
+		t.Errorf("underRoot(%q) matched %d frames, want the 1 catalogued", fsRoot, n)
 	}
 }
 
 func TestVolumeOf(t *testing.T) {
+	if filepath.Separator != '/' {
+		t.Skip("exercises the Unix mount-parent heuristics; Windows takes the drive-letter branch")
+	}
 	tests := []struct{ path, want string }{
 		{"/Volumes/FUJI_SD/DCIM/100_FUJI", "/Volumes/FUJI_SD"},
 		{"/Volumes/FUJI_SD", "/Volumes/FUJI_SD"},

@@ -142,10 +142,12 @@ func TestExpandPath(t *testing.T) {
 		t.Errorf("expandPath(~) = %q, %v, want %q", got, err, home)
 	}
 
-	// A leading tilde that is part of a name is not a home directory.
-	got, err = expandPath("/card/~odd")
-	if err != nil || got != "/card/~odd" {
-		t.Errorf("expandPath(/card/~odd) = %q, %v", got, err)
+	// A leading tilde that is part of a name is not a home directory. The
+	// fixture is absolute for the platform, so nothing rebases it either.
+	odd := filepath.FromSlash(filepath.VolumeName(os.TempDir()) + "/card/~odd")
+	got, err = expandPath(odd)
+	if err != nil || got != odd {
+		t.Errorf("expandPath(%s) = %q, %v", odd, got, err)
 	}
 
 	if _, err := expandPath(""); err == nil {

@@ -530,6 +530,7 @@ func TestAMaskedOutCutSurvivesAnApplyThatMovesNothing(t *testing.T) {
 func TestApplyResolvesTheFolderBeforePlacingRejects(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what UserHomeDir reads on Windows
 	work := t.TempDir()
 	t.Chdir(work)
 

@@ -97,6 +97,17 @@ func TestScanDirStreamBatchesAreBounded(t *testing.T) {
 
 // A batch that fills slowly is handed over on the interval rather than held.
 func TestScanDirStreamFlushesOnInterval(t *testing.T) {
+	// The interval rides the monotonic clock. Where its granularity is
+	// coarser than the nanosecond interval below — Windows ticks in
+	// milliseconds — every frame lands inside one tick and the test cannot
+	// observe the flush it is about.
+	start := time.Now()
+	for time.Since(start) == 0 {
+	}
+	if time.Since(start) > 100*time.Microsecond {
+		t.Skip("monotonic clock too coarse to observe a per-frame interval")
+	}
+
 	dir := t.TempDir()
 	touch(t, dir, "a.jpg")
 	touch(t, dir, "b.jpg")
