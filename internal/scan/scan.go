@@ -223,6 +223,10 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 	}
 
 	buckets := make(map[string]*stemBucket)
+	// The last link whose target exists but could not be reached. Harmless
+	// while anything else scans; decisive when nothing does — a folder of
+	// frames locked away behind links must not read as an emptied folder.
+	var unreachable error
 
 	get := func(name string) *stemBucket {
 		key, stem := stemKey(name, cfg)
@@ -263,7 +267,16 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 			// — which slips past IsDir above, lstat not following links — is
 			// no frame either.
 			target, err := os.Stat(path)
-			if err != nil || target.IsDir() {
+			if err != nil {
+				// A dangling link's target is gone, and gone is gone. Any
+				// other failure means the frame exists but cannot be reached,
+				// which matters below if nothing else in the folder can be.
+				if !os.IsNotExist(err) {
+					unreachable = fmt.Errorf("scan %s: %w", path, err)
+				}
+				continue
+			}
+			if target.IsDir() {
 				continue
 			}
 			info = target
@@ -298,6 +311,13 @@ func ScanDir(dir string, cfg Config) ([]PhotoGroup, error) {
 		if g, ok := b.group(dir); ok {
 			groups = append(groups, g)
 		}
+	}
+	// Every recognised entry was a link to somewhere unreachable: zero groups
+	// with a nil error is what tells a catalogue the folder was emptied, and
+	// these frames are merely locked away. Failing is the honest answer, the
+	// same one an untraversable directory gets.
+	if len(groups) == 0 && unreachable != nil {
+		return nil, unreachable
 	}
 
 	sort.Slice(groups, func(i, j int) bool {

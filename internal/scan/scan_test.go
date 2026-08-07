@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -339,6 +340,59 @@ func TestScanDirSkipsAJunkSymlink(t *testing.T) {
 		}
 		if len(groups) != 1 || groups[0].Stem != "REAL0001" {
 			t.Errorf("groups = %+v, want REAL0001 alone with the locked link skipped", groups)
+		}
+	})
+}
+
+// A folder whose every recognised entry is a link that cannot be statted must
+// not scan as empty: zero groups with a nil error is what tells the catalogue
+// a folder was emptied, and these frames are merely unreachable — the same
+// wrong guess the regular-file rule exists to prevent. Dangling links are the
+// exception: a target that is gone is gone, and a folder of nothing but
+// dangling links genuinely holds no frames.
+func TestScanDirFailsWhenOnlyUnstattableLinksRemain(t *testing.T) {
+	t.Run("all links locked away", func(t *testing.T) {
+		secret := t.TempDir()
+		targets := []string{
+			touch(t, secret, "a.jpg"),
+			touch(t, secret, "b.jpg"),
+			touch(t, secret, "c.jpg"),
+		}
+		dir := t.TempDir()
+		for i, target := range targets {
+			link := filepath.Join(dir, fmt.Sprintf("DSCF000%d.JPG", i+1))
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlinks not available here: %v", err)
+			}
+		}
+		if err := os.Chmod(secret, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(secret, 0o755) })
+		if _, err := os.Stat(targets[0]); err == nil {
+			t.Skip("cannot make the targets unreadable on this platform")
+		}
+
+		if groups, err := ScanDir(dir, DefaultConfig()); err == nil {
+			t.Fatalf("a folder of frames locked behind links scanned as %d groups with no error; the catalogue would read that as emptied", len(groups))
+		}
+	})
+
+	t.Run("all links dangling", func(t *testing.T) {
+		dir := t.TempDir()
+		for i := 1; i <= 3; i++ {
+			link := filepath.Join(dir, fmt.Sprintf("DSCF000%d.JPG", i))
+			if err := os.Symlink(filepath.Join(dir, "gone", "nothing.jpg"), link); err != nil {
+				t.Skipf("symlinks not available here: %v", err)
+			}
+		}
+
+		groups, err := ScanDir(dir, DefaultConfig())
+		if err != nil {
+			t.Fatalf("dangling links are gone frames, not an unreadable folder: %v", err)
+		}
+		if len(groups) != 0 {
+			t.Errorf("got %d groups from nothing but dangling links", len(groups))
 		}
 	})
 }

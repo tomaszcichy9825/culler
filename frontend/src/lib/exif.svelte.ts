@@ -383,8 +383,11 @@ class ExifState {
         delete draft[tag];
         this.#untagSearchDraft(frame.path, tag);
       } else {
+        // Only a draft born during the search belongs to it: re-editing one
+        // that existed before the search opened must not re-home it, or
+        // closing the search would eat a folder draft it never owned.
+        if (this.#searchOpen && draft[tag] === undefined) this.#tagSearchDraft(frame.path, tag);
         draft[tag] = value;
-        if (this.#searchOpen) this.#tagSearchDraft(frame.path, tag);
       }
       if (Object.keys(draft).length === 0) delete edits[frame.path];
       else edits[frame.path] = draft;
@@ -415,8 +418,10 @@ class ExifState {
     const strip = { ...this.strip };
     for (const frame of targets) {
       if (on) {
+        // Same rule as setValue: a strip drafted before the search opened
+        // keeps belonging to the folder it was drafted in.
+        if (this.#searchOpen && strip[frame.path] !== true) this.#tagSearchDraft(frame.path, STRIP_DRAFT);
         strip[frame.path] = true;
-        if (this.#searchOpen) this.#tagSearchDraft(frame.path, STRIP_DRAFT);
       } else {
         delete strip[frame.path];
         this.#untagSearchDraft(frame.path, STRIP_DRAFT);
@@ -484,8 +489,10 @@ class ExifState {
     this.strip = strip;
     this.#searchDrafts.clear();
     this.#draftGen++;
-    // A plan put up before the prune describes drafts that are now gone.
+    // A plan put up before the prune describes drafts that are now gone, and
+    // a field left mid-edit was a search frame's field.
     this.plan = null;
+    this.editingTag = null;
   }
 
   /**

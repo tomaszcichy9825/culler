@@ -546,6 +546,48 @@ func TestCreatingAnExifIFDSerialisesNoDeletions(t *testing.T) {
 // aliased by an entry it never visited. Zeroing on a truncated walk destroyed
 // exactly such a span, so every zeroing path must stand down when the walk was
 // cut short — the edit still lands, the stale bytes merely stay.
+// Stripping GPS means the coordinates leave the file, not just the pointer to
+// them. When the reachability walk is truncated the erase cannot prove any
+// byte safe to blank — but reporting success while the coordinates stay is
+// exactly what "strip GPS" must never do, so the edit is refused instead.
+func TestStripGPSRefusesWhenTheWalkIsTruncated(t *testing.T) {
+	order := binary.LittleEndian
+	b := newTIFF(order)
+	padAt := b.blob(append([]byte("padding"), 0))
+	pointerTo := func(at uint32) []byte {
+		d := make([]byte, 4)
+		order.PutUint32(d, at)
+		return d
+	}
+
+	gps := b.ifd([]tag{
+		ascii(tagGPSLatitudeRef, "N"),
+		b.rational(tagGPSLatitude, [2]uint32{51, 1}, [2]uint32{30, 1}, [2]uint32{0, 1}),
+	}, 0)
+	// The budget-exhausting bulk lives in the Exif IFD, walked before the GPS
+	// directory, so IFD0 itself stays small enough that removing the pointer
+	// rebuilds cleanly — the only refusal left is the erase's own.
+	padding := make([]tag, 0, maxIFDEntries)
+	for i := 0; i < maxIFDEntries-1; i++ {
+		padding = append(padding, tag{id: uint16(0x2000 + i), typ: typeASCII, count: 8, data: pointerTo(padAt)})
+	}
+	exifIFD := b.ifd(padding, 0)
+	// A thumbnail directory behind IFD0's next pointer: the budget runs out on
+	// the Exif bulk while this one is still queued, which is what makes the
+	// walk truncated rather than merely large.
+	ifd1 := b.ifd([]tag{ascii(tagModel, "X-T5")}, 0)
+	ifd0 := b.ifd([]tag{
+		ascii(tagMake, "FUJIFILM"),
+		b.long(tagExifIFD, exifIFD),
+		b.long(tagGPSIFD, gps),
+	}, ifd1)
+	before := b.done(ifd0)
+
+	if _, err := editTIFF(before, Changes{StripGPS: true}); err == nil {
+		t.Fatal("strip GPS reported success while a truncated walk left the coordinates in the file")
+	}
+}
+
 func TestATruncatedReachabilityWalkSkipsZeroing(t *testing.T) {
 	order := binary.LittleEndian
 	b := newTIFF(order)

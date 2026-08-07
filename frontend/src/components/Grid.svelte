@@ -95,8 +95,9 @@
   // of the short sheet stayed "near the end" forever and this effect paged
   // the entire catalogue in a tight loop. Only when the visible list is the
   // full result list does the bottom of the canvas mean "near the end of
-  // what is loaded"; under a narrowing filter nothing auto-pages, and the
-  // next page is fetched once the filter is lifted and the user scrolls.
+  // what is loaded"; under a narrowing filter nothing auto-pages. Lifting the
+  // filter re-arms the latch (the mismatch branch resets it), so paging
+  // resumes as soon as the full sheet shows its bottom again.
   //
   // And a page is asked for at most once per scroll position: the next one
   // needs the scrollTop to actually move, so a page that comes back without
