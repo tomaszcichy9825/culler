@@ -257,6 +257,47 @@ func TestReindexKeepsFramesOfAnUnreadableDirectory(t *testing.T) {
 	}
 }
 
+// The subtler shape of the same mistake: a directory that can still be
+// listed but not traversed — read permission without execute — hands the
+// scan every name and fails every stat. If the scan swallows that, the pass
+// sees zero groups with no error and prunes every row while the files sit on
+// disk.
+func TestReindexKeepsFramesOfAListableButUntraversableDirectory(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	mkdir(t, locked)
+	writeFrame(t, locked, "LOCK0001", 100, 0, shotAt(9, 0))
+	writeFrame(t, locked, "LOCK0002", 100, 0, shotAt(9, 1))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if err := os.Chmod(locked, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := os.Stat(filepath.Join(locked, "LOCK0001.RAF")); err == nil {
+		t.Skip("cannot make the directory untraversable on this platform")
+	}
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Removed != 0 {
+		t.Errorf("stats report %d removals, nothing left the disk", stats.Removed)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 2 {
+		t.Errorf("catalogue holds %d frames after a listable-but-untraversable folder, want both: %v",
+			res.Total, stems(res))
+	}
+}
+
 // The worst case of the same mistake: the root itself stops being readable,
 // the walk reaches nothing, and a prune keyed on what was reached would empty
 // the whole catalogue under it.

@@ -312,3 +312,27 @@ func TestHiddenFilesAreIgnored(t *testing.T) {
 		t.Fatalf("wrong group survived: %q", groups[0].Stem)
 	}
 }
+
+// A directory that can be listed but not traversed — read permission without
+// execute — hands over every name and then fails every stat. Swallowing those
+// failures would return zero groups with a nil error: to a caller keeping a
+// catalogue, indistinguishable from an emptied folder, and grounds to forget
+// every frame in it. The scan must fail instead: it cannot honestly report
+// what the directory holds.
+func TestScanDirFailsWhenItsEntriesCannotBeStatted(t *testing.T) {
+	dir := t.TempDir()
+	one := touch(t, dir, "DSCF0001.RAF")
+	touch(t, dir, "DSCF0002.RAF")
+
+	if err := os.Chmod(dir, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	if _, err := os.Stat(one); err == nil {
+		t.Skip("cannot make the directory untraversable on this platform")
+	}
+
+	if groups, err := ScanDir(dir, DefaultConfig()); err == nil {
+		t.Errorf("ScanDir returned %d groups and no error for a directory it could not read", len(groups))
+	}
+}
