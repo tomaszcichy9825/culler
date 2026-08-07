@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/xml"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,6 +282,178 @@ func TestRewriteJPEGStripsGPSFromTheBytesNotJustThePointer(t *testing.T) {
 	if f.Model.Value != "X-T5" || f.ISO.Value != 640 {
 		t.Errorf("stripping GPS damaged the rest: %+v", f)
 	}
+}
+
+// A corrupt or hostile file can aim the Exif and GPS pointers at the same
+// directory. Stripping GPS must unhook the pointer without shooting the
+// still-reachable directory — and the capture time inside it — out from under
+// the Exif chain.
+func TestStripGPSLeavesAnAliasedDirectoryAlone(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	shared := b.ifd([]tag{ascii(tagDateTimeOriginal, "2026:08:03 19:42:07")}, 0)
+	ifd0 := b.ifd([]tag{
+		ascii(tagMake, "FUJIFILM"),
+		b.long(tagExifIFD, shared),
+		b.long(tagGPSIFD, shared),
+	}, 0)
+
+	after, err := RewriteJPEG(jpegWith(b.done(ifd0)), Changes{StripGPS: true})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+	f, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !f.DateTimeOriginal.Present {
+		t.Error("stripping GPS wiped the capture time out of the aliased directory")
+	}
+	if f.GPS.Present {
+		t.Errorf("GPS still reads back: %+v", f.GPS)
+	}
+}
+
+// A GPS pointer aimed into the middle of a MakerNote — corruption, or malice —
+// must not have the erase wipe MakerNote bytes the Exif chain still references.
+func TestStripGPSAimedIntoTheMakerNoteLeavesItAlone(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	// A private blob that happens to contain an IFD-shaped run at offset 4:
+	// one SHORT entry and a zero next pointer.
+	note := []byte{
+		'P', 'R', 'I', 'V',
+		1, 0, // one entry
+		0x01, 0x00, 3, 0, 1, 0, 0, 0, 0x2A, 0, 0, 0, // tag 1, SHORT, count 1
+		0, 0, 0, 0, // next pointer
+		'T', 'A', 'I', 'L',
+	}
+	noteAt := b.blob(note)
+	ptr := make([]byte, 4)
+	binary.LittleEndian.PutUint32(ptr, noteAt)
+	exifIFD := b.ifd([]tag{
+		ascii(tagLensModel, "XF35mmF1.4 R"),
+		{id: tagMakerNote, typ: typeUndefined, count: uint32(len(note)), data: ptr},
+	}, 0)
+	ifd0 := b.ifd([]tag{
+		ascii(tagMake, "FUJIFILM"),
+		b.long(tagExifIFD, exifIFD),
+		b.long(tagGPSIFD, noteAt+4),
+	}, 0)
+
+	after, err := RewriteJPEG(jpegWith(b.done(ifd0)), Changes{StripGPS: true})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+	if !bytes.Contains(after, note) {
+		t.Error("stripping GPS wiped live MakerNote bytes")
+	}
+}
+
+// patch's zero-fill has the same reachability guard, and it has to see the
+// chains that hang off the Interoperability pointer and the SubIFDs list, or
+// growing a value can wipe bytes those directories still reference.
+func TestPatchLeavesInteropAndSubIFDValuesAlone(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	interop := b.ifd([]tag{ascii(1, "InteropIndexR98")}, 0)
+	subA := b.ifd([]tag{ascii(tagModel, "First SubIFD Value")}, 0)
+	subB := b.ifd([]tag{ascii(tagModel, "Second SubIFD Value")}, 0)
+	exifIFD := b.ifd([]tag{
+		ascii(tagLensModel, "XF35mmF1.4 R"),
+		b.long(tagInteropIFD, interop),
+	}, 0)
+	ifd0 := b.ifd([]tag{
+		ascii(tagMake, "FUJIFILM"),
+		// Artist and Copyright deliberately point at the very bytes the second
+		// sub-IFD's and the Interoperability directory's values occupy: entries
+		// sharing a span, which the guard can only see by walking those chains.
+		{id: tagArtist, typ: typeASCII, count: 20, data: mustPointAt(b, "Second SubIFD Value\x00")},
+		{id: tagCopyright, typ: typeASCII, count: 16, data: mustPointAt(b, "InteropIndexR98\x00")},
+		b.long(tagExifIFD, exifIFD),
+		b.long(tagSubIFDs, subA, subB),
+	}, 0)
+
+	after, err := RewriteJPEG(jpegWith(b.done(ifd0)), Changes{
+		Artist:    ptr("a considerably longer artist string than before"),
+		Copyright: ptr("a considerably longer copyright string than before"),
+	})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+	if !bytes.Contains(after, []byte("Second SubIFD Value")) {
+		t.Error("replacing the artist zeroed a value the SubIFDs chain still references")
+	}
+	if !bytes.Contains(after, []byte("InteropIndexR98")) {
+		t.Error("replacing the copyright zeroed a value the Interoperability chain still references")
+	}
+}
+
+// mustPointAt returns the 4-byte offset of a value already in the block, for
+// building an entry that aliases another entry's bytes.
+func mustPointAt(b *tiffBuilder, value string) []byte {
+	at := bytes.Index(b.buf, []byte(value))
+	if at < 0 {
+		panic("fixture value not found: " + value)
+	}
+	out := make([]byte, 4)
+	b.order.PutUint32(out, uint32(at))
+	return out
+}
+
+// Stripping GPS from a TIFF whose IFD0 holds nothing but the GPS pointer would
+// leave an empty directory, which no reader accepts. The refusal must say so
+// rather than blame the 64 KB segment limit for a 44-byte block.
+func TestStripGPSFromAPointerOnlyIFD0SaysWhyItRefuses(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	gps := b.ifd([]tag{
+		ascii(tagGPSLatitudeRef, "N"),
+		b.rational(tagGPSLatitude, [2]uint32{51, 1}, [2]uint32{30, 1}, [2]uint32{0, 1}),
+	}, 0)
+	ifd0 := b.ifd([]tag{b.long(tagGPSIFD, gps)}, 0)
+
+	_, err := RewriteJPEG(jpegWith(b.done(ifd0)), Changes{StripGPS: true})
+	if err == nil {
+		t.Fatal("an IFD0 left with no entries at all cannot be written; the edit must be refused")
+	}
+	if errors.Is(err, errTooLarge) {
+		t.Errorf("the refusal blames the segment size: %v", err)
+	}
+	if !errors.Is(err, errEmptyIFD) {
+		t.Errorf("err = %v, want errEmptyIFD", err)
+	}
+}
+
+// A deletion must take the old value's out-of-line bytes with it, exactly as a
+// replacement does: an offset or a name that is merely unreachable is still
+// sitting in the file for anyone with a hex editor.
+func TestDeletingATagZeroesItsOldValueBytes(t *testing.T) {
+	before := jpegWith(fullTIFF(binary.LittleEndian))
+
+	t.Run("stale offset behind a zone-unknown time", func(t *testing.T) {
+		when := time.Date(2026, 8, 5, 10, 11, 12, 0, time.UTC)
+		after, err := RewriteJPEG(before, Changes{DateTimeOriginal: &CaptureTime{Value: when}})
+		if err != nil {
+			t.Fatalf("RewriteJPEG: %v", err)
+		}
+		if bytes.Contains(after, []byte("+02:00")) {
+			t.Error("the deleted offset's bytes are still sitting in the file")
+		}
+		f, err := Parse(after)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !f.DateTimeOriginal.Value.Equal(when) || f.DateTimeOriginal.HasOffset {
+			t.Errorf("the edit itself went wrong: %+v", f.DateTimeOriginal)
+		}
+	})
+
+	t.Run("cleared artist", func(t *testing.T) {
+		after, err := RewriteJPEG(before, Changes{Artist: ptr("")})
+		if err != nil {
+			t.Fatalf("RewriteJPEG: %v", err)
+		}
+		if bytes.Contains(after, []byte("Old Artist")) {
+			t.Error("the cleared artist's bytes are still sitting in the file")
+		}
+	})
 }
 
 // directoryOf re-reads a directory a rewrite left behind, straight from the
