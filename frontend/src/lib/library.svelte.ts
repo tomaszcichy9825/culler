@@ -292,6 +292,13 @@ class LibraryState {
 
   /** The loaded page or pages of results, oldest request first. */
   results = $state<CatalogFrame[]>([]);
+  /**
+   * Rises whenever the results are replaced wholesale — a fresh query's first
+   * page, the search opening or closing — and never when loadMore appends.
+   * The grid's auto-page latch keys on it: a latch measured against one
+   * result list must not block the first page of the next.
+   */
+  generation = $state(0);
   total = $state(0);
   elapsed = $state(0);
 
@@ -369,6 +376,7 @@ class LibraryState {
     this.searchOpen = true;
     this.query = "";
     this.results = [];
+    this.generation++;
     this.total = 0;
     this.searched = false;
     this.focusIndex = 0;
@@ -391,6 +399,7 @@ class LibraryState {
     this.searchOpen = false;
     this.query = "";
     this.results = [];
+    this.generation++;
     this.total = 0;
     this.searched = false;
     this.loading = false;
@@ -450,6 +459,7 @@ class LibraryState {
   async search() {
     if (source === null) return;
     const ticket = ++this.#ticket;
+    this.generation++;
     this.loading = true;
     this.error = null;
     try {

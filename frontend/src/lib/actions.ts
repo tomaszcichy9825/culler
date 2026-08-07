@@ -1186,7 +1186,10 @@ export const ACTIONS: Action[] = [
     group: FILES,
     icon: "⇢",
     note: "pick a destination",
-    when: () => app.targets.length > 0,
+    // Cull-only, like the verdict keys: the targets are the cull grid's
+    // selection or focus, which EXIF/MAP/IMPORT do not show as such — moving
+    // files from there would act on frames the user cannot see.
+    when: () => shell.mode === "cull" && app.targets.length > 0,
     run: () => palette.toggle("move"),
   },
   {
@@ -1195,7 +1198,7 @@ export const ACTIONS: Action[] = [
     group: FILES,
     icon: "⇉",
     note: "pick a destination",
-    when: () => app.targets.length > 0,
+    when: () => shell.mode === "cull" && app.targets.length > 0,
     run: () => palette.toggle("copy"),
   },
   {
