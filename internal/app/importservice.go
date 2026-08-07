@@ -333,7 +333,12 @@ func (s *ImportService) CardSummary(path string) (CardSummaryDTO, error) {
 	for _, dir := range folders {
 		groups, err := scan.ScanDir(dir, cfg)
 		if err != nil {
-			continue // a folder that vanished under the read is not the card
+			// The folder is still on the card even when it cannot be read: it
+			// stays in the listing with zero frames rather than vanishing from
+			// the summary, so the user sees a folder the import will pass over
+			// instead of a card that quietly looks smaller than it is.
+			out.Dirs = append(out.Dirs, CardDirDTO{Path: dir, Name: filepath.Base(dir)})
+			continue
 		}
 		entry := CardDirDTO{Path: dir, Name: filepath.Base(dir), Frames: len(groups)}
 		for _, g := range groups {
