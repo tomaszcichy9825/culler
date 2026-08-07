@@ -359,7 +359,9 @@ func (r *reader) timestamp(exif *directory) Timestamp {
 			if err == nil {
 				ts.Value = zoned
 				ts.HasOffset = true
-				ts.Offset = off.Value
+				// Trimmed: a camera that pads the tag ("  +02:00") names the
+				// same zone, and the padding would otherwise reach the UI.
+				ts.Offset = strings.TrimSpace(off.Value)
 			}
 		}
 	}

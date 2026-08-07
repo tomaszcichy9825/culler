@@ -37,7 +37,9 @@ jobs:
       - name: Vet
         run: go vet ./internal/...
       - name: Test
-        run: go test ./internal/...
+        # -race to match the Linux job: Windows-only data races would
+        # otherwise go unseen. The runner ships the mingw gcc cgo needs.
+        run: go test -race ./internal/...
 
   build:
     name: App build (macOS)

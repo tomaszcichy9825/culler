@@ -47,3 +47,6 @@ build/android/gen/
 # Generated bindings
 frontend/bindings/
 .gitnexus
+
+# Agent worktrees are scratch checkouts, never content.
+.claude/worktrees/
