@@ -131,7 +131,6 @@ func TestRouteRefusesADestinationThatIsNotAbsolute(t *testing.T) {
 		// No Metadata func, so {camera} is unanswerable and the whole
 		// expansion collapses to the empty string.
 		{"collapses to nothing", "{camera}"},
-		{"backslash-joined and unanswerable", `C:\photos\{camera}`},
 		{"relative after expansion", "keepers/{date:2006}"},
 	}
 	for _, c := range cases {
@@ -141,6 +140,73 @@ func TestRouteRefusesADestinationThatIsNotAbsolute(t *testing.T) {
 				t.Fatalf("planned %v instead of refusing a destination that is not absolute", destPaths(actions))
 			}
 		})
+	}
+
+	// `C:\photos\{camera}` expands to C:/photos, which is an absolute folder
+	// on Windows and a relative oddity everywhere else. The plan must agree
+	// with filepath.IsAbs rather than hard-code either answer.
+	t.Run("drive-letter template follows the platform", func(t *testing.T) {
+		actions, err := CopyTo{Dest: `C:\photos\{camera}`, Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+		if filepath.IsAbs("C:/photos") {
+			if err != nil {
+				t.Fatalf("refused a drive-letter destination the platform calls absolute: %v", err)
+			}
+			if want := filepath.FromSlash("C:/photos/DSCF0001.RAF"); actions[0].Dst != want {
+				t.Errorf("planned %q, want %q", actions[0].Dst, want)
+			}
+		} else if err == nil {
+			t.Fatalf("planned %v instead of refusing a destination that is not absolute", destPaths(actions))
+		}
+	})
+}
+
+// An absolute template whose every segment dies must not quietly become the
+// filesystem root: /{camera} on a frame with no EXIF is not an instruction to
+// spill files into /.
+func TestRouteRefusesADestinationThatLosesEveryFolder(t *testing.T) {
+	actions, err := CopyTo{Dest: "/{camera}", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+	if err == nil {
+		t.Fatalf("planned %v instead of refusing a destination with no folders left", destPaths(actions))
+	}
+	if !strings.Contains(err.Error(), "lost every folder") {
+		t.Errorf("error %q does not say the expansion lost every folder", err)
+	}
+
+	// One live literal segment is a real destination and must still plan.
+	// The temp volume's drive prefix keeps the path absolute on Windows too.
+	vol := filepath.VolumeName(os.TempDir())
+	live, err := CopyTo{Dest: vol + "/{camera}/keepers", Halves: HalvesBoth}.Plan([]scan.PhotoGroup{datedGroup("/card")})
+	if err != nil {
+		t.Fatalf("refused a destination that still has a live folder: %v", err)
+	}
+	if want := filepath.FromSlash(vol + "/keepers/DSCF0001.RAF"); live[0].Dst != want {
+		t.Errorf("planned %q, want %q", live[0].Dst, want)
+	}
+}
+
+// A UNC destination opens with a doubled separator that names a host, not an
+// empty folder. Flattening it to a single slash would turn a working network
+// destination into a refused one.
+func TestExpandTemplateKeepsUNCDestinations(t *testing.T) {
+	got, err := ExpandTemplate(`\\server\share\photos`, Tokens{Stem: "DSCF0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "//server/share/photos" {
+		t.Errorf(`\\server\share\photos expanded to %q, want //server/share/photos`, got)
+	}
+
+	// A dead token still takes only its own segment.
+	got, err = ExpandTemplate(`\\server\share\{camera}\keepers`, Tokens{Stem: "DSCF0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "//server/share/keepers" {
+		t.Errorf("UNC template with a dead token expanded to %q, want //server/share/keepers", got)
+	}
+
+	if _, err := (CopyTo{Dest: `\\server\share\photos`, Halves: HalvesBoth}).Plan([]scan.PhotoGroup{datedGroup("/card")}); err != nil {
+		t.Errorf("refused a UNC destination: %v", err)
 	}
 }
 
