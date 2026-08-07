@@ -238,8 +238,10 @@ func (s *ApplyService) Undo() error {
 		return errors.New("nothing to undo")
 	}
 	// Undo needs no trasher: it moves files back to where the journal says
-	// they came from and removes the copies it made.
-	executor := &ops.Executor{Journal: jrnl}
+	// they came from and removes the copies it made. Verification carries over
+	// from the setting, because a cross-filesystem move back is as capable of
+	// destroying the only intact copy as a forward move is.
+	executor := &ops.Executor{Journal: jrnl, Verify: s.app.Config().Behaviour.VerifyCopies}
 	return executor.Undo(target)
 }
 

@@ -33,6 +33,12 @@ type Action struct {
 	// refuse to delete the latter. Empty for non-copies and for journals
 	// written before it was recorded.
 	Digest string `json:"digest,omitempty"`
+	// Displaced is where the file this action overwrote went — its path in the
+	// trash under the overwrite collision policy. Undo restores it after taking
+	// the action itself back; without the record the displaced file would be
+	// recoverable only by digging through the trash by hand. Empty when nothing
+	// was displaced, and in journals written before it was recorded.
+	Displaced string `json:"displaced,omitempty"`
 }
 
 // Batch is the journal record for one applied operation.

@@ -66,8 +66,9 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 	}
 	for _, a := range actions {
 		rec := journal.Action{Verb: string(a.Verb), Src: a.Src}
-		dst, err := e.execute(a)
+		dst, displaced, err := e.execute(a)
 		rec.Dst = dst
+		rec.Displaced = displaced
 		if err != nil {
 			rec.Outcome = journal.OutcomeError
 			rec.Err = err.Error()
@@ -76,9 +77,20 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			// A copy records the digest of what it wrote, so its undo can be
 			// sure it is deleting the copy it made and not a later replacement.
 			if a.Verb == VerbCopy && dst != "" {
-				if d, derr := contentDigest(dst); derr == nil {
-					rec.Digest = d
+				d, derr := contentDigest(dst)
+				if derr != nil {
+					// One transient hiccup — a share dropping a read, a
+					// scanner holding the file — should not decide the copy's
+					// fate, so the read is tried again.
+					d, derr = contentDigest(dst)
 				}
+				if derr != nil {
+					// No digest means undo cannot tell our copy from a later
+					// replacement. The sentinel makes it refuse to delete
+					// rather than fall back to deleting unconditionally.
+					d = digestUnreadable
+				}
+				rec.Digest = d
 			}
 		}
 		batch.Actions = append(batch.Actions, rec)
@@ -89,81 +101,100 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 	return batch, nil
 }
 
-// execute performs one action and returns where the file ended up. An empty
-// destination on a copy or a move means the collision policy skipped it: the
-// user's instruction carried out, with nothing of ours at the destination for
-// undo to take back.
-func (e *Executor) execute(a FileAction) (string, error) {
+// execute performs one action and returns where the file ended up, along with
+// the trash location of anything the overwrite policy displaced to make room.
+// An empty destination on a copy or a move means the collision policy skipped
+// it: the user's instruction carried out, with nothing of ours at the
+// destination for undo to take back.
+func (e *Executor) execute(a FileAction) (string, string, error) {
 	switch a.Verb {
 	case VerbTrash:
-		return e.Trasher.Trash(a.Src)
+		dst, err := e.Trasher.Trash(a.Src)
+		return dst, "", err
 	case VerbMove:
-		dst, ok, err := e.clearTarget(a.Src, a.Dst)
+		dst, displaced, ok, err := e.clearTarget(a.Src, a.Dst)
 		if err != nil || !ok {
-			return "", err
+			return "", "", err
 		}
 		if err := e.move(a.Src, dst); err != nil {
-			return "", err
+			return "", "", e.undisplace(displaced, dst, err)
 		}
-		return dst, nil
+		return dst, displaced, nil
 	case VerbCopy:
-		dst, ok, err := e.clearTarget(a.Src, a.Dst)
+		dst, displaced, ok, err := e.clearTarget(a.Src, a.Dst)
 		if err != nil || !ok {
-			return "", err
+			return "", "", err
 		}
 		if err := e.copy(a.Src, dst); err != nil {
-			return "", err
+			return "", "", e.undisplace(displaced, dst, err)
 		}
-		return dst, nil
+		return dst, displaced, nil
 	case VerbDestroy:
 		// Permanent deletion never routes through here. It belongs to the one
 		// command sanctioned to do it, which journals the verb itself; letting
 		// an op plan a destroy would put unrecoverable deletion one typo away
 		// from every apply.
-		return "", errors.New("destroy is not an executable verb: only the empty-rejects command deletes permanently")
+		return "", "", errors.New("destroy is not an executable verb: only the empty-rejects command deletes permanently")
 	}
-	return "", fmt.Errorf("unknown verb %q", a.Verb)
+	return "", "", fmt.Errorf("unknown verb %q", a.Verb)
 }
 
-// clearTarget applies the collision policy and returns the path to write to.
-// It reports false when the policy says to leave the existing file alone. The
+// undisplace puts a displaced file straight back after the action that
+// displaced it failed: the user asked to replace it, not to lose it to a copy
+// that never happened. When even that fails, the error at least says where the
+// file went, which beats a trash nobody was told about.
+func (e *Executor) undisplace(displaced, dst string, cause error) error {
+	if displaced == "" {
+		return cause
+	}
+	if err := e.move(displaced, dst); err != nil {
+		return fmt.Errorf("%w; the file it displaced is in the trash at %s", cause, displaced)
+	}
+	return cause
+}
+
+// clearTarget applies the collision policy and returns the path to write to,
+// plus where any displaced file went so the journal can carry it. It reports
+// false when the policy says to leave the existing file alone. The
 // destination's parent is created either way: routing a frame into a dated
 // folder is an instruction to make the folder. src is the file about to be
 // written from, so an operation that would land on its own source is caught
 // before anything is removed.
-func (e *Executor) clearTarget(src, dst string) (string, bool, error) {
+func (e *Executor) clearTarget(src, dst string) (string, string, bool, error) {
 	if same, err := sameFile(src, dst); err != nil {
-		return "", false, err
+		return "", "", false, err
 	} else if same {
-		return "", false, fmt.Errorf("refusing to overwrite %s with itself", dst)
+		return "", "", false, fmt.Errorf("refusing to overwrite %s with itself", dst)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	_, err := os.Lstat(dst)
 	if os.IsNotExist(err) {
-		return dst, true, nil
+		return dst, "", true, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	switch e.Collision {
 	case config.CollisionSkip:
-		return "", false, nil
+		return "", "", false, nil
 	case config.CollisionOverwrite:
 		// The user asked to replace it, but replacing is not destroying: the
 		// displaced file goes to the trash so it is still recoverable, like
-		// every other deletion in the app.
+		// every other deletion in the app — and its trash location travels up
+		// into the journal, so undo can put it back.
 		if e.Trasher == nil {
-			return "", false, fmt.Errorf("overwrite needs a trash and has none")
+			return "", "", false, fmt.Errorf("overwrite needs a trash and has none")
 		}
-		if _, err := e.Trasher.Trash(dst); err != nil {
-			return "", false, err
+		displaced, err := e.Trasher.Trash(dst)
+		if err != nil {
+			return "", "", false, err
 		}
-		return dst, true, nil
+		return dst, displaced, true, nil
 	default:
 		unique, err := platform.UniquePath(dst)
-		return unique, err == nil, err
+		return unique, "", err == nil, err
 	}
 }
 
@@ -186,22 +217,56 @@ func sameFile(src, dst string) (bool, error) {
 }
 
 // move relocates a file. A same-filesystem rename is atomic and needs no
-// verification. Across filesystems a rename cannot happen, so MoveFile copies
+// verification. Across filesystems a rename cannot happen, so the move copies
 // then deletes the source — and with verification on the copy is proven intact
 // before the only other copy is removed, because this is the one path that can
-// destroy an original.
+// destroy an original. A source that cannot be removed after the copy takes
+// the copy back with it: the journal is about to record an error and no
+// destination, and a copy the journal denies exists would be invisible to
+// undo and pile a numbered duplicate on every retry.
 func (e *Executor) move(src, dst string) error {
 	rename := e.Renamer
 	if rename == nil {
-		rename = os.Rename
+		rename = noReplaceRename
 	}
 	if err := rename(src, dst); err == nil {
 		return nil
+	} else if os.IsExist(err) {
+		// Something landed on the destination between the collision check and
+		// now. A plain rename would swallow it silently; refusing is the only
+		// answer that loses nothing.
+		return fmt.Errorf("a file appeared at %s since the collision check", dst)
 	}
 	if err := e.copy(src, dst); err != nil {
 		return err
 	}
-	return os.Remove(src)
+	if err := os.Remove(src); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("source not removable, so the moved copy was withdrawn: %w", err)
+	}
+	return nil
+}
+
+// noReplaceRename relocates within a filesystem without ever landing on an
+// existing file. A hard link is the one primitive that fails on an occupied
+// destination instead of overwriting it, which closes the gap between the
+// collision check and the rename; where links are not supported the plain
+// rename stands, which is the behaviour those filesystems always had.
+func noReplaceRename(src, dst string) error {
+	err := os.Link(src, dst)
+	if err == nil {
+		if rerr := os.Remove(src); rerr != nil {
+			// Two names for one file. Withdraw ours: the source is intact and
+			// nothing is lost.
+			os.Remove(dst)
+			return fmt.Errorf("source not removable after linking: %w", rerr)
+		}
+		return nil
+	}
+	if os.IsExist(err) {
+		return err
+	}
+	return os.Rename(src, dst)
 }
 
 // copy writes one file and, when verification is on, proves it landed intact
@@ -245,12 +310,23 @@ func verifyCopy(src, dst string) error {
 	return nil
 }
 
+// digestUnreadable marks a copy whose destination could not be re-read when
+// the digest was due. It is not a hash — no sha256 renders to it — so it can
+// never match a file, and undo refuses to delete rather than guessing.
+const digestUnreadable = "!unreadable"
+
 // removeIfOurCopy deletes path only if it still holds the bytes the copy
 // wrote, identified by the digest recorded at the time. A gone file is
 // nothing to undo. An empty digest is a pre-digest journal, removed as the old
 // undo did. A changed file is left alone with an error, so a replacement is
 // never destroyed.
 func removeIfOurCopy(path, digest string) error {
+	if digest == digestUnreadable {
+		// What was written was never fingerprinted, so there is no telling our
+		// copy from a later replacement — and deleting a maybe-replacement is
+		// the mistake digests exist to prevent.
+		return fmt.Errorf("the copy's digest was never recorded; %s is left alone", path)
+	}
 	if digest == "" {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
@@ -326,13 +402,15 @@ func (e *Executor) Undo(b journal.Batch) error {
 		restore := false
 		switch Verb(a.Verb) {
 		case VerbTrash, VerbMove:
-			// bring it back where it came from — unless something new now
-			// lives there; never silently overwrite
+			// Bring it back where it came from — unless something new now
+			// lives there; never silently overwrite. The move back takes the
+			// same verified road as a forward move: across filesystems it is
+			// the one step that can destroy the only remaining copy.
 			restore = true
 			if _, statErr := os.Lstat(a.Src); statErr == nil {
 				err = fmt.Errorf("destination occupied: %s", a.Src)
 			} else {
-				err = platform.MoveFile(a.Dst, a.Src)
+				err = e.move(a.Dst, a.Src)
 			}
 		case VerbCopy:
 			// Remove only the copy we made. The digest recorded when it was
@@ -345,6 +423,15 @@ func (e *Executor) Undo(b journal.Batch) error {
 			rec.Dst = ""
 		default:
 			err = fmt.Errorf("unknown verb %q", a.Verb)
+		}
+		// With the action itself taken back, the file it displaced goes back
+		// where it was. This is a restore too: the displaced file is the one
+		// the overwrite promised was still recoverable.
+		if err == nil && a.Displaced != "" {
+			restore = true
+			if rerr := e.move(a.Displaced, a.Dst); rerr != nil {
+				err = fmt.Errorf("the displaced file was not restored: %w", rerr)
+			}
 		}
 		if err != nil {
 			rec.Outcome = journal.OutcomeError
