@@ -330,7 +330,11 @@ class ImportState {
       const summary = await source.CardSummary(card.path);
       if (ticket !== this.#ticket) return; // a newer selection has answered
       this.summary = summary;
-      await this.loadFolder(summary.dirs[0]?.path ?? card.dir);
+      // The first folder that actually holds frames: a folder the summary
+      // lists with zero is one it could not read, and auto-loading it would
+      // greet the card with an error instead of its photographs.
+      const first = summary.dirs.find((d) => d.frames > 0) ?? summary.dirs[0];
+      await this.loadFolder(first?.path ?? card.dir);
     } catch (error) {
       if (ticket !== this.#ticket) return;
       this.error = message(error);

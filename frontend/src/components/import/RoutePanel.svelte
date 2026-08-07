@@ -35,7 +35,13 @@
 
 <div class="route">
   {#if plan === null}
-    <p class="empty">select a card on the left</p>
+    {#if importState.error !== null}
+      <!-- A folder that would not read leaves no plan; the reason has to show
+           here, or the panel says "select a card" about a card just selected. -->
+      <p class="empty">{importState.error}</p>
+    {:else}
+      <p class="empty">select a card on the left</p>
+    {/if}
   {:else}
     <header>
       <span class="eyebrow">routing</span>

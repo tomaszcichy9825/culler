@@ -238,7 +238,9 @@ func editTIFF(block []byte, c Changes) ([]byte, error) {
 			return nil, err
 		}
 	case c.StripGPS:
-		ed.eraseGPS()
+		if err := ed.eraseGPS(); err != nil {
+			return nil, err
+		}
 		changes = append(changes, change{tag: tagGPSIFD, del: true})
 	}
 	if err := ed.editIFD0(changes); err != nil {
@@ -579,31 +581,34 @@ func (ed *editor) pointerOf(d *directory, tag uint16) uint32 {
 
 // eraseGPS blanks the GPS directory and the values only it referenced. The
 // pointer to it is removed separately; unhooking alone would leave the
-// coordinates in the file for anyone willing to open it in a hex editor.
-func (ed *editor) eraseGPS() {
+// coordinates in the file for anyone willing to open it in a hex editor —
+// which is why a truncated reachability walk refuses the whole strip rather
+// than quietly delivering an unhook the user asked more of. That is the
+// opposite call to patch and applyTo, where standing down loses nothing: a
+// replaced value merely stays readable, but "strip GPS" claiming success with
+// the coordinates still in the file is the promise itself broken.
+func (ed *editor) eraseGPS() error {
 	ifd0, ok := ed.read(ed.ifd0)
 	if !ok {
-		return
+		return nil
 	}
 	gpsOff := ed.pointerOf(ifd0, tagGPSIFD)
 	if gpsOff == 0 {
-		return
+		return nil
 	}
 	gps, ok := ed.read(gpsOff)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Everything still reachable once the GPS pointer is unhooked from IFD0 —
 	// only that one edge goes, so a directory the Exif pointer shares, or a
 	// pointer aimed into the middle of a MakerNote, stays alive and untouched.
-	// A truncated walk cannot vouch for what it never reached: the unhooking
-	// still happens through the caller's deletion, but no bytes are blanked.
 	keep, truncated := ed.reachableSpans(func(dir uint32, e entry) bool {
 		return dir == ed.ifd0 && e.tag == tagGPSIFD
 	})
 	if truncated {
-		return
+		return errors.New("exif: this file's metadata is too tangled to prove the coordinates gone, so the strip is refused rather than half-done")
 	}
 	for _, e := range gps.entries {
 		if e.inline || e.span == nil {
@@ -620,6 +625,7 @@ func (ed *editor) eraseGPS() {
 	if !overlapsAny(gpsOff, length, keep) {
 		ed.zero(gpsOff, length)
 	}
+	return nil
 }
 
 // span is a byte range inside the block.

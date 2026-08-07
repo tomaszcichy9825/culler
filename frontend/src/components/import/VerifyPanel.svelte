@@ -24,7 +24,13 @@
 
 <div class="verify">
   {#if plan === null}
-    <p class="empty">select a card on the left</p>
+    {#if importState.error !== null}
+      <!-- Mirrors RoutePanel: a folder that would not read leaves no plan,
+           and the reason beats "select a card" about a card just selected. -->
+      <p class="empty">{importState.error}</p>
+    {:else}
+      <p class="empty">select a card on the left</p>
+    {/if}
   {:else}
     <header>
       <span class="eyebrow">verify</span>
