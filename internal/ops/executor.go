@@ -443,8 +443,10 @@ func (e *Executor) Undo(b journal.Batch) (journal.Batch, error) {
 	// replacement alone is the point, and no retry changes it. recycled counts
 	// trashes whose destination the platform never reported — the Windows
 	// Recycle Bin — which no retry can learn either: those files are only
-	// restorable from the Recycle Bin itself.
-	var reversed, blocked, recycled int
+	// restorable from the Recycle Bin itself. kept counts copy-undos that
+	// protectively left a replacement alone: like recycled, no retry can ever
+	// change one.
+	var reversed, blocked, recycled, kept int
 	var firstErr string
 	for i := len(b.Actions) - 1; i >= 0; i-- {
 		a := b.Actions[i]
@@ -528,6 +530,8 @@ func (e *Executor) Undo(b journal.Batch) (journal.Batch, error) {
 				if firstErr == "" {
 					firstErr = err.Error()
 				}
+			} else if copyKept {
+				kept++
 			}
 		} else {
 			rec.Outcome = journal.OutcomeOK
@@ -548,7 +552,14 @@ func (e *Executor) Undo(b journal.Batch) (journal.Batch, error) {
 	// destination has nothing undo can ever do. Nothing is journalled — the
 	// batch's record stays the last word — and the error says where the files
 	// actually are, which is the Recycle Bin, not lost.
-	if reversed == 0 && recycled > 0 {
+	//
+	// Unless the batch also protectively kept a copy: then it is not all-trash,
+	// so the shape-based step-over above the journal cannot skip it, and
+	// leaving it unjournalled would jam the undo stack — every undo picking it,
+	// failing, recording nothing. A recycled file and a kept file are alike in
+	// that no retry can ever change either, so the batch is spent: the undo is
+	// journalled, and the error below still says where everything is.
+	if reversed == 0 && recycled > 0 && kept == 0 {
 		return journal.Batch{}, fmt.Errorf(
 			"%q sent its files to the system Recycle Bin, which does not report where they land: restore them from the Recycle Bin itself",
 			b.Description)

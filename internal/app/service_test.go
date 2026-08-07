@@ -25,6 +25,21 @@ func testApp(t *testing.T) *App {
 	return a
 }
 
+// unwritableDir makes dir read-only and skips the test where that cannot be
+// arranged — Windows ignores directory modes, and root walks through them.
+func unwritableDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	probe := filepath.Join(dir, ".probe")
+	if err := os.WriteFile(probe, nil, 0o644); err == nil {
+		os.Remove(probe)
+		t.Skip("cannot make the directory read-only on this platform")
+	}
+}
+
 // card writes a small RAW+JPEG pair with a sidecar plus a JPEG-only frame,
 // and returns the directory.
 func card(t *testing.T) string {
@@ -515,6 +530,7 @@ func TestAMaskedOutCutSurvivesAnApplyThatMovesNothing(t *testing.T) {
 func TestApplyResolvesTheFolderBeforePlacingRejects(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what UserHomeDir reads on Windows
 	work := t.TempDir()
 	t.Chdir(work)
 

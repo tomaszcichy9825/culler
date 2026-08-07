@@ -426,10 +426,7 @@ func TestEmptyRecordsAFileItCouldNotRemove(t *testing.T) {
 	dir := t.TempDir()
 	rejected := putRejects(t, dir, map[string]string{"locked/A.RAF": "raw", "B.JPG": "jpeg"})
 	locked := filepath.Join(rejected, "locked")
-	if err := os.Chmod(locked, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	unwritableDir(t, locked)
 
 	res, err := NewRejectsService(a).Empty([]string{dir})
 	if err != nil {

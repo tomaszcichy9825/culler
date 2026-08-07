@@ -466,7 +466,8 @@ func TestStorageSummary(t *testing.T) {
 // view: it is the one place the user finds out it is empty.
 func TestStorageSummaryIncludesAnUnindexedRoot(t *testing.T) {
 	s := openStore(t)
-	if _, err := s.AddRoot("/Volumes/FUJI_SD"); err != nil {
+	root := fix("/Volumes/FUJI_SD")
+	if _, err := s.AddRoot(root); err != nil {
 		t.Fatalf("AddRoot: %v", err)
 	}
 	storage, err := s.StorageSummary()
@@ -476,7 +477,9 @@ func TestStorageSummaryIncludesAnUnindexedRoot(t *testing.T) {
 	if len(storage.Roots) != 1 || storage.Roots[0].Frames != 0 {
 		t.Errorf("summary = %+v, want the empty root listed", storage.Roots)
 	}
-	if len(storage.Volumes) != 1 || storage.Volumes[0].Volume != "/Volumes/FUJI_SD" {
-		t.Errorf("volumes = %+v, want the card's own volume", storage.Volumes)
+	// Which volume that is belongs to TestVolumeOf; here the point is the
+	// unindexed root still appears under one.
+	if len(storage.Volumes) != 1 || storage.Volumes[0].Volume != volumeOf(root) {
+		t.Errorf("volumes = %+v, want the card's own volume %q", storage.Volumes, volumeOf(root))
 	}
 }

@@ -1,3 +1,8 @@
+// The XDG trash is the freedesktop.org spec's: it is never the trash on
+// Windows, where the Recycle Bin implementation takes over, so its tests
+// assert Unix path behaviour that has no Windows reading.
+//go:build !windows
+
 package platform
 
 import (

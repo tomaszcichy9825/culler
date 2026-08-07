@@ -92,10 +92,16 @@ func route(
 		if err != nil {
 			return nil, fmt.Errorf("ops: destination for %s: %w", g.Stem, err)
 		}
-		// A destination that collapsed to nothing, or never was absolute,
-		// would plan actions relative to wherever the process happens to be
-		// running from. Refusing here keeps that path out of every plan.
-		if dir == "" || !filepath.IsAbs(dir) {
+		// An expansion that kept no folder at all — every segment died with
+		// its token — is not a destination, however absolute the bare root
+		// separator looks. Spilling files straight into / would be the plan.
+		if strings.Trim(dir, "/") == "" {
+			return nil, fmt.Errorf("ops: destination %q for %s lost every folder in its path — the frame answers none of its tokens", dest, g.Stem)
+		}
+		// A destination that never was absolute would plan actions relative to
+		// wherever the process happens to be running from. Refusing here keeps
+		// that path out of every plan.
+		if !filepath.IsAbs(dir) {
 			return nil, fmt.Errorf("ops: destination %q for %s expands to %q, which is not an absolute folder", dest, g.Stem, dir)
 		}
 		for _, ref := range surviving(g, halves) {
@@ -165,8 +171,12 @@ func primaryExt(g scan.PhotoGroup) string {
 // path that then collapses to nothing.
 func ExpandTemplate(template string, tok Tokens) (string, error) {
 	template = strings.ReplaceAll(template, `\`, "/")
+	// A UNC destination opens with a doubled separator naming a host, not an
+	// empty folder. It has to survive the split, or \\server\share would come
+	// out as /server/share — a path on the local volume that nothing can use.
+	unc := strings.HasPrefix(template, "//")
 	absolute := strings.HasPrefix(template, "/")
-	rest := strings.TrimPrefix(template, "/")
+	rest := strings.TrimLeft(template, "/")
 
 	// Each segment carries whether a token in it went unanswered, which is
 	// what decides between an empty segment worth dropping and a whole
@@ -215,6 +225,9 @@ func ExpandTemplate(template string, tok Tokens) (string, error) {
 		kept = append(kept, s)
 	}
 	joined := strings.Join(kept, "/")
+	if unc {
+		return "//" + joined, nil
+	}
 	if absolute {
 		return "/" + joined, nil
 	}

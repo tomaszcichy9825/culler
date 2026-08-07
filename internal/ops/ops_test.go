@@ -279,6 +279,63 @@ func TestUndoOfRecycleBinTrashNamesTheRecycleBin(t *testing.T) {
 	}
 }
 
+// A batch mixing a Recycle-Bin trash with a copy whose destination the user
+// has since replaced reverses nothing — and must not jam the undo stack.
+// Retrying can never change a recycled or a protectively kept file, so the
+// batch is spent: the undo is journalled, and the error still says where the
+// files actually are.
+func TestUndoOfRecycledPlusKeptCopyIsJournalledAsSpent(t *testing.T) {
+	ex, j := newExecutor(t)
+	replaced := filepath.Join(t.TempDir(), "IMG_0001.JPG")
+	writeFile(t, replaced, "the user's replacement")
+	batch := journal.Batch{
+		ID:          "mixed-1",
+		Description: "Drop and import (2 frames)",
+		Actions: []journal.Action{
+			// The Recycle Bin reported no destination.
+			{Verb: string(VerbTrash), Src: "/card/DSCF0001.RAF", Outcome: journal.OutcomeOK},
+			// The copy's digest no longer matches what is at the destination.
+			{Verb: string(VerbCopy), Src: "/card/IMG_0001.JPG", Dst: replaced,
+				Digest: strings.Repeat("ab", 32), Outcome: journal.OutcomeOK},
+		},
+	}
+
+	undo, err := ex.Undo(batch)
+	if err == nil {
+		t.Fatal("an undo that put nothing back reported success")
+	}
+	if got := readFile(t, replaced); got != "the user's replacement" {
+		t.Fatalf("undo touched the replaced file: %q", got)
+	}
+	if undo.UndoOf != batch.ID {
+		t.Errorf("returned undo batch is not tied to the original: %+v", undo)
+	}
+	batches, jerr := j.ReadAll()
+	if jerr != nil {
+		t.Fatal(jerr)
+	}
+	if len(batches) != 1 || batches[0].UndoOf != batch.ID {
+		t.Fatalf("the spent batch was not journalled as undone, so undo would pick it forever: %+v", batches)
+	}
+
+	// With the spent batch journalled, a subsequent undo reaches older work.
+	dir, _ := setupTree(t)
+	older, err := ex.Apply("move", []FileAction{{
+		Verb: VerbMove,
+		Src:  filepath.Join(dir, "IMG_0002.JPG"),
+		Dst:  filepath.Join(t.TempDir(), "IMG_0002.JPG"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.Undo(older); err != nil {
+		t.Fatalf("the undo stack is still jammed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "IMG_0002.JPG")); err != nil {
+		t.Errorf("the older batch's file did not come back: %v", err)
+	}
+}
+
 func TestApplyMove(t *testing.T) {
 	dir, _ := setupTree(t)
 	dest := t.TempDir()

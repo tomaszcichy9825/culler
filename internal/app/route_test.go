@@ -12,14 +12,27 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/ops"
 )
 
+// libVol makes the fixture library absolute on every platform: empty on
+// Unix, the temp drive ("C:") on Windows. Plans are pure, so none of these
+// paths have to exist.
+var libVol = filepath.VolumeName(os.TempDir())
+
+// libAbs is a destination or root as the user would record it: forward
+// slashes, absolute for the platform.
+func libAbs(p string) string { return libVol + p }
+
+// libDst is a planned action's destination, which the planner builds with
+// filepath.Join and so carries the platform's separators.
+func libDst(p string) string { return filepath.FromSlash(libVol + p) }
+
 // cullRules is the configuration of a plan that only culls: no destination in
 // any of its frames, so the library root and the import verb never come up.
 func cullRules(cut config.CutScope) rules {
-	return rules{cut: cut, libraryRoot: "/library"}
+	return rules{cut: cut, libraryRoot: libAbs("/library")}
 }
 
 func importRules(move bool) rules {
-	return rules{cut: config.CutRemovesBoth, libraryRoot: "/library", moveOnImport: move}
+	return rules{cut: config.CutRemovesBoth, libraryRoot: libAbs("/library"), moveOnImport: move}
 }
 
 func routedItem(stem, dest string, mask decide.Mask) planned {
@@ -32,8 +45,8 @@ func routedItem(stem, dest string, mask decide.Mask) planned {
 
 func TestBuildPlanCopiesRoutedFrames(t *testing.T) {
 	items := []planned{
-		routedItem("DSCF0001", "/library/portraits", decide.MaskBoth),
-		routedItem("DSCF0002", "/library/portraits", decide.MaskBoth),
+		routedItem("DSCF0001", libAbs("/library/portraits"), decide.MaskBoth),
+		routedItem("DSCF0002", libAbs("/library/portraits"), decide.MaskBoth),
 	}
 	p, err := buildPlan(items, importRules(false))
 	if err != nil {
@@ -50,29 +63,29 @@ func TestBuildPlanCopiesRoutedFrames(t *testing.T) {
 			t.Errorf("an import plans copies, got %q on %s", a.Verb, a.Src)
 		}
 	}
-	if p.actions[0].Dst != "/library/portraits/DSCF0001.RAF" {
+	if p.actions[0].Dst != libDst("/library/portraits/DSCF0001.RAF") {
 		t.Errorf("first copy lands at %q", p.actions[0].Dst)
 	}
 	if len(p.dto.Destinations) != 1 {
 		t.Fatalf("summary holds %d destinations, want 1", len(p.dto.Destinations))
 	}
 	got := p.dto.Destinations[0]
-	if got.Path != "/library/portraits" || got.Frames != 2 || got.Files != 6 || got.Verb != "copy" {
+	if got.Path != libAbs("/library/portraits") || got.Frames != 2 || got.Files != 6 || got.Verb != "copy" {
 		t.Errorf("destination summary %+v", got)
 	}
 	if want := int64(2 * (30_000_000 + 6_000_000 + 2_000)); got.Bytes != want {
 		t.Errorf("destination bytes %d, want %d", got.Bytes, want)
 	}
-	if !strings.Contains(p.dto.Description, "Copy to /library/portraits (2 frames)") {
+	if !strings.Contains(p.dto.Description, "Copy to "+libAbs("/library/portraits")+" (2 frames)") {
 		t.Errorf("description %q", p.dto.Description)
 	}
 }
 
 func TestBuildPlanGroupsCountsByDestination(t *testing.T) {
 	items := []planned{
-		routedItem("DSCF0001", "/library/b", decide.MaskBoth),
-		routedItem("DSCF0002", "/library/a", decide.MaskBoth),
-		routedItem("DSCF0003", "/library/a", decide.MaskBoth),
+		routedItem("DSCF0001", libAbs("/library/b"), decide.MaskBoth),
+		routedItem("DSCF0002", libAbs("/library/a"), decide.MaskBoth),
+		routedItem("DSCF0003", libAbs("/library/a"), decide.MaskBoth),
 		{group: pairedGroup("DSCF0004"), hash: "h4", record: decide.Record{Verdict: decide.Cut, Mask: decide.MaskBoth}},
 	}
 	p, err := buildPlan(items, importRules(false))
@@ -83,10 +96,10 @@ func TestBuildPlanGroupsCountsByDestination(t *testing.T) {
 		t.Fatalf("want two destinations, got %+v", p.dto.Destinations)
 	}
 	// Sorted, so the same frames always produce the same plan.
-	if p.dto.Destinations[0].Path != "/library/a" || p.dto.Destinations[0].Frames != 2 {
+	if p.dto.Destinations[0].Path != libAbs("/library/a") || p.dto.Destinations[0].Frames != 2 {
 		t.Errorf("first destination %+v", p.dto.Destinations[0])
 	}
-	if p.dto.Destinations[1].Path != "/library/b" || p.dto.Destinations[1].Frames != 1 {
+	if p.dto.Destinations[1].Path != libAbs("/library/b") || p.dto.Destinations[1].Frames != 1 {
 		t.Errorf("second destination %+v", p.dto.Destinations[1])
 	}
 	// The cut is still a cut; routing some frames changes nothing about it.
@@ -99,7 +112,7 @@ func TestARoutedFrameLeavesTheCardAlone(t *testing.T) {
 	// A mask on a routed frame chooses which halves are imported. It must not
 	// also trash the other half: the card is the source, and the same card has
 	// to be importable twice.
-	items := []planned{routedItem("DSCF0001", "/library/raws", decide.MaskRAW)}
+	items := []planned{routedItem("DSCF0001", libAbs("/library/raws"), decide.MaskRAW)}
 	p, err := buildPlan(items, importRules(false))
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +122,7 @@ func TestARoutedFrameLeavesTheCardAlone(t *testing.T) {
 			t.Errorf("an import trashed %s", a.Src)
 		}
 	}
-	want := []string{"/library/raws/DSCF0001.RAF", "/library/raws/DSCF0001.RAF.xmp"}
+	want := []string{libDst("/library/raws/DSCF0001.RAF"), libDst("/library/raws/DSCF0001.RAF.xmp")}
 	if len(p.actions) != len(want) {
 		t.Fatalf("planned %d actions, want %d: %+v", len(p.actions), len(want), p.actions)
 	}
@@ -121,7 +134,7 @@ func TestARoutedFrameLeavesTheCardAlone(t *testing.T) {
 }
 
 func TestBuildPlanMovesOnImportWhenAsked(t *testing.T) {
-	items := []planned{routedItem("DSCF0001", "/library/portraits", decide.MaskBoth)}
+	items := []planned{routedItem("DSCF0001", libAbs("/library/portraits"), decide.MaskBoth)}
 	p, err := buildPlan(items, importRules(true))
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +170,7 @@ func TestBuildPlanExpandsTokensPerFrame(t *testing.T) {
 	for _, a := range p.actions {
 		dirs[filepath.Dir(a.Dst)] = true
 	}
-	for _, want := range []string{"/library/2026-05-01/keepers", "/library/2026-05-02/keepers"} {
+	for _, want := range []string{libDst("/library/2026-05-01/keepers"), libDst("/library/2026-05-02/keepers")} {
 		if !dirs[want] {
 			t.Errorf("nothing landed in %s: %v", want, dirs)
 		}
@@ -170,18 +183,18 @@ func TestARelativeDestinationHangsOffTheLibraryRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.actions[0].Dst != "/library/2026/portraits/DSCF0001.RAF" {
+	if p.actions[0].Dst != libDst("/library/2026/portraits/DSCF0001.RAF") {
 		t.Errorf("landed at %q", p.actions[0].Dst)
 	}
 }
 
 func TestAnAbsoluteDestinationIgnoresTheLibraryRoot(t *testing.T) {
-	items := []planned{routedItem("DSCF0001", "/Volumes/Backup/2026", decide.MaskBoth)}
+	items := []planned{routedItem("DSCF0001", libAbs("/Volumes/Backup/2026"), decide.MaskBoth)}
 	p, err := buildPlan(items, importRules(false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.actions[0].Dst != "/Volumes/Backup/2026/DSCF0001.RAF" {
+	if p.actions[0].Dst != libDst("/Volumes/Backup/2026/DSCF0001.RAF") {
 		t.Errorf("landed at %q", p.actions[0].Dst)
 	}
 }
@@ -192,7 +205,7 @@ func TestACutWithADestinationIsStillACut(t *testing.T) {
 	items := []planned{{
 		group:  pairedGroup("DSCF0001"),
 		hash:   "h1",
-		record: decide.Record{Verdict: decide.Cut, Mask: decide.MaskBoth, Destination: "/library/portraits"},
+		record: decide.Record{Verdict: decide.Cut, Mask: decide.MaskBoth, Destination: libAbs("/library/portraits")},
 	}}
 	p, err := buildPlan(items, importRules(false))
 	if err != nil {

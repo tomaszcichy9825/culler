@@ -220,6 +220,21 @@ func TestFailedCopyAfterDisplacementPutsTheFileBack(t *testing.T) {
 	}
 }
 
+// unwritable makes dir read-only and skips the test where that cannot be
+// arranged — Windows ignores directory modes, and root walks through them.
+func unwritable(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	probe := filepath.Join(dir, ".probe")
+	if err := os.WriteFile(probe, nil, 0o644); err == nil {
+		os.Remove(probe)
+		t.Skip("cannot make the directory read-only on this platform")
+	}
+}
+
 // A cross-filesystem move whose source cannot be removed after the copy must
 // not leave the copy behind untracked: the journal records an error and denies
 // a destination, so a surviving copy would be invisible to undo and pile up a
@@ -239,10 +254,7 @@ func TestMoveThatCannotRemoveTheSourceLeavesNoUntrackedCopy(t *testing.T) {
 	}
 	dst := filepath.Join(t.TempDir(), "IMG_0001.JPG")
 	// The copy out of srcDir works; deleting src needs write on srcDir and fails.
-	if err := os.Chmod(srcDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(srcDir, 0o755) })
+	unwritable(t, srcDir)
 
 	batch, err := ex.Apply("move", []FileAction{{Verb: VerbMove, Src: src, Dst: dst}})
 	if err != nil {
@@ -347,10 +359,7 @@ func TestUndoCopyRemovalFailureBlocksTheBatch(t *testing.T) {
 	}
 	// The directory is readable but not writable, so the digest still matches
 	// and only the removal itself fails.
-	if err := os.Chmod(dstDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dstDir, 0o755) })
+	unwritable(t, dstDir)
 
 	if _, err := ex.Undo(batch); err == nil {
 		t.Fatal("an undo that removed nothing reported success")

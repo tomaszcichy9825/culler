@@ -598,7 +598,18 @@ func TestWriteJPEGReplacesInPlaceAndLeavesNoLitter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o640 {
+	// Only meaningful where the filesystem honours Unix modes at all; probe
+	// rather than guess, so the assertion self-selects per platform.
+	probe := filepath.Join(dir, "probe.tmp")
+	if err := os.WriteFile(probe, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	pi, err := os.Stat(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(probe)
+	if pi.Mode().Perm() == 0o640 && info.Mode().Perm() != 0o640 {
 		t.Errorf("mode = %v, want 640 — the file's permissions must survive the replacement", info.Mode().Perm())
 	}
 }

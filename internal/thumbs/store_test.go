@@ -456,3 +456,86 @@ func TestPathMissesWhenTheCachedFileHasVanished(t *testing.T) {
 		t.Error("a regenerated entry must hit again")
 	}
 }
+
+// A stat that fails for any reason other than "gone" — a permissions hiccup,
+// a network share dropping out — is not proof the file has left. Dropping the
+// entry on such an error would orphan the bytes on disk forever: out of the
+// index, never evicted, never re-counted. The entry stays; the caller just
+// gets a miss until the file is reachable again.
+func TestPathKeepsTheEntryWhenStatFailsButTheFileMayRemain(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.Put(key("locked"), SizeGrid, makeJPEG(t, 64, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	before := s.total
+	s.mu.Unlock()
+
+	shardDir := filepath.Dir(path)
+	if err := os.Chmod(shardDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(shardDir, 0o755) })
+	if _, err := os.Stat(path); err == nil {
+		t.Skip("cannot make the cache file unstat-able on this platform")
+	}
+
+	if _, ok := s.Path(key("locked"), SizeGrid); ok {
+		t.Error("an unstat-able file must report a miss")
+	}
+
+	if err := os.Chmod(shardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Path(key("locked"), SizeGrid); !ok {
+		t.Error("the entry was dropped on a stat error, orphaning the file on disk")
+	}
+	s.mu.Lock()
+	after := s.total
+	s.mu.Unlock()
+	if after != before {
+		t.Errorf("accounted bytes moved from %d to %d over a stat hiccup", before, after)
+	}
+}
+
+// A zero-byte cache file is a truncated write, not a thumbnail: serving it as
+// a hit would hand the UI an empty image for the life of the cache. It is a
+// miss, and the wreck is removed so the caller's regeneration replaces it.
+func TestPathTreatsAnEmptyCacheFileAsAMiss(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.Put(key("hollow"), SizeGrid, makeJPEG(t, 64, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := s.Path(key("hollow"), SizeGrid); ok {
+		t.Error("a truncated cache file must report a miss")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the truncated file was left behind: %v", err)
+	}
+	s.mu.Lock()
+	total := s.total
+	s.mu.Unlock()
+	if total != 0 {
+		t.Errorf("the dropped entry still holds %d bytes of the cap", total)
+	}
+
+	// The miss must be recoverable: a fresh Put fills the hole and hits again.
+	if _, err := s.Put(key("hollow"), SizeGrid, makeJPEG(t, 64, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Path(key("hollow"), SizeGrid); !ok {
+		t.Error("a regenerated entry must hit again")
+	}
+}

@@ -257,6 +257,47 @@ func TestReindexKeepsFramesOfAnUnreadableDirectory(t *testing.T) {
 	}
 }
 
+// The subtler shape of the same mistake: a directory that can still be
+// listed but not traversed — read permission without execute — hands the
+// scan every name and fails every stat. If the scan swallows that, the pass
+// sees zero groups with no error and prunes every row while the files sit on
+// disk.
+func TestReindexKeepsFramesOfAListableButUntraversableDirectory(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	mkdir(t, locked)
+	writeFrame(t, locked, "LOCK0001", 100, 0, shotAt(9, 0))
+	writeFrame(t, locked, "LOCK0002", 100, 0, shotAt(9, 1))
+
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if err := os.Chmod(locked, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := os.Stat(filepath.Join(locked, "LOCK0001.RAF")); err == nil {
+		t.Skip("cannot make the directory untraversable on this platform")
+	}
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Removed != 0 {
+		t.Errorf("stats report %d removals, nothing left the disk", stats.Removed)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 2 {
+		t.Errorf("catalogue holds %d frames after a listable-but-untraversable folder, want both: %v",
+			res.Total, stems(res))
+	}
+}
+
 // The worst case of the same mistake: the root itself stops being readable,
 // the walk reaches nothing, and a prune keyed on what was reached would empty
 // the whole catalogue under it.
@@ -308,12 +349,8 @@ func TestReindexKeepsTheRowOfAnUnreadableFile(t *testing.T) {
 	}
 
 	// Rewritten, so the pass must re-read it — and unreadable, so it cannot.
-	locked := filepath.Join(root, "DSCF0002.RAF")
 	writeFrame(t, root, "DSCF0002", 150, 0, shotAt(9, 30))
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+	unreadable(t, filepath.Join(root, "DSCF0002.RAF"))
 
 	stats, err := s.Index(root, IndexOptions{})
 	if err != nil {
@@ -340,6 +377,170 @@ func TestReindexKeepsTheRowOfAnUnreadableFile(t *testing.T) {
 	}
 	if _, ok := byStem["DSCF0002"]; !ok {
 		t.Error("the unreadable frame's row was pruned")
+	}
+}
+
+// unreadable makes path unreadable and skips the test where that cannot be
+// arranged — Windows, or a run as root, where chmod does not bite.
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	if f, err := os.Open(path); err == nil {
+		f.Close()
+		t.Skip("cannot make the file unreadable on this platform")
+	}
+}
+
+// A kept unreadable row whose file has demonstrably changed — the scan still
+// sees its size and mtime, and they no longer match the row — is carrying a
+// verdict over bytes nobody has judged. The row stays, because the frame is
+// still there; the verdict goes, because what it judged is not.
+func TestReindexClearsTheVerdictOfAnUnreadableFrameWhoseContentMoved(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "DSCF0001", 100, 0, shotAt(9, 0))
+	lookup := func(hash, dir, stem string) (string, int) { return VerdictKeep, 3 }
+	if _, err := s.Index(root, IndexOptions{Lookup: lookup}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	// Rewritten — new size, new mtime — and then unreadable.
+	writeFrame(t, root, "DSCF0001", 150, 0, shotAt(9, 30))
+	unreadable(t, filepath.Join(root, "DSCF0001.RAF"))
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Unreadable != 1 {
+		t.Fatalf("stats report %d unreadable frames, want 1", stats.Unreadable)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("catalogue holds %d frames, want the kept unreadable one", res.Total)
+	}
+	if got := res.Frames[0].Verdict; got != "" {
+		t.Errorf("the row still carries verdict %q over content that changed since it was judged", got)
+	}
+	if got := res.Frames[0].Rating; got != 3 {
+		t.Errorf("the rating went with the verdict: got %d, want 3 — stars judge the photograph, not the cull", got)
+	}
+}
+
+// The other side of the same line: an unreadable frame whose size and mtime
+// still match the row was only unreadable, not changed. Its verdict stands.
+func TestReindexKeepsTheVerdictOfAnUnreadableFrameWhoseContentDidNot(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "DSCF0001", 100, 80, shotAt(9, 0))
+	lookup := func(hash, dir, stem string) (string, int) { return VerdictKeep, 3 }
+	if _, err := s.Index(root, IndexOptions{Lookup: lookup}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	// A renamed RAW makes the frame stale — its recorded path moved — without
+	// touching a byte or a timestamp. The primary JPEG is then unreadable, so
+	// the pass cannot re-hash the frame, but nothing about its content moved.
+	if err := os.Rename(filepath.Join(root, "DSCF0001.RAF"), filepath.Join(root, "DSCF0001.DNG")); err != nil {
+		t.Fatal(err)
+	}
+	unreadable(t, filepath.Join(root, "DSCF0001.JPG"))
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Unreadable != 1 {
+		t.Fatalf("stats report %d unreadable frames, want 1", stats.Unreadable)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("catalogue holds %d frames, want the kept unreadable one", res.Total)
+	}
+	if got := res.Frames[0].Verdict; got != VerdictKeep {
+		t.Errorf("verdict %q, want %q kept: the files' bytes and times still match the row", got, VerdictKeep)
+	}
+}
+
+// The index walk skips hidden directories — they hold no photographs, and
+// .Trashes on a card holds files already thrown away — while UpsertDir used
+// to catalogue one happily. The two must agree, or a dot-folder flip-flops:
+// catalogued on open, forgotten by the next reindex. UpsertDir takes the
+// walk's side: a hidden folder is not the catalogue's business.
+func TestUpsertDirRefusesAHiddenDirectory(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "OPEN0001", 100, 0, shotAt(9, 0))
+	if _, err := s.Index(root, IndexOptions{}); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+
+	hidden := filepath.Join(root, ".trip")
+	mkdir(t, hidden)
+	writeFrame(t, hidden, "HIDE0001", 100, 0, shotAt(9, 1))
+	stats, err := s.UpsertDir(hidden, IndexOptions{})
+	if err != nil {
+		t.Fatalf("UpsertDir: %v", err)
+	}
+	if stats != (Stats{}) {
+		t.Errorf("UpsertDir catalogued a hidden folder: %+v", stats)
+	}
+
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 || res.Frames[0].Stem != "OPEN0001" {
+		t.Errorf("catalogue holds %v, want OPEN0001 alone: the hidden folder is not its business", stems(res))
+	}
+}
+
+// A root that is itself a symlink used to be lstat'd by the walk and never
+// entered: zero directories reached, and the prune then emptied everything
+// under the link on every reindex. The root is an address the user gave, so
+// the walk follows it to its target — the stance internal/scan takes for
+// linked files — and the frames stay put.
+func TestIndexWalksARootThatIsItselfASymlink(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	mkdir(t, real)
+	writeFrame(t, real, "DSCF0001", 100, 0, shotAt(9, 0))
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks not available here: %v", err)
+	}
+
+	s := openStore(t)
+	stats, err := s.Index(link, IndexOptions{})
+	if err != nil {
+		t.Fatalf("index through the link: %v", err)
+	}
+	if stats.Frames != 1 {
+		t.Fatalf("indexed %d frames through the symlinked root, want 1", stats.Frames)
+	}
+
+	again, err := s.Index(link, IndexOptions{})
+	if err != nil {
+		t.Fatalf("reindex through the link: %v", err)
+	}
+	if again.Removed != 0 {
+		t.Errorf("reindex removed %d rows, nothing left the disk", again.Removed)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Errorf("catalogue holds %d frames after reindexing a symlinked root, want 1", res.Total)
 	}
 }
 
@@ -480,7 +681,7 @@ func TestPruneDirDropsAcrossChunks(t *testing.T) {
 // directories must not fail the prune it was being protected by.
 func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 	s := openStore(t)
-	root := "/photos"
+	root := fix("/photos")
 
 	failed := make([]string, 0, 1100)
 	tx, err := s.db.Begin()
@@ -488,7 +689,7 @@ func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 1100; i++ {
-		dir := fmt.Sprintf("%s/locked/%04d", root, i)
+		dir := filepath.Join(root, "locked", fmt.Sprintf("%04d", i))
 		failed = append(failed, dir)
 		if _, err := tx.Exec(upsertFrameSQL,
 			fmt.Sprintf("lock-%04d", i), dir, fmt.Sprintf("LOCK%04d", i), "raw-only", int64(i),
@@ -498,8 +699,8 @@ func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 		}
 	}
 	if _, err := tx.Exec(upsertFrameSQL,
-		"gone-0000", root+"/gone", "GONE0000", "raw-only", int64(0),
-		root+"/gone/GONE.RAF", "", int64(100), int64(0),
+		"gone-0000", filepath.Join(root, "gone"), "GONE0000", "raw-only", int64(0),
+		filepath.Join(root, "gone", "GONE.RAF"), "", int64(100), int64(0),
 		int64(0), int64(0), 0, "", int64(0)); err != nil {
 		t.Fatal(err)
 	}

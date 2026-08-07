@@ -98,7 +98,12 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 // Presence is checked on disk, not just in the index: the OS or the user can
 // reclaim a cache file at any time, and an index hit for a file that has gone
 // would 404 for the life of the process. A vanished entry is dropped so the
-// caller regenerates it.
+// caller regenerates it. A stat that fails for any other reason — permissions,
+// a share dropping out — is only a miss: the file may well still be there, and
+// dropping its entry would orphan those bytes on disk for good, uncounted and
+// unevictable. A zero-byte file is a truncated write, not a thumbnail; it is
+// removed, and its entry dropped only once the disk is actually rid of it, so
+// the index never claims less than what is really down there.
 func (s *Store) Path(key string, size Size) (string, bool) {
 	ek := entryKey{key: key, size: size}
 	s.mu.Lock()
@@ -108,9 +113,19 @@ func (s *Store) Path(key string, size Size) (string, bool) {
 	if !ok {
 		return path, false
 	}
-	if _, err := os.Stat(path); err != nil {
-		s.total -= e.bytes
-		delete(s.entries, ek)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.total -= e.bytes
+			delete(s.entries, ek)
+		}
+		return path, false
+	}
+	if info.Size() == 0 {
+		if rerr := os.Remove(path); rerr == nil || os.IsNotExist(rerr) {
+			s.total -= e.bytes
+			delete(s.entries, ek)
+		}
 		return path, false
 	}
 	return path, true

@@ -129,9 +129,11 @@ func (b *entryBucket) noteStem(stem string) {
 	}
 }
 
-// resolve stats the bucket's files and turns it into a stemBucket. A file that
-// has vanished since the directory was read is dropped, exactly as it is when
-// ScanDir's stat fails, rather than failing the whole walk.
+// resolve stats the bucket's files and turns it into a stemBucket. A file
+// whose stat fails is dropped rather than failing the whole walk: the stream
+// paints what it can read for a person to look at, and nothing downstream of
+// it prunes a catalogue. ScanDir, which the catalogue does trust, fails
+// instead when a stat error hides files that are still there.
 func (b *entryBucket) resolve() stemBucket {
 	out := stemBucket{stem: b.stem}
 	for _, s := range b.slots {

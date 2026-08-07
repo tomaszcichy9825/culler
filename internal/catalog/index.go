@@ -132,7 +132,7 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 	// gone, and the prune must leave them exactly as they were.
 	var failed []string
 
-	err = filepath.WalkDir(clean, func(path string, d fs.DirEntry, err error) error {
+	err = walkDirFollowingRoot(clean, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// A directory that cannot be read is skipped rather than failing
 			// the pass: one unreadable folder on a card should not cost the
@@ -253,7 +253,10 @@ func (s *Store) IndexAll(roots []string, opts IndexOptions) (Stats, error) {
 //
 // A directory no registered root covers is not the catalogue's business, so
 // the call does nothing and says so with a zero result rather than an error:
-// opening a folder in CULL must not quietly start cataloguing it.
+// opening a folder in CULL must not quietly start cataloguing it. A hidden
+// directory is refused the same way: the index walk skips dot-folders, so
+// cataloguing one here would only flip-flop — present after the open, pruned
+// by the next reindex.
 func (s *Store) UpsertDir(dir string, opts IndexOptions) (Stats, error) {
 	clean, err := cleanRoot(dir)
 	if err != nil {
@@ -280,18 +283,36 @@ func (s *Store) UpsertDir(dir string, opts IndexOptions) (Stats, error) {
 }
 
 // covered reports whether dir is one of the registered roots or sits inside
-// one.
+// one — reachably: a folder only addressable through a hidden component is
+// one the index walk will never visit, so it does not count as covered.
 func (s *Store) covered(dir string) (bool, error) {
 	roots, err := rootPaths(s.db)
 	if err != nil {
 		return false, err
 	}
 	for _, root := range roots {
-		if under(dir, root) {
+		if under(dir, root) && !hiddenUnder(dir, root) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// hiddenUnder reports whether any folder between root and dir — dir itself
+// included, root excluded — is hidden. It is the lexical twin of the index
+// walk's dot-folder skip: what the walk will not enter, a folder open must
+// not catalogue, or the folder flip-flops between the two passes.
+func hiddenUnder(dir, root string) bool {
+	rel := strings.TrimPrefix(dir, childPrefix(root))
+	if rel == dir || rel == "" {
+		return false // dir is root itself, or not under it at all
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 const upsertFrameSQL = `
@@ -349,6 +370,14 @@ func primaryPath(raw, jpeg fileState) string {
 		return jpeg.path
 	}
 	return raw.path
+}
+
+// sameRecordedContent reports whether both files' sizes and modification
+// times still match what the row recorded. Paths are left out on purpose: a
+// rename moves no bytes, and it is the bytes a verdict judged.
+func sameRecordedContent(row rowState, raw, jpeg fileState) bool {
+	return row.raw.bytes == raw.bytes && row.raw.mtime == raw.mtime &&
+		row.jpeg.bytes == jpeg.bytes && row.jpeg.mtime == jpeg.mtime
 }
 
 // dirState reads back what the catalogue holds for one directory, keyed on the
@@ -434,6 +463,20 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 			if row, ok := held[primaryPath(states[i][0], states[i][1])]; ok && row.hash != "" {
 				kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
 				stats.Frames++
+				// The row's verdict judged the bytes the last pass read. When
+				// the scan's size or mtime no longer matches the row, those
+				// bytes have moved, and an unreadable pass cannot judge the
+				// new ones: the row stays — presence is a fact — but the
+				// verdict goes rather than sentencing content nobody has seen.
+				// A frame whose recorded sizes and times still match was only
+				// unreadable, not changed, and keeps its verdict.
+				if row.verdict != "" && !sameRecordedContent(row, states[i][0], states[i][1]) {
+					if _, err := tx.Exec(
+						`UPDATE frames SET verdict = '' WHERE hash = ? AND dir = ? AND stem = ?`,
+						row.hash, g.Dir, g.Stem); err != nil {
+						return stats, fmt.Errorf("catalog: clear stale verdict for %s: %w", g.Stem, err)
+					}
+				}
 			}
 			continue
 		}
@@ -679,6 +722,59 @@ func (s *Store) pruneMissingDirs(root string, walked, failed []string) (int, err
 		return 0, err
 	}
 	return int(removed), tx.Commit()
+}
+
+// walkDirFollowingRoot is filepath.WalkDir with one difference: a root that
+// is itself a symlink to a directory is followed rather than visited as the
+// file the link is. A root is an address the user gave, and a linked path is
+// as good an address as a real one — internal/scan takes the same stance for
+// linked files, resolving them rather than reading the link. Without this,
+// the walk lstats the root, enters nothing, and the prune afterwards empties
+// everything under the link on every reindex. Directories inside the walk
+// are still never entered through links, exactly as filepath.WalkDir has it.
+func walkDirFollowingRoot(root string, fn fs.WalkDirFunc) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		err = fn(root, nil, err)
+	} else {
+		err = walkDir(root, fs.FileInfoToDirEntry(info), fn)
+	}
+	if err == fs.SkipDir || err == fs.SkipAll {
+		return nil
+	}
+	return err
+}
+
+// walkDir mirrors filepath.WalkDir's descent, entry for entry, so the walk
+// behaves identically below the root.
+func walkDir(path string, d fs.DirEntry, fn fs.WalkDirFunc) error {
+	if err := fn(path, d, nil); err != nil || !d.IsDir() {
+		if err == fs.SkipDir && d.IsDir() {
+			err = nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		// Second call on the same directory reports the listing failure, as
+		// filepath.WalkDir does.
+		err = fn(path, d, err)
+		if err != nil {
+			if err == fs.SkipDir {
+				err = nil
+			}
+			return err
+		}
+	}
+	for _, e := range entries {
+		if err := walkDir(filepath.Join(path, e.Name()), e, fn); err != nil {
+			if err == fs.SkipDir {
+				break
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // hashGroups returns the identity hash of every group's primary file, aligned
