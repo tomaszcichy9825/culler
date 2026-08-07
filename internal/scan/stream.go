@@ -53,6 +53,10 @@ func (o StreamOptions) maxDelay() time.Duration {
 // resolved, rather than returning the whole folder at once. Grouping is
 // identical to ScanDir's, down to the order the frames come out in: what
 // arrives first is the start of the same sorted list, not a different one.
+// Junk symlinks are skipped exactly as ScanDir skips them. The one remaining
+// divergence is a directory whose regular entries cannot be statted — the
+// listable-but-untraversable folder — where ScanDir fails outright and the
+// stream paints what it can while dropping the rest; see resolve for why.
 //
 // Each batch is freshly allocated and belongs to emit, which is called on the
 // caller's goroutine and must not block for long — the walk is stalled while
