@@ -114,7 +114,7 @@ func TestUndoOfCopyRefusesToDeleteAReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dst); err != nil {
@@ -181,7 +181,7 @@ func TestOverwriteUndoRestoresTheDisplacedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	if read(t, dst) != "valuable original" {
@@ -314,7 +314,7 @@ func TestUndoMoveBackIsVerified(t *testing.T) {
 			return os.WriteFile(dst, []byte("corrupted in transit"), 0o644)
 		},
 	}
-	if err := undoEx.Undo(batch); err == nil {
+	if _, err := undoEx.Undo(batch); err == nil {
 		t.Fatal("an undo whose copy-back failed verification reported success")
 	}
 	if read(t, trashed) != "the only copy" {
@@ -352,7 +352,7 @@ func TestUndoCopyRemovalFailureBlocksTheBatch(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dstDir, 0o755) })
 
-	if err := ex.Undo(batch); err == nil {
+	if _, err := ex.Undo(batch); err == nil {
 		t.Fatal("an undo that removed nothing reported success")
 	}
 	// Nothing was reversed, so nothing was journalled: the batch must still be
@@ -393,7 +393,7 @@ func TestUndoCountsAStrandedDisplacedFileAsBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ex.Undo(batch); err == nil {
+	if _, err := ex.Undo(batch); err == nil {
 		t.Fatal("undo reported success while the displaced original is stranded in the trash")
 	}
 	if read(t, dst) != "a newer edit" {
@@ -433,7 +433,7 @@ func TestUndoRestoresTheDisplacedFileWhenTheCopyIsGone(t *testing.T) {
 		}},
 	}
 
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	if read(t, dst) != "valuable original" {

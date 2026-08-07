@@ -387,7 +387,7 @@ func TestUndoLeavesASkippedCopyAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	assertTree(t, dstDir, map[string]string{"DSCF0001.RAF": "already here"})
@@ -417,7 +417,7 @@ func TestSkippedMoveIsJournalledAsSkippedNotDone(t *testing.T) {
 	}
 
 	// Undo treats the skipped action as the no-op it is.
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	if readFile(t, src) != "still on the card" || readFile(t, dst) != "already here" {

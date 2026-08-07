@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
@@ -93,6 +95,11 @@ type RejectsService struct {
 	// onProgress replaces the event emission in tests, the same seam the import
 	// and catalogue passes use.
 	onProgress func(RejectsProgress)
+
+	// emptying holds the one empty at a time, the same single-flight guard
+	// Import and Reindex carry. Two overlapping empties would have the second
+	// surveying files the first is mid-way through destroying.
+	emptying atomic.Bool
 }
 
 // NewRejectsService binds the service to the shared state.
@@ -135,6 +142,11 @@ func (s *RejectsService) Survey(dirs []string) (RejectsSurveyDTO, error) {
 // A failed removal is recorded and the run carries on, in the same spirit as an
 // apply: partial completion is a journalled fact rather than an exception.
 func (s *RejectsService) Empty(dirs []string) (RejectsResultDTO, error) {
+	if !s.emptying.CompareAndSwap(false, true) {
+		return RejectsResultDTO{}, errors.New("the rejects are already being emptied")
+	}
+	defer s.emptying.Store(false)
+
 	name, err := rejectedFolderName(s.app.Config())
 	if err != nil {
 		return RejectsResultDTO{}, err

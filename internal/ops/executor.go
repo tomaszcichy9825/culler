@@ -43,6 +43,12 @@ type Executor struct {
 	// test forces it to fail to exercise the cross-filesystem copy fallback,
 	// which is otherwise unreachable without a second volume.
 	Renamer func(src, dst string) error
+
+	// Annotate, when set, is called with the finished batch after its actions
+	// have run and before it is journalled, so the caller can attach app-level
+	// facts — the decisions the batch consumed — to the one line undo will
+	// read back. It must not touch the actions themselves.
+	Annotate func(b *journal.Batch)
 }
 
 var batchCounter atomic.Uint64
@@ -114,6 +120,9 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			}
 		}
 		batch.Actions = append(batch.Actions, rec)
+	}
+	if e.Annotate != nil {
+		e.Annotate(&batch)
 	}
 	if err := e.Journal.Append(batch); err != nil {
 		return batch, err
@@ -408,15 +417,17 @@ func contentDigest(path string) (string, error) {
 
 // Undo reverses a batch: successful actions are replayed backwards in reverse
 // order; failed and skipped ones moved nothing and have nothing to reverse.
-// The undo is itself journaled as a batch with UndoOf set.
-func (e *Executor) Undo(b journal.Batch) error {
+// The undo is itself journaled as a batch with UndoOf set and returned, so the
+// caller can see which restores actually happened; the zero batch comes back
+// when nothing was journalled.
+func (e *Executor) Undo(b journal.Batch) (journal.Batch, error) {
 	// A batch that destroyed files has nothing to replay: there is no
 	// destination to move back from. It is refused whole rather than
 	// half-undone, and nothing is journalled, so the record of the destruction
 	// stays the last word on those files.
 	for _, a := range b.Actions {
 		if Verb(a.Verb) == VerbDestroy {
-			return fmt.Errorf("%q permanently deleted its files and cannot be undone", b.Description)
+			return journal.Batch{}, fmt.Errorf("%q permanently deleted its files and cannot be undone", b.Description)
 		}
 	}
 	undo := journal.Batch{
@@ -429,8 +440,11 @@ func (e *Executor) Undo(b journal.Batch) error {
 	// counts restores that failed for a reason worth retrying — an occupied
 	// path, a permission, a failing disk. The one failure that does not block
 	// is a copy-undo's deliberate protective skip: leaving a possible
-	// replacement alone is the point, and no retry changes it.
-	var reversed, blocked int
+	// replacement alone is the point, and no retry changes it. recycled counts
+	// trashes whose destination the platform never reported — the Windows
+	// Recycle Bin — which no retry can learn either: those files are only
+	// restorable from the Recycle Bin itself.
+	var reversed, blocked, recycled int
 	var firstErr string
 	for i := len(b.Actions) - 1; i >= 0; i-- {
 		a := b.Actions[i]
@@ -439,7 +453,14 @@ func (e *Executor) Undo(b journal.Batch) error {
 			// nothing-happened it was journalled as: no-ops either way.
 			continue
 		}
-		if a.Dst == "" && Verb(a.Verb) != VerbTrash {
+		if a.Dst == "" && Verb(a.Verb) == VerbTrash {
+			// The platform trash did not say where the file went — the Windows
+			// Recycle Bin cannot — so there is nothing to move back from.
+			// Counted apart from blocked, because retrying cannot help.
+			recycled++
+			continue
+		}
+		if a.Dst == "" {
 			// A policy skip from a journal written before skips had their own
 			// outcome: recorded ok, but with nothing of ours at the
 			// destination, and the file that is there was never part of the
@@ -521,15 +542,29 @@ func (e *Executor) Undo(b journal.Batch) error {
 	// would reverse an older batch and this one could never be retried. Leave it
 	// as the undo target and report that it did not happen.
 	if reversed == 0 && blocked > 0 {
-		return fmt.Errorf("undo of %q reversed nothing: %s", b.Description, firstErr)
+		return journal.Batch{}, fmt.Errorf("undo of %q reversed nothing: %s", b.Description, firstErr)
+	}
+	// A batch whose every restorable action went to a trash with no reported
+	// destination has nothing undo can ever do. Nothing is journalled — the
+	// batch's record stays the last word — and the error says where the files
+	// actually are, which is the Recycle Bin, not lost.
+	if reversed == 0 && recycled > 0 {
+		return journal.Batch{}, fmt.Errorf(
+			"%q sent its files to the system Recycle Bin, which does not report where they land: restore them from the Recycle Bin itself",
+			b.Description)
 	}
 	if err := e.Journal.Append(undo); err != nil {
-		return err
+		return undo, err
 	}
 	// A partial undo is a real, journalled fact — the batch is spent — but the
 	// caller is told, because some files could not be put back.
 	if blocked > 0 {
-		return fmt.Errorf("undo of %q could not restore %d file(s); %s", b.Description, blocked, firstErr)
+		return undo, fmt.Errorf("undo of %q could not restore %d file(s); %s", b.Description, blocked, firstErr)
 	}
-	return nil
+	if recycled > 0 {
+		return undo, fmt.Errorf(
+			"undo of %q could not bring back %d file(s) that went to the system Recycle Bin: restore them from the Recycle Bin itself",
+			b.Description, recycled)
+	}
+	return undo, nil
 }

@@ -25,9 +25,11 @@ func main() {
 
 	library := app.NewLibraryService(backend)
 	decisions := app.NewDecisionService(backend)
-	apply := app.NewApplyService(backend)
 	metadata := app.NewExifService(backend)
 	catalogue := app.NewLibraryIndexService(backend)
+	// The apply and the importer share the catalogue's one handle, so pruning
+	// applied frames never opens — and leaks — a second one.
+	apply := app.NewApplyService(backend, catalogue)
 	importer := app.NewImportService(backend, catalogue)
 	mapper := app.NewMapService(backend)
 	rejects := app.NewRejectsService(backend)

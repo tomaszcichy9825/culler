@@ -438,7 +438,10 @@ func (s *ImportService) ImportPlan(dir string) (ImportPlanDTO, error) {
 	if err != nil {
 		return ImportPlanDTO{}, err
 	}
-	p, err := buildPlan(items, r)
+	// Only the routed frames are planned — the same set Execute will act on —
+	// so the plan's files and bytes are a promise about the import, not about
+	// a cull it must never perform.
+	p, err := buildPlan(routedFrames(items), r)
 	if err != nil {
 		return ImportPlanDTO{}, err
 	}
@@ -554,16 +557,17 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	p, err := buildPlan(items, r)
+	// An import is ingest: it plans the routed frames and nothing else. Cut
+	// and keep verdicts on the card's frames are left exactly where they are —
+	// carrying them out is PHOTOS mode's job, and planning their trash here
+	// would execute deletions the import screen never mentioned, against the
+	// card, which must be left as it was found.
+	p, err := buildPlan(routedFrames(items), r)
 	if err != nil {
 		return BatchDTO{}, err
 	}
 	if len(p.actions) == 0 {
-		// Nothing routed. The decisions still get their clearing pass, which is
-		// what an apply of an empty plan does, and no batch is journaled.
-		if err := NewApplyService(s.app).clearApplied(p.planned, journal.Batch{}); err != nil {
-			return BatchDTO{}, err
-		}
+		// Nothing routed, so nothing to do and no batch to journal.
 		s.report(ImportProgress{Dir: resolved, Phase: ImportPhaseCopy, Complete: true})
 		return BatchDTO{Description: "Nothing to import"}, nil
 	}
@@ -592,7 +596,13 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 		lastPhase = libraryPhase
 	}
 
-	trasher, err := s.app.trasher(resolved)
+	// The import itself never trashes; the executor's trash only ever takes a
+	// file the overwrite collision policy displaces, and that file lives at
+	// the destination. Routing by the file's own parent keeps the displaced
+	// copy beside the library folder it came from — a trasher rooted on the
+	// card would write a rejected folder onto the source, which an import must
+	// never do.
+	trasher, err := s.app.scopeTrasher()
 	if err != nil {
 		return BatchDTO{}, err
 	}
@@ -614,6 +624,13 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 		Trasher:   trasher,
 		Collision: cfg.Behaviour.CollisionPolicy,
 		Verify:    cfg.Behaviour.VerifyCopies,
+		// The decisions the import consumes ride on the batch's journal line,
+		// judged against the library leg alone: a backup copy that landed for
+		// a frame whose library copy failed consumed nothing.
+		Annotate: func(b *journal.Batch) {
+			library := journal.Batch{Actions: legRecords(*b, libraryAt, len(p.actions))}
+			b.Cleared = consumedBy(p.planned, library).record
+		},
 		// The executor has no progress hook, and the copier is the honest place
 		// for one: it is called once per file, after the collision policy has
 		// picked the name and before the batch records the outcome.
@@ -641,7 +658,7 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 	// landed for a frame whose library copy failed leaves the frame routed, so
 	// the user can apply it again.
 	library := journal.Batch{Actions: legRecords(batch, libraryAt, len(p.actions))}
-	clearErr := NewApplyService(s.app).clearApplied(p.planned, library)
+	clearErr := NewApplyService(s.app, s.catalogue).clearApplied(p.planned, library)
 
 	s.report(ImportProgress{
 		Dir: resolved, Phase: lastPhase, Files: len(actions), Total: len(actions),
@@ -709,6 +726,20 @@ func (s *ImportService) folder(dir string, report bool) (string, []scan.PhotoGro
 	return resolved, groups, items, nil
 }
 
+// routedFrames is the part of a folder an import acts on: the frames the
+// review routed somewhere, and nothing else. Everything staying put — cuts,
+// keeps, the undecided — is reported by the plan but never planned, because
+// planning it would mean file operations against the source card.
+func routedFrames(items []planned) []planned {
+	var routed []planned
+	for _, it := range items {
+		if it.record.Destination != "" && it.record.Verdict == decide.Keep {
+			routed = append(routed, it)
+		}
+	}
+	return routed
+}
+
 // report publishes one progress report. It is serialised because the scan
 // phase hashes in parallel and several workers report at once.
 func (s *ImportService) report(p ImportProgress) {
@@ -758,13 +789,16 @@ func backupActions(p plan, backupDest string) ([]ops.FileAction, error) {
 	return out, nil
 }
 
-// backupTarget re-roots one recorded destination under the backup folder.
+// backupTarget re-roots one recorded destination under the backup folder,
+// judging absoluteness the same way resolveDestination does — the platform's
+// own — so a drive-letter path is never mistaken for a library-relative
+// folder and buried whole under the backup root.
 func backupTarget(dest, backupRoot string) (string, error) {
 	trimmed := strings.TrimSpace(dest)
 	if trimmed == "" {
 		return "", errors.New("a routed frame has no destination")
 	}
-	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "~") {
+	if standaloneDestination(trimmed) {
 		expanded, err := expandPath(trimmed)
 		if err != nil {
 			return "", err

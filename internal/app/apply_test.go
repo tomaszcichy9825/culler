@@ -195,6 +195,66 @@ func TestPickUndoTarget(t *testing.T) {
 	}
 }
 
+// The classifier behind resolveDestination and backupTarget: what stands on
+// its own against what hangs off the library root. Absoluteness is
+// filepath.IsAbs — the platform's own — so a Windows drive-letter path is
+// absolute on Windows rather than being buried under the library root, which
+// is what a hand-rolled "/" prefix check used to do to it.
+func TestStandaloneDestination(t *testing.T) {
+	tests := []struct {
+		dest string
+		want bool
+	}{
+		{"/library/portraits", true},
+		{"~", true},
+		{"~/photos", true},
+		{"2026/portraits", false},
+		{"portraits", false},
+		{"./portraits", false},
+		{"{yyyy}/{mm}", false},
+	}
+	for _, tt := range tests {
+		if got := standaloneDestination(tt.dest); got != tt.want {
+			t.Errorf("standaloneDestination(%q) = %v, want %v", tt.dest, got, tt.want)
+		}
+	}
+}
+
+// A batch whose successful work all went to a trash that reported no
+// destination — the Windows Recycle Bin — holds nothing undo can act on. It
+// must be stepped over like a destroy is, or it jams the undo stack for good:
+// every undo would pick it, fail, and journal nothing.
+func TestPickUndoTargetSkipsRecycleBinBatches(t *testing.T) {
+	batches := []journal.Batch{
+		{ID: "a", Description: "restorable", Actions: []journal.Action{
+			{Verb: "trash", Src: "/card/a.RAF", Dst: "/rejected/a.RAF", Outcome: journal.OutcomeOK},
+		}},
+		{ID: "b", Description: "recycled", Actions: []journal.Action{
+			{Verb: "trash", Src: "/card/b.RAF", Outcome: journal.OutcomeOK},
+			{Verb: "trash", Src: "/card/b.JPG", Outcome: journal.OutcomeError, Err: "gone"},
+		}},
+	}
+	got, ok := pickUndoTarget(batches)
+	if !ok {
+		t.Fatal("no undo target, want the older restorable batch")
+	}
+	if got.ID != "a" {
+		t.Errorf("undo target %q, want %q: b's files are only reachable through the Recycle Bin", got.ID, "a")
+	}
+
+	// A batch that also holds restorable work is still a target: part of it
+	// can come back, and skipping it would silently strand that part.
+	mixed := []journal.Batch{
+		{ID: "m", Actions: []journal.Action{
+			{Verb: "trash", Src: "/card/a.RAF", Outcome: journal.OutcomeOK},
+			{Verb: "move", Src: "/card/a.JPG", Dst: "/library/a.JPG", Outcome: journal.OutcomeOK},
+		}},
+	}
+	if got, ok := pickUndoTarget(mixed); !ok || got.ID != "m" {
+		t.Errorf("a batch with restorable work was skipped: %v %q", ok, got.ID)
+	}
+}
+
 func TestBatchDTO(t *testing.T) {
 	b := journal.Batch{
 		ID:          "42-1",

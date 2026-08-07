@@ -14,7 +14,7 @@ func TestApplyScopeCullsAcrossFoldersAsOneBatch(t *testing.T) {
 	dirA, dirB := card(t), card(t)
 	library := NewLibraryService(a)
 	decisions := NewDecisionService(a)
-	apply := NewApplyService(a)
+	apply := NewApplyService(a, nil)
 
 	var refs []FrameRef
 	for _, dir := range []string{dirA, dirB} {
@@ -93,7 +93,7 @@ func TestApplyScopeCullsAcrossFoldersAsOneBatch(t *testing.T) {
 // machine-trash mode, where one trasher already serves every folder.
 func TestApplyScopeEmptyRefs(t *testing.T) {
 	a := testApp(t)
-	apply := NewApplyService(a)
+	apply := NewApplyService(a, nil)
 	batch, err := apply.ApplyScope(nil)
 	if err != nil {
 		t.Fatalf("ApplyScope(nil): %v", err)
@@ -113,7 +113,7 @@ func TestApplyScopeDeduplicatesRepeatedRefs(t *testing.T) {
 	dir := card(t)
 	library := NewLibraryService(a)
 	decisions := NewDecisionService(a)
-	apply := NewApplyService(a)
+	apply := NewApplyService(a, nil)
 
 	folder, err := library.OpenFolder(dir)
 	if err != nil {
