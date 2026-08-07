@@ -244,7 +244,7 @@ func (ed *editor) applyGPS(g GPSCoord) error {
 	}
 	gpsOff := ed.pointerOf(d, tagGPSIFD)
 	if gpsOff == 0 {
-		created, err := ed.newIFD(nil, changes, 0)
+		created, err := ed.newIFD(nil, additionsOnly(changes), 0)
 		if err != nil {
 			return err
 		}
@@ -296,7 +296,7 @@ func (ed *editor) applyTimes(when time.Time) error {
 	}
 	exifOff := ed.pointerOf(d, tagExifIFD)
 	if exifOff == 0 {
-		created, err := ed.newIFD(nil, changes, 0)
+		created, err := ed.newIFD(nil, additionsOnly(changes), 0)
 		if err != nil {
 			return err
 		}
@@ -311,6 +311,21 @@ func (ed *editor) applyTimes(when time.Time) error {
 		return ed.editIFD0([]change{ed.longChange(tagExifIFD, moved)})
 	}
 	return nil
+}
+
+// additionsOnly drops the deletions from a set of changes. A directory being
+// created from nothing has nothing to delete, and a deletion serialised anyway
+// would land as a type-0, count-0 entry a strict reader treats as corruption.
+// applyTo filters deletions itself; this is for the call sites that hand a raw
+// change set straight to newIFD.
+func additionsOnly(changes []change) []change {
+	out := make([]change, 0, len(changes))
+	for _, ch := range changes {
+		if !ch.del {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // applyTo edits the IFD at off and returns where it now lives. An edit that

@@ -181,6 +181,91 @@ func TestRewriteJPEGStripsGPSFromTheBytesNotJustThePointer(t *testing.T) {
 	}
 }
 
+// directoryOf re-reads a directory a rewrite left behind, straight from the
+// written bytes, so a test can assert on what a stricter reader than ours
+// would find there.
+func directoryOf(t *testing.T, jpeg []byte, pointerTag uint16) *directory {
+	t.Helper()
+	block := firstEXIFSegment(jpeg)
+	if block == nil {
+		t.Fatal("no EXIF segment in the written file")
+	}
+	r, ifd0Off, ok := newReader(block)
+	if !ok {
+		t.Fatal("the written TIFF block has no readable header")
+	}
+	ifd0, ok := r.readIFD(ifd0Off)
+	if !ok {
+		t.Fatal("the written IFD0 is unreadable")
+	}
+	off := r.pointer(ifd0, pointerTag)
+	if off == 0 {
+		t.Fatalf("IFD0 carries no pointer 0x%04X", pointerTag)
+	}
+	d, ok := r.readIFD(off)
+	if !ok {
+		t.Fatalf("the directory 0x%04X points at is unreadable", pointerTag)
+	}
+	return d
+}
+
+// Creating a directory from nothing must not serialise the deletions that ride
+// along with the additions — a location without an altitude deletes the two
+// altitude tags, and in a directory that never existed there is nothing to
+// delete. Serialising them anyway writes type-0, count-0 entries that a strict
+// reader treats as corruption.
+func TestCreatingAGPSIFDSerialisesNoDeletions(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	ifd0 := b.ifd([]tag{ascii(tagMake, "FUJIFILM")}, 0)
+	bare := jpegWith(b.done(ifd0))
+
+	after, err := RewriteJPEG(bare, Changes{SetGPS: &GPSCoord{
+		Latitude:    51.5066667,
+		Longitude:   -0.1275,
+		HasAltitude: false,
+	}})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+
+	d := directoryOf(t, after, tagGPSIFD)
+	// Version, both references, both coordinates — and nothing else.
+	if len(d.entries) != 5 {
+		t.Errorf("created GPS IFD has %d entries, want 5", len(d.entries))
+	}
+	for _, e := range d.entries {
+		if e.typ == 0 || e.count == 0 {
+			t.Errorf("entry 0x%04X was written with type %d count %d — a deletion was serialised", e.tag, e.typ, e.count)
+		}
+		if e.tag == tagGPSAltitudeRef || e.tag == tagGPSAltitude {
+			t.Errorf("tag 0x%04X was written into a directory it was being deleted from", e.tag)
+		}
+	}
+}
+
+func TestCreatingAnExifIFDSerialisesNoDeletions(t *testing.T) {
+	b := newTIFF(binary.LittleEndian)
+	ifd0 := b.ifd([]tag{ascii(tagMake, "FUJIFILM")}, 0)
+	bare := jpegWith(b.done(ifd0))
+
+	// A whole second: the sub-second tag is a deletion, not a value.
+	when := time.Date(2026, 8, 3, 19, 42, 7, 0, time.FixedZone("", 2*3600))
+	after, err := RewriteJPEG(bare, Changes{DateTimeOriginal: &when})
+	if err != nil {
+		t.Fatalf("RewriteJPEG: %v", err)
+	}
+
+	d := directoryOf(t, after, tagExifIFD)
+	for _, e := range d.entries {
+		if e.typ == 0 || e.count == 0 {
+			t.Errorf("entry 0x%04X was written with type %d count %d — a deletion was serialised", e.tag, e.typ, e.count)
+		}
+		if e.tag == tagSubSecTimeOriginal {
+			t.Error("SubSecTimeOriginal was written into a directory it was being deleted from")
+		}
+	}
+}
+
 func TestRewriteJPEGWithNoEXIFSegment(t *testing.T) {
 	_, err := RewriteJPEG(jpegWith(nil), Changes{Artist: ptr("Someone")})
 	if err == nil {
