@@ -429,6 +429,7 @@ class MapState {
     this.#lastLoad = () => this.load(dir, true);
     if (!force && dir === this.dir && this.positions.length > 0) return;
 
+    const seq = ++this.#loadSeq;
     this.loading = true;
     this.error = null;
     this.progress = null;
@@ -438,6 +439,10 @@ class MapState {
     this.clusters = [];
     try {
       const got = await source.Positions(dir);
+      // A newer read started while this one was in flight — opening B while A's
+      // slow network read was still out — so its answer is stale and must not
+      // paint B's map with A's pins.
+      if (seq !== this.#loadSeq) return;
       this.dir = got.dir;
       this.positions = got.frames ?? [];
       this.total = got.total;
@@ -446,6 +451,7 @@ class MapState {
       this.clusterIndex = 0;
       this.frameIndex = 0;
     } catch (error) {
+      if (seq !== this.#loadSeq) return;
       this.error = message(error);
       this.positions = [];
       this.total = 0;
@@ -453,13 +459,20 @@ class MapState {
       this.unreadable = 0;
       this.clusters = [];
     } finally {
-      this.loading = false;
-      this.progress = null;
+      // Only the newest read owns the busy flag; a superseded one clearing it
+      // would blank the state the live read is still filling.
+      if (seq === this.#loadSeq) {
+        this.loading = false;
+        this.progress = null;
+      }
     }
   }
 
   /** The scope last read, so an unchanged scope does not re-read on every tick. */
   #scopeKey = "";
+
+  /** Bumped on every read; a response from an older one is stale and dropped. */
+  #loadSeq = 0;
 
   /** How to re-read what is currently shown, for a refresh after a geotag write. */
   #lastLoad: (() => Promise<void>) | null = null;
@@ -495,12 +508,14 @@ class MapState {
       return;
     }
 
+    const seq = ++this.#loadSeq;
     this.loading = true;
     this.error = null;
     this.progress = null;
     this.clusters = [];
     try {
       const got = await source.PositionsScope(refs);
+      if (seq !== this.#loadSeq) return;
       this.dir = got.dir;
       this.positions = got.frames ?? [];
       this.total = got.total;
@@ -509,6 +524,7 @@ class MapState {
       this.clusterIndex = 0;
       this.frameIndex = 0;
     } catch (error) {
+      if (seq !== this.#loadSeq) return;
       this.error = message(error);
       this.positions = [];
       this.total = 0;
@@ -516,8 +532,10 @@ class MapState {
       this.unreadable = 0;
       this.clusters = [];
     } finally {
-      this.loading = false;
-      this.progress = null;
+      if (seq === this.#loadSeq) {
+        this.loading = false;
+        this.progress = null;
+      }
     }
   }
 
@@ -538,7 +556,11 @@ class MapState {
   }
 
   applyProgress(progress: MapProgress) {
-    if (progress.dir !== "" && this.dir !== "" && progress.dir !== this.dir) return;
+    // Progress only means anything while a read is in flight. The old guard
+    // compared against `this.dir`, which is not set until the read finishes, so
+    // every folder after the first showed no progress at all — the new folder's
+    // events never matched the previous folder's still-current dir.
+    if (!this.loading) return;
     this.progress = progress.done >= progress.total ? null : progress;
   }
 }
