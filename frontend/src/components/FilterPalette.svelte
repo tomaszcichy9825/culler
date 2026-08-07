@@ -120,7 +120,9 @@
     {/if}
     <span class="caret" aria-hidden="true"></span>
     <span class="spacer"></span>
-    <span class="count">{showing} of {app.groups.length} frames</span>
+    <!-- Counted against everything the grid could show, not app.groups: that
+         is the filtered list, and a set filter would read "12 of 12". -->
+    <span class="count">{showing} of {app.allGroups.length} frames</span>
   {/snippet}
 
   {#snippet chips()}
@@ -151,7 +153,7 @@
           <span class="box" class:ticked={option.active}>{option.active ? "✓" : ""}</span>
           <span class="name">{option.label}</span>
           <span class="bar">
-            <span class="fill" style="width: {app.groups.length === 0 ? 0 : (left / app.groups.length) * 100}%"></span>
+            <span class="fill" style="width: {app.allGroups.length === 0 ? 0 : (left / app.allGroups.length) * 100}%"></span>
           </span>
           <span class="left">{left}</span>
         </div>

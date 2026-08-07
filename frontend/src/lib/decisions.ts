@@ -8,6 +8,7 @@
 // Verdicts and ratings are stored independently by the backend and buffered
 // independently here, because rating a frame nobody has judged yet is normal.
 
+import { advanceFocus } from "./actions";
 import { DecisionService } from "./bindings";
 import type { DestinationItem, GroupDTO, RatingItem, VerdictItem } from "./bindings";
 import { app } from "./state.svelte";
@@ -175,7 +176,9 @@ export function setVerdict(v: "keep" | "cut") {
   }
 
   if (!report(changed, unrecorded, "")) return;
-  if (solo && !clearing) app.moveFocus(1);
+  // Through the shared stepper, so the advance follows the order on screen —
+  // the table's sort included — exactly as the arrow keys do.
+  if (solo && !clearing) advanceFocus(1);
 }
 
 /**
@@ -271,7 +274,7 @@ export function setDestination(destination: string): number {
   }
 
   if (!report(changed, unrecorded, "")) return 0;
-  if (solo && destination !== "") app.moveFocus(1);
+  if (solo && destination !== "") advanceFocus(1);
   return changed;
 }
 

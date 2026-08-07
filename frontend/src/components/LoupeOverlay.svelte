@@ -155,7 +155,8 @@
 <style>
   /* Absolutely positioned, not fixed: the overlay covers the three panes and
      leaves the title bar and the status bar showing, which is where the mode
-     chip and the verdict keys are named. Its parent must be positioned. */
+     chip and the verdict keys are named. Its parent must be the positioned
+     pane row — the shell's .body — not the whole window. */
   .overlay {
     position: absolute;
     inset: 0;
