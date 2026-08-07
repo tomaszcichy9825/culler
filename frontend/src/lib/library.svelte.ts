@@ -13,6 +13,7 @@
 // binding, and `watchCatalogProgress` once to feed the indexing chip.
 
 import type { GroupDTO } from "./bindings";
+import { flush } from "./decisions";
 
 /** One folder the catalogue covers. Mirrors the backend's RootDTO. */
 export interface CatalogRoot {
@@ -452,6 +453,10 @@ class LibraryState {
     this.loading = true;
     this.error = null;
     try {
+      // A verdict pressed a moment ago may still be sitting in the decision
+      // buffer; land it first so the rebuilt results carry it. Free when the
+      // buffer is empty.
+      await flush();
       const facets = { ...this.facets };
       const [page, counts] = await Promise.all([
         source.Search(this.query, facets, PAGE, 0),

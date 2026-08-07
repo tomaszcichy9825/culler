@@ -46,7 +46,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
       { id: "focus-right", label: "move focus right", note: "in the zoomed loupe, pans instead", scope: "cull", source: "config", chords: ["ArrowRight"] },
       { id: "focus-up", label: "move focus up", note: "one row in the grid", scope: "cull", source: "config", chords: ["ArrowUp"] },
       { id: "focus-down", label: "move focus down", note: "one row in the grid", scope: "cull", source: "config", chords: ["ArrowDown"] },
-      { id: "toggle-select", label: "toggle selection", note: "adds the frame under the cursor", scope: "cull", source: "config", chords: ["space"] },
+      { id: "toggle-select", label: "toggle selection", note: "adds the frame under the cursor", scope: "cull", source: "config", chords: ["s"] },
       { id: "select-all", label: "select all", note: "every frame in the folder", scope: "cull", source: "config", chords: ["mod+a"] },
       { id: "escape", label: "clear selection / leave loupe", note: "unwinds one step at a time", scope: "global", source: "config", chords: ["Escape"] },
     ],
@@ -75,6 +75,8 @@ export const ACTION_GROUPS: ActionGroup[] = [
     title: "Layout",
     actions: [
       { id: "cycle-layout", label: "cycle layout", note: "walks the mode's sub-layouts", scope: "shell", source: "config", chords: ["Tab"] },
+      { id: "toggle-loupe", label: "loupe the focused frame", note: "the same key closes it again", scope: "cull", source: "config", chords: ["space"] },
+      { id: "enter-compare", label: "compare frames", note: "the selection, or this frame and the next", scope: "cull", source: "config", chords: ["shift+c"] },
       { id: "zoom", label: "1:1 zoom", note: "in the loupe", scope: "cull", source: "config", chords: ["z"] },
       { id: "layout-1", label: "first sub-layout", note: "contact sheet, in CULL", scope: "shell", source: "shell", chords: ["alt+1"] },
       { id: "layout-2", label: "second sub-layout", note: "loupe-first, in CULL", scope: "shell", source: "shell", chords: ["alt+2"] },
@@ -107,6 +109,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
     title: "Writes",
     actions: [
       { id: "apply", label: "apply pending verdicts", note: "shows the plan first", scope: "global", source: "config", chords: ["Enter"] },
+      { id: "write-metadata", label: "write metadata changes", note: "shows the write plan first", scope: "exif", source: "config", chords: ["mod+s"] },
       { id: "undo", label: "undo last batch", note: "", scope: "global", source: "config", chords: ["mod+z"] },
       { id: "redo", label: "redo", note: "comes in v0.2", scope: "global", source: "config", chords: ["shift+mod+z"] },
     ],
@@ -115,7 +118,7 @@ export const ACTION_GROUPS: ActionGroup[] = [
     title: "Palettes and panels",
     actions: [
       { id: "keymap-overlay", label: "the keys overlay", note: "", scope: "global", source: "config", chords: ["?"] },
-      { id: "open-settings", label: "settings", note: "this screen", scope: "global", source: "shell", chords: ["mod+,"] },
+      { id: "open-settings", label: "settings", note: "this screen", scope: "global", source: "config", chords: ["mod+,"] },
       { id: "command-palette", label: "command palette", note: "comes in v0.2", scope: "global", source: "config", chords: ["mod+k"] },
       { id: "search", label: "search the catalogue", note: "results replace the grid", scope: "global", source: "config", chords: ["/"] },
       { id: "copy-palette", label: "copy destinations", note: "comes in v0.2", scope: "global", source: "config", chords: ["c"] },

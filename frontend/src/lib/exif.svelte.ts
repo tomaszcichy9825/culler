@@ -169,6 +169,9 @@ class ExifState {
 
   #port: ExifPort = unwiredPort;
 
+  /** Rising ticket for load, so a stale read cannot land on a newer one. */
+  #loadSeq = 0;
+
   /** usePort swaps the backend out — for the shell's wiring and the harness. */
   usePort(port: ExifPort) {
     this.#port = port;
@@ -273,32 +276,51 @@ class ExifState {
   /**
    * unwritten is the number the title bar chips: one per drafted tag per
    * frame, plus one per frame drafted to lose its GPS. It counts writes, not
-   * frames, which is what the write plan will list.
+   * frames, which is what the write plan will list — and it counts every
+   * draft, on the rail or off it, because ⌘S writes them all.
    */
   get unwritten(): number {
     let n = 0;
-    for (const frame of this.frames) {
-      n += Object.keys(this.edits[frame.path] ?? {}).length;
-      if (this.strip[frame.path]) n++;
-    }
+    for (const draft of Object.values(this.edits)) n += Object.keys(draft).length;
+    for (const on of Object.values(this.strip)) if (on) n++;
     return n;
   }
 
-  /** The frames carrying a drafted change, which is what a write acts on. */
+  /** The frames on the rail carrying a drafted change, for their dirty dots. */
   get dirtyFrames(): FrameExifDTO[] {
     return this.frames.filter((f) => this.isDirty(f.path));
   }
 
-  /** editsDTO is the draft in the shape ExifService takes. */
+  /**
+   * draftedPaths is every path carrying a drafted change, whether or not its
+   * frame is still on the rail: the rail's frames first, in rail order, then
+   * the drafts made on frames since scrolled away.
+   */
+  get draftedPaths(): string[] {
+    const drafted = new Set<string>();
+    for (const [path, draft] of Object.entries(this.edits)) {
+      if (Object.keys(draft).length > 0) drafted.add(path);
+    }
+    for (const [path, on] of Object.entries(this.strip)) {
+      if (on) drafted.add(path);
+    }
+    const ordered: string[] = [];
+    for (const frame of this.frames) {
+      if (drafted.delete(frame.path)) ordered.push(frame.path);
+    }
+    return [...ordered, ...drafted];
+  }
+
+  /** editsDTO is the whole draft in the shape ExifService takes. */
   get editsDTO(): ExifEditDTO[] {
-    return this.dirtyFrames.map((frame) => {
-      const drafted = this.edits[frame.path] ?? {};
+    return this.draftedPaths.map((path) => {
+      const drafted = this.edits[path] ?? {};
       return {
-        path: frame.path,
+        path,
         dateTimeOriginal: drafted.DateTimeOriginal ?? null,
         artist: drafted.Artist ?? null,
         copyright: drafted.Copyright ?? null,
-        stripGps: this.strip[frame.path] === true,
+        stripGps: this.strip[path] === true,
         setGps: null,
       };
     });
@@ -402,25 +424,30 @@ class ExifState {
   // ---- talking to the backend -----------------------------------------------
 
   /**
-   * load reads the metadata of the given frames. Drafts for frames that are no
-   * longer on the rail are dropped: a draft with nothing to write it to is a
-   * count in the title bar that can never go down.
+   * load reads the metadata of the given frames. Drafts are left alone:
+   * arrowing to the next frame reloads the rail, and a committed edit on the
+   * frame just left is exactly what ⌘S is for. A draft only goes away when it
+   * is written or explicitly reverted.
+   *
+   * Reads are serialised by #loadSeq, the way library.search holds a ticket: a
+   * slow read that comes back after a newer one must not put stale frames
+   * under the cursor.
    */
   async load(paths: string[]) {
+    const seq = ++this.#loadSeq;
     this.loading = true;
     this.error = "";
     try {
       const byPath = await this.#port.read(paths);
+      if (seq !== this.#loadSeq) return; // a newer read has answered
       this.frames = paths.map((p) => byPath[p]).filter((f): f is FrameExifDTO => f !== undefined);
       this.index = Math.min(this.index, Math.max(0, this.frames.length - 1));
-      const live = new Set(this.frames.map((f) => f.path));
-      this.edits = Object.fromEntries(Object.entries(this.edits).filter(([p]) => live.has(p)));
-      this.strip = Object.fromEntries(Object.entries(this.strip).filter(([p]) => live.has(p)));
     } catch (err) {
+      if (seq !== this.#loadSeq) return;
       this.frames = [];
       this.error = message(err);
     } finally {
-      this.loading = false;
+      if (seq === this.#loadSeq) this.loading = false;
     }
   }
 

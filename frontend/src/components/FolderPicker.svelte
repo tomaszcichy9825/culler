@@ -26,6 +26,8 @@
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    // An empty box has nowhere to go; keep the focus so a path can be typed.
+    if (value.trim() === "") return;
     input?.blur();
     await openFolder(value);
     // A typed folder joins the tree so it can be got back to, but only once
