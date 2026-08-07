@@ -335,18 +335,32 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 // live in several folders, and it reuses collect so a scope over one folder and
 // a plain single-folder apply see exactly the same frames.
 func (s *ApplyService) collectScope(refs []FrameRef) ([]planned, error) {
-	byDir := map[string][]string{}
+	// Buckets key on the resolved folder, and hashes are deduplicated within
+	// each: a scope can name the same folder in two spellings and the same
+	// frame more than once, and planning a frame twice runs its trash twice —
+	// the duplicate fails on files already gone, and that failure would keep a
+	// verdict alive on a frame the first run already carried out.
+	byDir := map[string]map[string]bool{}
 	var order []string
 	for _, ref := range refs {
-		if _, seen := byDir[ref.Dir]; !seen {
-			order = append(order, ref.Dir)
+		dir, err := expandPath(ref.Dir)
+		if err != nil {
+			return nil, err
 		}
-		byDir[ref.Dir] = append(byDir[ref.Dir], ref.Hash)
+		if _, seen := byDir[dir]; !seen {
+			order = append(order, dir)
+			byDir[dir] = map[string]bool{}
+		}
+		byDir[dir][ref.Hash] = true
 	}
 
 	var items []planned
 	for _, dir := range order {
-		got, err := s.collect(dir, byDir[dir])
+		hashes := make([]string, 0, len(byDir[dir]))
+		for h := range byDir[dir] {
+			hashes = append(hashes, h)
+		}
+		got, err := s.collect(dir, hashes)
 		if err != nil {
 			return nil, err
 		}
@@ -622,6 +636,12 @@ func pluralFrames(n int) string {
 func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error {
 	outcomes := make(map[string]string, len(batch.Actions))
 	for _, a := range batch.Actions {
+		// If the same source somehow appears twice, a success stands: the file
+		// did move, and letting a later failure overwrite that would keep a
+		// verdict alive on a frame whose files are already gone.
+		if existing, seen := outcomes[a.Src]; seen && existing == journal.OutcomeOK {
+			continue
+		}
 		outcomes[a.Src] = a.Outcome
 	}
 

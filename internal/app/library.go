@@ -221,9 +221,18 @@ func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	var done atomic.Int64
+	// report counts one frame as finished, readable or not. A group with no
+	// file still has to move the counter, or the final report — done equal to
+	// the total — never fires and the bar sticks below the top.
+	report := func() {
+		if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
+			progress(int(n))
+		}
+	}
 	for i, g := range groups {
 		ref := primaryRef(g)
 		if ref == nil {
+			report()
 			continue
 		}
 		wg.Add(1)
@@ -234,9 +243,7 @@ func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) 
 			if h, err := hash.Content(path); err == nil {
 				hashes[i] = h
 			}
-			if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
-				progress(int(n))
-			}
+			report()
 		}(i, ref.Path)
 	}
 	wg.Wait()

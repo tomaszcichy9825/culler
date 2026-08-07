@@ -295,6 +295,14 @@ func readPositions(groups []scan.PhotoGroup, workers int, progress func(done int
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	var done atomic.Int64
+	// report counts one frame as read, readable or not. A group with no file
+	// still moves the counter, or the final report never reaches the total and
+	// the progress chip sticks below it.
+	report := func() {
+		if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
+			progress(int(n))
+		}
+	}
 
 	for i, g := range groups {
 		ref := primaryRef(g)
@@ -302,6 +310,7 @@ func readPositions(groups []scan.PhotoGroup, workers int, progress func(done int
 			// A group with neither half is not a frame anybody can read; it
 			// counts as unreadable rather than as having no position.
 			out[i] = reading{err: fmt.Errorf("%s has no file to read", g.Stem)}
+			report()
 			continue
 		}
 		wg.Add(1)
@@ -319,9 +328,7 @@ func readPositions(groups []scan.PhotoGroup, workers int, progress func(done int
 					out[i].shot = fields.DateTimeOriginal.Value
 				}
 			}
-			if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
-				progress(int(n))
-			}
+			report()
 		}(i, ref.Path)
 	}
 	wg.Wait()
