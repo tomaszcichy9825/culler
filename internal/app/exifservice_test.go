@@ -455,3 +455,67 @@ func TestShotTimePrefersEXIFOverModificationTime(t *testing.T) {
 		t.Errorf("shot = %s, want the scanned mtime %s", ShotTime(raw), raw.Shot)
 	}
 }
+
+// When the backup move fails, the edited copy must not be installed anyway:
+// with the original still occupying its path, the collision policy would file
+// the edit beside it under a numbered name — in the photo folder, which may be
+// the card, where this app writes nothing it was not asked to.
+func TestExifApplyFailedBackupSkipsTheInstall(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions do not bite")
+	}
+	a := testApp(t)
+	dir := frames(t)
+	jpg := filepath.Join(dir, "DSCF0001.JPG")
+	original, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewExifService(a)
+	// The backup directory exists but takes nothing, so the move into it fails
+	// while the install's own destination folder stays perfectly writable.
+	if err := os.MkdirAll(svc.backupDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(svc.backupDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(svc.backupDir(), 0o755) })
+
+	batch, err := svc.Apply([]ExifEditDTO{{Path: jpg, Artist: str("Someone")}})
+	if err == nil {
+		failed := 0
+		for _, act := range batch.Actions {
+			if act.Outcome != journal.OutcomeOK {
+				failed++
+			}
+		}
+		if failed == 0 {
+			t.Fatal("an apply whose backup could not be made reported every action ok")
+		}
+	}
+
+	after, err := os.ReadFile(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(original, after) {
+		t.Error("the original was altered although its backup failed")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(before) {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("the failed apply left a stray file in the photo folder: %v", names)
+	}
+}
