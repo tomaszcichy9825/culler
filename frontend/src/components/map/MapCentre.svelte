@@ -369,14 +369,20 @@
   /**
    * The pane's keys are bound to the element rather than declared on it: a map
    * is a region full of Leaflet's own controls, not a widget with a role that
-   * would justify a keyboard handler in the markup, and `data-keys="local"`
-   * already tells the application's global listener to keep out.
+   * would justify a keyboard handler in the markup.
    *
    * The wrap is also the pane's one focusable surface — Leaflet's own keyboard
    * is off, and the markers only become reachable by Tab — so the keys only
    * work at all while it holds the focus. It takes it when MAP comes up and
-   * reclaims it on a pointer press inside, which is also what makes
-   * data-keys="local" actually suppress the global map here.
+   * reclaims it on a pointer press inside.
+   *
+   * The split with the application's keymap is deliberate and one-way: the
+   * handler below claims ONLY the map's own keys and stops their propagation;
+   * everything else bubbles to the global listener untouched. The wrap is
+   * marked data-keys="map" — not data-keys="local", which exists for text
+   * inputs and would make the global layer swallow every unclaimed key, which
+   * is exactly what once killed ⌘Z, ⌃1, /, ? and the geotag dialog's ⏎ for
+   * the whole of MAP.
    */
   $effect(() => {
     const region = wrap;
@@ -401,34 +407,43 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    // While the geotag confirm dialog is up the wrap claims nothing at all.
+    // The dialog takes no DOM focus by design and relies on the global layer,
+    // so ⏎ must reach it as "confirm" — claiming it here opened a frame under
+    // the dialog instead of writing the location.
+    if (geotag.plan !== null) return;
+    // A held modifier means a global chord (⌘Z, ⌃1, ⌥2…), never a map key.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
       case "f":
-        e.preventDefault();
         fit();
         break;
       case "+":
       case "=":
         if (layout !== 1) return;
-        e.preventDefault();
         blobScale = Math.min(4, blobScale * 1.25);
         break;
       case "-":
         if (layout !== 1) return;
-        e.preventDefault();
         blobScale = Math.max(0.25, blobScale / 1.25);
         break;
       case "Enter":
-        e.preventDefault();
         mapState.open();
         break;
+      default:
+        // Unclaimed: let it bubble to the global keymap.
+        return;
     }
+    // Claimed keys stop here, so the global "apply" cannot double-run ⏎.
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   let placed = $derived(`${mapState.positions.length} of ${mapState.total} frames placed`);
   let folderLeaf = $derived(mapState.dir === "" ? "" : (mapState.dir.replace(/\/+$/, "").split("/").pop() ?? ""));
 </script>
 
-<div class="wrap" class:placing={geotag.armed} bind:this={wrap} data-keys="local" tabindex="-1">
+<div class="wrap" class:placing={geotag.armed} bind:this={wrap} data-keys="map" tabindex="-1">
   <div class="map" bind:this={host}></div>
   <canvas class="heat" class:on={layout === 1} bind:this={canvas}></canvas>
 

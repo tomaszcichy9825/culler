@@ -87,12 +87,32 @@
   // While the grid is showing search results it is showing one page of them,
   // and the index holds the rest: nearing the end of the sheet — by scrollbar
   // or by arrowing, which drags the viewport along — asks for the next page,
-  // until the catalogue says it is complete. loadMore's own guards make the
-  // repeat calls this effect fires while a page is in flight free.
+  // until the catalogue says it is complete.
+  //
+  // Proximity is measured against the UNFILTERED result list. The canvas
+  // height describes the filtered view of the results, but library.complete
+  // counts the results themselves — so with a filter hiding rows the bottom
+  // of the short sheet stayed "near the end" forever and this effect paged
+  // the entire catalogue in a tight loop. Only when the visible list is the
+  // full result list does the bottom of the canvas mean "near the end of
+  // what is loaded"; under a narrowing filter nothing auto-pages, and the
+  // next page is fetched once the filter is lifted and the user scrolls.
+  //
+  // And a page is asked for at most once per scroll position: the next one
+  // needs the scrollTop to actually move, so a page that comes back without
+  // growing the sheet cannot re-arm the condition it just satisfied.
+  let pagedAt = -1;
   $effect(() => {
     if (!library.searchOpen || library.loading || library.complete) return;
+    if (app.groups.length !== library.results.length) return;
     if (canvasHeight === 0) return;
-    if (scrollTop + viewportHeight >= canvasHeight - rowHeight) void library.loadMore();
+    if (scrollTop + viewportHeight < canvasHeight - rowHeight) {
+      pagedAt = -1;
+      return;
+    }
+    if (scrollTop === pagedAt) return;
+    pagedAt = scrollTop;
+    void library.loadMore();
   });
 </script>
 
