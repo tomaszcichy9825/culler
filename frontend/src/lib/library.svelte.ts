@@ -371,6 +371,11 @@ class LibraryState {
     this.total = 0;
     this.searched = false;
     this.focusIndex = 0;
+    // Start unfiltered. openSession sets its time window after this, so a
+    // session still opens scoped; a plain search does not inherit a facet from
+    // a session opened earlier. Leaving them set silently time-boxed every
+    // later search to a window the user could not see and could not clear.
+    this.facets = { ...NO_FACETS };
   }
 
   /** closeSearch drops the results and lets the open folder back onto the grid. */
@@ -389,6 +394,9 @@ class LibraryState {
     this.searched = false;
     this.loading = false;
     this.focusIndex = 0;
+    // Forget a session's time window on the way out, so the next search is not
+    // silently confined to it.
+    this.facets = { ...NO_FACETS };
   }
 
   toggleSearch() {
