@@ -411,14 +411,18 @@ func (ed *editor) applyTo(off uint32, changes []change) (uint32, error) {
 	// a replaced one: once nothing else references those bytes they are
 	// zeroed, not left readable in the file. The old directory is still
 	// hooked up until the caller repoints it, so the walk skips exactly the
-	// entries this rebuild dropped and sees reachability as it is about to be.
+	// entries this rebuild dropped and sees reachability as it is about to
+	// be. A truncated walk has not proven any span unreachable, so nothing
+	// is zeroed on its word.
 	if len(stale) > 0 {
-		reach := ed.reachableSpans(func(dir uint32, e entry) bool {
+		reach, truncated := ed.reachableSpans(func(dir uint32, e entry) bool {
 			return dir == off && drop[e.tag]
 		})
-		for _, s := range stale {
-			if !overlapsAny(s.at, s.length, reach) {
-				ed.zero(s.at, s.length)
+		if !truncated {
+			for _, s := range stale {
+				if !overlapsAny(s.at, s.length, reach) {
+					ed.zero(s.at, s.length)
+				}
 			}
 		}
 	}
@@ -483,9 +487,13 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 	copy(p[8:12], inline[:])
 
 	// With the entry repointed, the old span is unreachable unless a second
-	// entry shares those bytes, in which case they are the survivor's to keep.
-	if stale.length > 0 && !overlapsAny(stale.at, stale.length, ed.reachableSpans(nil)) {
-		ed.zero(stale.at, stale.length)
+	// entry shares those bytes, in which case they are the survivor's to
+	// keep. A walk cut short by its budget proves nothing about sharing, so
+	// the bytes stay.
+	if stale.length > 0 {
+		if reach, truncated := ed.reachableSpans(nil); !truncated && !overlapsAny(stale.at, stale.length, reach) {
+			ed.zero(stale.at, stale.length)
+		}
 	}
 	return nil
 }
@@ -589,9 +597,14 @@ func (ed *editor) eraseGPS() {
 	// Everything still reachable once the GPS pointer is unhooked from IFD0 —
 	// only that one edge goes, so a directory the Exif pointer shares, or a
 	// pointer aimed into the middle of a MakerNote, stays alive and untouched.
-	keep := ed.reachableSpans(func(dir uint32, e entry) bool {
+	// A truncated walk cannot vouch for what it never reached: the unhooking
+	// still happens through the caller's deletion, but no bytes are blanked.
+	keep, truncated := ed.reachableSpans(func(dir uint32, e entry) bool {
 		return dir == ed.ifd0 && e.tag == tagGPSIFD
 	})
+	if truncated {
+		return
+	}
 	for _, e := range gps.entries {
 		if e.inline || e.span == nil {
 			continue
@@ -618,12 +631,22 @@ type span struct{ at, length uint32 }
 // will be once its own edit lands. Skipping an entry rather than a directory
 // is what keeps an aliased target alive: a directory two pointers share is
 // still reachable through the pointer that stays.
-func (ed *editor) reachableSpans(except func(dir uint32, e entry) bool) []span {
+//
+// The walk is budgeted against a hostile container, and truncated reports
+// whether it ran out of budget with directories still queued. A truncated
+// walk has not seen every pointer, so a span missing from the list may still
+// be aliased by an entry the walk never visited: every caller that zeroes
+// must stand down when truncated is true, keeping the stale bytes rather
+// than destroying live ones. The edit itself still lands either way.
+func (ed *editor) reachableSpans(except func(dir uint32, e entry) bool) (spans []span, truncated bool) {
 	var out []span
 	seen := map[uint32]bool{}
 	queue := []uint32{ed.ifd0}
 
-	for len(queue) > 0 && len(out) < maxValues {
+	for len(queue) > 0 {
+		if len(out) >= maxValues {
+			return out, true
+		}
 		off := queue[0]
 		queue = queue[1:]
 		if off == 0 || seen[off] {
@@ -659,7 +682,7 @@ func (ed *editor) reachableSpans(except func(dir uint32, e entry) bool) []span {
 			queue = append(queue, d.next)
 		}
 	}
-	return out
+	return out, false
 }
 
 func overlapsAny(at, length uint32, spans []span) bool {
