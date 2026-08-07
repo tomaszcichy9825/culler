@@ -394,7 +394,7 @@ func (s *LibraryIndexService) reindex(root string) (catalog.Stats, error) {
 		// takes the same low worker cap a folder open does.
 		Workers: s.app.hashWorkers(root != "" && platform.IsNetwork(root)),
 		Lookup: func(hash string) (string, int) {
-			rec, ok, err := decisions.Get(hash)
+			rec, ok, err := decisions.GetAny(hash)
 			if err != nil || !ok {
 				return "", 0
 			}
@@ -455,7 +455,7 @@ func (s *LibraryIndexService) overlay(store *catalog.Store, frames []catalog.Fra
 	var changed []catalog.Decision
 	for i := range frames {
 		verdict, rating := "", 0
-		if rec, ok, err := decisions.Get(frames[i].Hash); err != nil {
+		if rec, ok, err := decisions.Get(frames[i].Hash, frames[i].Dir, frames[i].Stem); err != nil {
 			return err
 		} else if ok {
 			verdict, rating = string(rec.Verdict), rec.Rating
@@ -582,7 +582,7 @@ func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
 	sessions, err := store.SessionsWith(catalog.SessionOptions{
 		Gap: time.Duration(gapHours * float64(time.Hour)),
 		Verdict: func(hash string) (string, bool) {
-			rec, ok, err := decisions.Get(hash)
+			rec, ok, err := decisions.GetAny(hash)
 			if err != nil || !ok {
 				// Nothing recorded is a real answer — the frame is undecided —
 				// and so is a read that failed, where the recorded verdict is
@@ -700,7 +700,7 @@ func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Nod
 	}
 	undecided := 0
 	for _, hash := range hashes {
-		rec, ok, err := decisions.Get(hash)
+		rec, ok, err := decisions.GetAny(hash)
 		if err != nil {
 			return 0, err
 		}
@@ -769,7 +769,7 @@ func (s *LibraryIndexService) UpsertDir(dir string) error {
 		Scan:    s.app.Config().ScanConfig(),
 		Workers: s.app.hashWorkers(platform.IsNetwork(resolved)),
 		Lookup: func(hash string) (string, int) {
-			rec, ok, err := decisions.Get(hash)
+			rec, ok, err := decisions.GetAny(hash)
 			if err != nil || !ok {
 				return "", 0
 			}

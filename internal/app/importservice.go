@@ -695,7 +695,7 @@ func (s *ImportService) folder(dir string, report bool) (string, []scan.PhotoGro
 		if h == "" {
 			continue
 		}
-		rec, ok, err := store.Get(h)
+		rec, ok, err := store.Get(h, g.Dir, g.Stem)
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("read decisions: %w", err)
 		}

@@ -94,7 +94,9 @@ func TestSearchDropsAVerdictTakenBackSinceTheIndexPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decisions: %v", err)
 	}
-	if err := store.SetVerdict(hash, "", "DSCF0001", decide.Undecided, decide.MaskBoth); err != nil {
+	// Taking a verdict back names the same place it was given: decisions are
+	// keyed on content and place, so a clear aimed elsewhere would miss.
+	if err := store.SetVerdict(hash, filepath.Join(root, "2026-05"), "DSCF0001", decide.Undecided, decide.MaskBoth); err != nil {
 		t.Fatalf("SetVerdict: %v", err)
 	}
 

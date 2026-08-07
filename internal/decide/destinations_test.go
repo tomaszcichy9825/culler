@@ -15,7 +15,7 @@ func TestDestinationImpliesAKeep(t *testing.T) {
 	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "~/Pictures/2026"); err != nil {
 		t.Fatal(err)
 	}
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001")
 	if !ok {
 		t.Fatal("a destination on its own must record the frame")
 	}
@@ -39,7 +39,7 @@ func TestDestinationLeavesAnExistingVerdictAlone(t *testing.T) {
 	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := mustGet(t, s, "h1")
+	r, _ := mustGet(t, s, "h1", "/cardA", "DSCF0001")
 	if r.Mask != MaskRAW {
 		t.Errorf("routing a frame must not widen its mask, got %q", r.Mask)
 	}
@@ -52,7 +52,7 @@ func TestDestinationLeavesAnExistingVerdictAlone(t *testing.T) {
 	if err := s.SetDestination("h2", "/cardA", "DSCF0002", "/library/keepers"); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := mustGet(t, s, "h2"); r.Verdict != Cut {
+	if r, _ := mustGet(t, s, "h2", "/cardA", "DSCF0002"); r.Verdict != Cut {
 		t.Errorf("a destination must not overturn a cut, got %q", r.Verdict)
 	}
 }
@@ -66,7 +66,7 @@ func TestClearingADestinationKeepsTheVerdict(t *testing.T) {
 	if err := s.SetDestination("h1", "/cardA", "DSCF0001", ""); err != nil {
 		t.Fatal(err)
 	}
-	r, ok := mustGet(t, s, "h1")
+	r, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001")
 	if !ok {
 		t.Fatal("clearing the destination must not delete a frame that is still kept")
 	}
@@ -87,7 +87,7 @@ func TestClearingTheVerdictClearsTheDestination(t *testing.T) {
 	if err := s.SetVerdict("h1", "/cardA", "DSCF0001", Undecided, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := mustGet(t, s, "h1"); ok {
+	if _, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001"); ok {
 		t.Error("an undecided, unrated frame with no destination left must be pruned")
 	}
 }
@@ -128,7 +128,7 @@ func TestSetDestinationBatchIsAtomic(t *testing.T) {
 	if err == nil {
 		t.Fatal("a batch with an identity-less frame must fail")
 	}
-	if _, ok := mustGet(t, s, "h1"); ok {
+	if _, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001"); ok {
 		t.Error("the good half of a failed batch landed anyway")
 	}
 }
@@ -377,7 +377,7 @@ func TestDestinationsSurviveAReopen(t *testing.T) {
 	if len(rows) != 1 || rows[0].Slot != 7 || rows[0].Digit != 7 {
 		t.Errorf("destinations after reopen: %+v", rows)
 	}
-	if r, _ := mustGet(t, second, "h1"); r.Destination != "/library/keepers" {
+	if r, _ := mustGet(t, second, "h1", "/cardA", "DSCF0001"); r.Destination != "/library/keepers" {
 		t.Errorf("the frame's destination after reopen: %+v", r)
 	}
 }
@@ -457,7 +457,7 @@ func TestMigrationFromTheVerdictSchema(t *testing.T) {
 	if err := s.SetDestination("hash-1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
 		t.Fatalf("write a destination to a migrated store: %v", err)
 	}
-	if r, _ := mustGet(t, s, "hash-1"); r.Destination != "/library/keepers" || r.Rating != 5 {
+	if r, _ := mustGet(t, s, "hash-1", "/cardA", "DSCF0001"); r.Destination != "/library/keepers" || r.Rating != 5 {
 		t.Errorf("after routing a migrated row: %+v", r)
 	}
 	if err := s.UseDestination("/library/keepers", ""); err != nil {
@@ -475,7 +475,7 @@ func TestMigrationFromTheOldestSchemaLeavesNoDestination(t *testing.T) {
 	}
 	defer s.Close()
 
-	r, ok := mustGet(t, s, "hash-DSCF0001")
+	r, ok := mustGet(t, s, "hash-DSCF0001", "/cardA", "DSCF0001")
 	if !ok {
 		t.Fatal("the row did not survive both migrations")
 	}

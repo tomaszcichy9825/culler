@@ -107,7 +107,7 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 	for i, g := range groups {
 		var rec decide.Record
 		if hashes[i] != "" {
-			recorded, ok, err := store.Get(hashes[i])
+			recorded, ok, err := store.Get(hashes[i], g.Dir, g.Stem)
 			if err != nil {
 				return FolderDTO{}, fmt.Errorf("read decisions: %w", err)
 			}

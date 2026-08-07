@@ -339,7 +339,7 @@ func (f *folderStream) collect(ctx context.Context, results <-chan frameResult, 
 func (f *folderStream) identity(r frameResult) FrameHash {
 	var rec decide.Record
 	if r.hash != "" {
-		recorded, ok, err := f.store.Get(r.hash)
+		recorded, ok, err := f.store.Get(r.hash, r.group.Dir, r.group.Stem)
 		switch {
 		case err != nil:
 			if f.storeErr == nil {

@@ -286,7 +286,7 @@ func TestApplyImportsAndLeavesTheCardIntact(t *testing.T) {
 	}
 
 	// The copy consumes the destination; the keep is a judgement and stays.
-	if r, ok, err := store.Get(groups[0].Hash); err != nil {
+	if r, ok, err := store.Get(groups[0].Hash, groups[0].Dir, groups[0].Stem); err != nil {
 		t.Fatal(err)
 	} else if !ok || r.Verdict != decide.Keep {
 		t.Errorf("a keep must survive its import: %v %+v", ok, r)
@@ -336,7 +336,7 @@ func TestApplyKeepsTheDecisionWhenACopyFails(t *testing.T) {
 	if failed == 0 {
 		t.Fatal("copies into a path blocked by a file were reported as done")
 	}
-	r, ok, err := store.Get(groups[0].Hash)
+	r, ok, err := store.Get(groups[0].Hash, groups[0].Dir, groups[0].Stem)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -108,7 +108,7 @@ func (s *XMPExportService) ExportFolder(dir string) (XMPExportResultDTO, error) 
 			continue
 		}
 		var rec decide.Record
-		recorded, ok, err := store.Get(hashes[i])
+		recorded, ok, err := store.Get(hashes[i], g.Dir, g.Stem)
 		if err != nil {
 			return out, fmt.Errorf("read decisions: %w", err)
 		}

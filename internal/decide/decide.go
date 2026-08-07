@@ -76,23 +76,29 @@ type DestinationItem struct {
 
 // Store is the decision database.
 //
-// Rows are keyed on the content hash rather than the path, which is what makes
-// a decision survive a rename and correctly not survive an edit. Dir and stem
-// come along so the grid can load a folder's decisions in one query.
+// Rows are keyed on (hash, dir, stem): the content and the place it was seen.
+// The hash is what makes a decision correctly not survive an edit; the place
+// is what lets two byte-identical copies — the same shot on two cards, or a
+// duplicate sitting beside its original — each carry their own fate. Keyed on
+// the hash alone, cutting one twin silently cut the other, which is the one
+// mistake this store must make impossible. The price is that a decision no
+// longer survives a mid-cull rename; re-judging a renamed frame is an
+// inconvenience, deleting an unjudged one is not.
 type Store struct {
 	db *sql.DB
 }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS decisions (
-	hash        TEXT PRIMARY KEY,
+	hash        TEXT NOT NULL,
 	dir         TEXT NOT NULL,
 	stem        TEXT NOT NULL,
 	verdict     TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
 	mask        TEXT NOT NULL CHECK (mask IN ('rj','r','j')),
 	rating      INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 5),
 	destination TEXT NOT NULL DEFAULT '',
-	updated_at  INTEGER NOT NULL
+	updated_at  INTEGER NOT NULL,
+	PRIMARY KEY (hash, dir, stem)
 );
 CREATE INDEX IF NOT EXISTS decisions_dir ON decisions(dir);
 CREATE TABLE IF NOT EXISTS destinations (
@@ -144,7 +150,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateToVerdicts(db); err != nil {
 		return err
 	}
-	return migrateToDestinations(db)
+	if err := migrateToDestinations(db); err != nil {
+		return err
+	}
+	return migrateToCompositeKey(db)
 }
 
 // migrateToVerdicts rewrites a database that still holds the single-column
@@ -215,6 +224,41 @@ func migrateToDestinations(db *sql.DB) error {
 	return nil
 }
 
+// migrateToCompositeKey rebuilds a decisions table whose primary key was the
+// hash alone onto (hash, dir, stem). Rows come across unchanged — the old key
+// guaranteed one row per hash, so no two can collide under the wider key.
+func migrateToCompositeKey(db *sql.DB) error {
+	var pkCols int
+	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE pk > 0`).Scan(&pkCols)
+	if err != nil {
+		return fmt.Errorf("decide: read decisions key: %w", err)
+	}
+	if pkCols != 1 {
+		return nil // fresh database, or already on the composite key
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`DROP INDEX IF EXISTS decisions_dir`,
+		`ALTER TABLE decisions RENAME TO decisions_old`,
+		schema,
+		`INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
+		 SELECT hash, dir, stem, verdict, mask, rating, destination, updated_at FROM decisions_old`,
+		`DROP TABLE decisions_old`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("decide: migrate to composite key: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // columns returns the column names of table, empty when the table does not
 // exist.
 func columns(db *sql.DB, table string) (map[string]bool, error) {
@@ -245,9 +289,7 @@ func (s *Store) Close() error {
 const upsertVerdictSQL = `
 INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
 VALUES (?, ?, ?, ?, ?, 0, '', ?)
-ON CONFLICT(hash) DO UPDATE SET
-	dir = excluded.dir,
-	stem = excluded.stem,
+ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	verdict = excluded.verdict,
 	mask = excluded.mask,
 	destination = CASE WHEN excluded.verdict = '' THEN '' ELSE decisions.destination END,
@@ -257,9 +299,7 @@ ON CONFLICT(hash) DO UPDATE SET
 const upsertRatingSQL = `
 INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
 VALUES (?, ?, ?, '', 'rj', ?, '', ?)
-ON CONFLICT(hash) DO UPDATE SET
-	dir = excluded.dir,
-	stem = excluded.stem,
+ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	rating = excluded.rating,
 	updated_at = excluded.updated_at
 `
@@ -271,9 +311,7 @@ ON CONFLICT(hash) DO UPDATE SET
 const upsertDestinationSQL = `
 INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
 VALUES (?, ?, ?, ?, 'rj', 0, ?, ?)
-ON CONFLICT(hash) DO UPDATE SET
-	dir = excluded.dir,
-	stem = excluded.stem,
+ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	verdict = CASE
 		WHEN decisions.verdict = '' AND excluded.destination <> '' THEN 'keep'
 		ELSE decisions.verdict
@@ -284,7 +322,7 @@ ON CONFLICT(hash) DO UPDATE SET
 
 // pruneSQL drops a row that now says nothing: no verdict, no rating and
 // nowhere to go.
-const pruneSQL = `DELETE FROM decisions WHERE hash = ? AND verdict = '' AND rating = 0 AND destination = ''`
+const pruneSQL = `DELETE FROM decisions WHERE hash = ? AND dir = ? AND stem = ? AND verdict = '' AND rating = 0 AND destination = ''`
 
 // SetVerdict records verdict v with mask m for the frame whose primary file
 // hashes to hash, remembering the directory and stem it was last seen at.
@@ -368,7 +406,7 @@ func applyVerdict(tx *sql.Tx, it VerdictItem) error {
 		it.Hash, it.Dir, it.Stem, string(it.Verdict), string(mask), time.Now().Unix()); err != nil {
 		return err
 	}
-	_, err := tx.Exec(pruneSQL, it.Hash)
+	_, err := tx.Exec(pruneSQL, it.Hash, it.Dir, it.Stem)
 	return err
 }
 
@@ -387,7 +425,7 @@ func applyDestination(tx *sql.Tx, it DestinationItem) error {
 		it.Hash, it.Dir, it.Stem, verdict, it.Destination, time.Now().Unix()); err != nil {
 		return err
 	}
-	_, err := tx.Exec(pruneSQL, it.Hash)
+	_, err := tx.Exec(pruneSQL, it.Hash, it.Dir, it.Stem)
 	return err
 }
 
@@ -400,7 +438,7 @@ func applyRating(tx *sql.Tx, it RatingItem) error {
 		it.Hash, it.Dir, it.Stem, it.Rating, time.Now().Unix()); err != nil {
 		return err
 	}
-	_, err := tx.Exec(pruneSQL, it.Hash)
+	_, err := tx.Exec(pruneSQL, it.Hash, it.Dir, it.Stem)
 	return err
 }
 
@@ -433,12 +471,32 @@ func (m Mask) valid() bool {
 	return false
 }
 
-// Get returns the record held for a content hash. The second result is false
-// when the frame is neither decided nor rated.
-func (s *Store) Get(hash string) (Record, bool, error) {
+// Get returns the record held for one frame: this content, at this place. The
+// second result is false when the frame is neither decided nor rated.
+func (s *Store) Get(hash, dir, stem string) (Record, bool, error) {
 	var r Record
 	err := s.db.QueryRow(
-		`SELECT verdict, mask, rating, destination FROM decisions WHERE hash = ?`, hash,
+		`SELECT verdict, mask, rating, destination FROM decisions WHERE hash = ? AND dir = ? AND stem = ?`,
+		hash, dir, stem,
+	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination)
+	if err == sql.ErrNoRows {
+		return Record{}, false, nil
+	}
+	if err != nil {
+		return Record{}, false, err
+	}
+	return r, true, nil
+}
+
+// GetAny returns the newest record for a content hash, wherever the frame was
+// seen. It exists for the catalogue's overlay callbacks, which are keyed on
+// the hash alone; anything that knows which file it is asking about should use
+// Get, where twins cannot answer for each other.
+func (s *Store) GetAny(hash string) (Record, bool, error) {
+	var r Record
+	err := s.db.QueryRow(
+		`SELECT verdict, mask, rating, destination FROM decisions
+		 WHERE hash = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1`, hash,
 	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination)
 	if err == sql.ErrNoRows {
 		return Record{}, false, nil
