@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tomaszcichy9825/culler/internal/catalog"
 	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/decide"
 	"github.com/tomaszcichy9825/culler/internal/exif"
@@ -652,7 +653,7 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	// routed frame's destination is cleared once the copy has landed.
 	var cleared []decide.VerdictItem
 	var routed []decide.DestinationItem
-	var pruned []string
+	var pruned []catalog.FrameKey
 	for _, it := range items {
 		done := true
 		removed := false
@@ -678,7 +679,7 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 			})
 		}
 		if removed {
-			pruned = append(pruned, it.hash)
+			pruned = append(pruned, catalog.FrameKey{Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem})
 		}
 	}
 

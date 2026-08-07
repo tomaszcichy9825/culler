@@ -152,31 +152,31 @@ func (s *Store) dirTotals(dir string) ([]dirTotal, error) {
 	return out, rows.Err()
 }
 
-// HashesUnder is the identity of every frame at or under dir.
+// KeysUnder is the identity of every frame at or under dir.
 //
 // It is how a caller asks the decision store what is still undecided in a
 // folder without the catalogue having to know what a decision is. The cost is
 // one row per frame, so it belongs behind something the user did — expanding a
 // node — rather than in a redraw.
-func (s *Store) HashesUnder(dir string) ([]string, error) {
+func (s *Store) KeysUnder(dir string) ([]FrameKey, error) {
 	clean, err := cleanRoot(dir)
 	if err != nil {
 		return nil, err
 	}
 	where, args := underRoot(clean)
-	rows, err := s.db.Query(`SELECT hash FROM frames WHERE `+where, args...)
+	rows, err := s.db.Query(`SELECT hash, dir, stem FROM frames WHERE `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: read frames under %s: %w", clean, err)
 	}
 	defer rows.Close()
 
-	out := []string{}
+	out := []FrameKey{}
 	for rows.Next() {
-		var hash string
-		if err := rows.Scan(&hash); err != nil {
+		var k FrameKey
+		if err := rows.Scan(&k.Hash, &k.Dir, &k.Stem); err != nil {
 			return nil, err
 		}
-		out = append(out, hash)
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }

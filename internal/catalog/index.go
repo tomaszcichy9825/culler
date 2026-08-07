@@ -64,7 +64,7 @@ type IndexOptions struct {
 	// Lookup returns the verdict and rating already recorded for a frame, so
 	// the catalogue can show what was decided without owning the decisions.
 	// Nil leaves every frame unjudged.
-	Lookup func(hash string) (verdict string, rating int)
+	Lookup func(hash, dir, stem string) (verdict string, rating int)
 
 	// Progress is called after each directory and once more at the end. It
 	// runs on the indexing goroutine, so it must not block for long.
@@ -279,9 +279,7 @@ INSERT INTO frames
 	(hash, dir, stem, kind, shot, raw_path, jpeg_path, raw_bytes, jpeg_bytes,
 	 raw_mtime, jpeg_mtime, rating, verdict, indexed_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(hash) DO UPDATE SET
-	dir = excluded.dir,
-	stem = excluded.stem,
+ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	kind = excluded.kind,
 	shot = excluded.shot,
 	raw_path = excluded.raw_path,
@@ -363,7 +361,7 @@ func (s *Store) dirState(dir string) (map[string]rowState, error) {
 // and drops any row the scan did not find. Frames whose files still match what
 // was recorded are neither hashed nor rewritten; when only their judgement has
 // moved, the judgement alone is written.
-func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, lookup func(string) (string, int)) (Stats, error) {
+func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, lookup func(hash, dir, stem string) (string, int)) (Stats, error) {
 	held, err := s.dirState(dir)
 	if err != nil {
 		return Stats{}, err
@@ -397,7 +395,7 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 	defer tx.Rollback()
 
 	var stats Stats
-	kept := make([]string, 0, len(groups))
+	kept := make([]FrameKey, 0, len(groups))
 	rewritten := make([]bool, len(groups))
 	for _, at := range staleAt {
 		rewritten[at] = true
@@ -412,7 +410,7 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 		}
 		verdict, rating := "", 0
 		if lookup != nil {
-			verdict, rating = lookup(hash)
+			verdict, rating = lookup(hash, g.Dir, g.Stem)
 		}
 		if verdict != VerdictKeep && verdict != VerdictCut {
 			verdict = ""
@@ -420,7 +418,7 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 		if rating < 0 {
 			rating = 0
 		}
-		kept = append(kept, hash)
+		kept = append(kept, FrameKey{Hash: hash, Dir: g.Dir, Stem: g.Stem})
 		stats.Frames++
 
 		if !rewritten[i] {
@@ -429,8 +427,8 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 			row := held[primaryPath(states[i][0], states[i][1])]
 			if row.verdict != verdict || row.rating != rating {
 				if _, err := tx.Exec(
-					`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ?`,
-					verdict, rating, hash); err != nil {
+					`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ? AND dir = ? AND stem = ?`,
+					verdict, rating, hash, g.Dir, g.Stem); err != nil {
 					return stats, fmt.Errorf("catalog: refresh %s: %w", g.Stem, err)
 				}
 			}
@@ -466,9 +464,9 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 	return stats, tx.Commit()
 }
 
-// pruneDir drops every row filed under dir except the hashes given, and
+// pruneDir drops every row filed under dir except the frames given, and
 // returns how many it dropped.
-func (s *Store) pruneDir(dir string, keep []string) (int, error) {
+func (s *Store) pruneDir(dir string, keep []FrameKey) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -481,10 +479,12 @@ func (s *Store) pruneDir(dir string, keep []string) (int, error) {
 	return removed, tx.Commit()
 }
 
-// pruneDirTx works out the doomed rows in Go and deletes them in batches,
-// rather than binding the whole keep list into one NOT IN: a flat folder can
-// hold more frames than the driver has parameter slots in a statement.
-func pruneDirTx(tx *sql.Tx, dir string, keep []string) (int, error) {
+// pruneDirTx works out the doomed rows in Go and deletes them one key at a
+// time inside the transaction, rather than binding the whole keep list into
+// one NOT IN: a flat folder can hold more frames than the driver has
+// parameter slots in a statement. Rows are told apart by (hash, stem) within
+// the dir, so one of two same-content twins can be pruned without the other.
+func pruneDirTx(tx *sql.Tx, dir string, keep []FrameKey) (int, error) {
 	if len(keep) == 0 {
 		res, err := tx.Exec(`DELETE FROM frames WHERE dir = ?`, dir)
 		if err != nil {
@@ -494,23 +494,24 @@ func pruneDirTx(tx *sql.Tx, dir string, keep []string) (int, error) {
 		return int(n), err
 	}
 
-	keepSet := make(map[string]bool, len(keep))
-	for _, h := range keep {
-		keepSet[h] = true
+	type rowKey struct{ hash, stem string }
+	keepSet := make(map[rowKey]bool, len(keep))
+	for _, k := range keep {
+		keepSet[rowKey{k.Hash, k.Stem}] = true
 	}
-	rows, err := tx.Query(`SELECT hash FROM frames WHERE dir = ?`, dir)
+	rows, err := tx.Query(`SELECT hash, stem FROM frames WHERE dir = ?`, dir)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: prune %s: %w", dir, err)
 	}
-	var doomed []string
+	var doomed []rowKey
 	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
+		var k rowKey
+		if err := rows.Scan(&k.hash, &k.stem); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		if !keepSet[h] {
-			doomed = append(doomed, h)
+		if !keepSet[k] {
+			doomed = append(doomed, k)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -521,14 +522,10 @@ func pruneDirTx(tx *sql.Tx, dir string, keep []string) (int, error) {
 	// can execute on it while a result set is still open.
 	rows.Close()
 
-	for start := 0; start < len(doomed); start += chunk {
-		batch := doomed[start:min(start+chunk, len(doomed))]
-		args := make([]any, len(batch))
-		for i, h := range batch {
-			args[i] = h
-		}
-		query := `DELETE FROM frames WHERE hash IN (?` + strings.Repeat(`,?`, len(batch)-1) + `)`
-		if _, err := tx.Exec(query, args...); err != nil {
+	for _, k := range doomed {
+		if _, err := tx.Exec(
+			`DELETE FROM frames WHERE dir = ? AND hash = ? AND stem = ?`,
+			dir, k.hash, k.stem); err != nil {
 			return 0, fmt.Errorf("catalog: prune %s: %w", dir, err)
 		}
 	}

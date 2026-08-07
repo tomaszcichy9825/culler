@@ -488,25 +488,6 @@ func (s *Store) Get(hash, dir, stem string) (Record, bool, error) {
 	return r, true, nil
 }
 
-// GetAny returns the newest record for a content hash, wherever the frame was
-// seen. It exists for the catalogue's overlay callbacks, which are keyed on
-// the hash alone; anything that knows which file it is asking about should use
-// Get, where twins cannot answer for each other.
-func (s *Store) GetAny(hash string) (Record, bool, error) {
-	var r Record
-	err := s.db.QueryRow(
-		`SELECT verdict, mask, rating, destination FROM decisions
-		 WHERE hash = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1`, hash,
-	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination)
-	if err == sql.ErrNoRows {
-		return Record{}, false, nil
-	}
-	if err != nil {
-		return Record{}, false, err
-	}
-	return r, true, nil
-}
-
 // ForDir returns stem to record for every decided or rated frame last seen in
 // dir. This is the one query the grid runs when a folder is opened.
 func (s *Store) ForDir(dir string) (map[string]Record, error) {

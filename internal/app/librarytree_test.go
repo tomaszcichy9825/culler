@@ -332,10 +332,12 @@ func TestTreeLeavesTheUndecidedCountUnknownOnAHugeFolder(t *testing.T) {
 }
 
 func TestPruneAppliedForgetsTheFramesAnApplyTrashed(t *testing.T) {
-	s, _ := catalogued(t)
+	s, root := catalogued(t)
 	hash := mark(t, s, "DSCF0001", decide.Cut, 0)
 
-	if err := s.PruneApplied([]string{hash}); err != nil {
+	if err := s.PruneApplied([]catalog.FrameKey{
+		{Hash: hash, Dir: filepath.Join(root, "2026-05"), Stem: "DSCF0001"},
+	}); err != nil {
 		t.Fatalf("PruneApplied: %v", err)
 	}
 	res, err := s.Search("", FacetsDTO{}, 0, 0)
@@ -359,7 +361,7 @@ func TestPruneAppliedDoesNotCreateACatalogueThatWasNeverOpened(t *testing.T) {
 	s := NewLibraryIndexService(testApp(t))
 	t.Cleanup(func() { s.Close() })
 
-	if err := s.PruneApplied([]string{"a hash"}); err != nil {
+	if err := s.PruneApplied([]catalog.FrameKey{{Hash: "a hash", Dir: "/nowhere", Stem: "NOPE"}}); err != nil {
 		t.Fatalf("PruneApplied without a catalogue: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(s.app.dataDir, catalogFile)); !os.IsNotExist(err) {

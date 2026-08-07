@@ -37,7 +37,7 @@ func searchTree(t *testing.T) (*Store, string, string) {
 	// The lookup is keyed on the hash, which the test does not know, so it
 	// resolves through the path the hash was taken from instead.
 	byHash := map[string]string{}
-	opts := IndexOptions{Lookup: func(hash string) (string, int) {
+	opts := IndexOptions{Lookup: func(hash, dir, stem string) (string, int) {
 		m := marks[byHash[hash]]
 		return m.verdict, m.rating
 	}}

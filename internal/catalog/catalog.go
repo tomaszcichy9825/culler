@@ -40,7 +40,7 @@ const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS frames (
-	hash       TEXT PRIMARY KEY,
+	hash       TEXT NOT NULL,
 	dir        TEXT NOT NULL,
 	stem       TEXT NOT NULL,
 	kind       TEXT NOT NULL,
@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS frames (
 	jpeg_mtime INTEGER NOT NULL DEFAULT 0,
 	rating     INTEGER NOT NULL,
 	verdict    TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
-	indexed_at INTEGER NOT NULL
+	indexed_at INTEGER NOT NULL,
+	PRIMARY KEY (hash, dir, stem)
 );
 CREATE INDEX IF NOT EXISTS frames_dir  ON frames(dir);
 CREATE INDEX IF NOT EXISTS frames_shot ON frames(shot);
@@ -67,9 +68,9 @@ CREATE TABLE IF NOT EXISTS roots (
 
 // Store is the catalogue database.
 //
-// Frames are keyed on the same content hash the decision store uses, so a
-// frame keeps its row through a rename and loses it on an edit. One
-// consequence worth knowing: a file copied into two indexed roots is one row,
+// Frames are keyed on (hash, dir, stem), the same identity the decision
+// store uses: the content and the place it was seen. A file copied into two
+// indexed roots is two rows,
 // filed under whichever root indexed it last.
 type Store struct {
 	db *sql.DB
@@ -189,6 +190,9 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("catalog: add %s: %w", name, err)
 		}
 	}
+	if err := migrateFramesToCompositeKey(db); err != nil {
+		return err
+	}
 	if err := collapseNestedRoots(db); err != nil {
 		return err
 	}
@@ -200,6 +204,43 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// migrateFramesToCompositeKey rebuilds a frames table whose primary key was
+// the hash alone onto (hash, dir, stem). Rows come across unchanged — the old
+// key guaranteed one row per hash, so no two can collide under the wider key.
+func migrateFramesToCompositeKey(db *sql.DB) error {
+	var pkCols int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('frames') WHERE pk > 0`).Scan(&pkCols); err != nil {
+		return fmt.Errorf("catalog: read frames key: %w", err)
+	}
+	if pkCols != 1 {
+		return nil // fresh database, or already on the composite key
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`DROP INDEX IF EXISTS frames_dir`,
+		`DROP INDEX IF EXISTS frames_shot`,
+		`ALTER TABLE frames RENAME TO frames_old`,
+		schema,
+		`INSERT INTO frames (hash, dir, stem, kind, shot, raw_path, jpeg_path, raw_bytes, jpeg_bytes,
+		                     raw_mtime, jpeg_mtime, rating, verdict, indexed_at)
+		 SELECT hash, dir, stem, kind, shot, raw_path, jpeg_path, raw_bytes, jpeg_bytes,
+		        raw_mtime, jpeg_mtime, rating, verdict, indexed_at FROM frames_old`,
+		`DROP TABLE frames_old`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("catalog: migrate frames to composite key: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // collapseNestedRoots forgets any root that another root already contains.
@@ -261,14 +302,24 @@ func (s *Store) Close() error {
 // one statement that trips it.
 const chunk = 500
 
-// RemoveByHash forgets these frames. Hashes the catalogue does not hold are
+// FrameKey names one catalogued frame: the content and the place it was seen,
+// which is the identity rows are keyed on.
+type FrameKey struct {
+	Hash string
+	Dir  string
+	Stem string
+}
+
+// RemoveFrames forgets these frames. Keys the catalogue does not hold are
 // ignored, so a caller does not have to know what was catalogued.
 //
 // This is what an apply calls once the files are in the trash. Waiting for the
 // next index pass would leave rows describing files that are gone, and a
-// search result the user cannot open is worse than one that is missing.
-func (s *Store) RemoveByHash(hashes []string) error {
-	if len(hashes) == 0 {
+// search result the user cannot open is worse than one that is missing. The
+// removal is scoped to the exact frame — a byte-identical twin in another
+// folder keeps its row, because its files never moved.
+func (s *Store) RemoveFrames(keys []FrameKey) error {
+	if len(keys) == 0 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -277,23 +328,22 @@ func (s *Store) RemoveByHash(hashes []string) error {
 	}
 	defer tx.Rollback()
 
-	for start := 0; start < len(hashes); start += chunk {
-		batch := hashes[start:min(start+chunk, len(hashes))]
-		args := make([]any, len(batch))
-		for i, h := range batch {
-			args[i] = h
-		}
-		query := `DELETE FROM frames WHERE hash IN (?` + strings.Repeat(`,?`, len(batch)-1) + `)`
-		if _, err := tx.Exec(query, args...); err != nil {
-			return fmt.Errorf("catalog: forget %d frames: %w", len(batch), err)
+	for _, k := range keys {
+		if _, err := tx.Exec(
+			`DELETE FROM frames WHERE hash = ? AND dir = ? AND stem = ?`,
+			k.Hash, k.Dir, k.Stem); err != nil {
+			return fmt.Errorf("catalog: forget %s: %w", k.Stem, err)
 		}
 	}
 	return tx.Commit()
 }
 
-// Decision is one frame's judgement as the decision store currently holds it.
+// Decision is one frame's judgement as the decision store currently holds it,
+// named by the frame it belongs to.
 type Decision struct {
 	Hash    string
+	Dir     string
+	Stem    string
 	Verdict string // "" | keep | cut
 	Rating  int
 }
@@ -329,8 +379,8 @@ func (s *Store) SetDecisions(items []Decision) error {
 			rating = 0
 		}
 		if _, err := tx.Exec(
-			`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ?`,
-			it.Verdict, rating, it.Hash); err != nil {
+			`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ? AND dir = ? AND stem = ?`,
+			it.Verdict, rating, it.Hash, it.Dir, it.Stem); err != nil {
 			return fmt.Errorf("catalog: record decision for %s: %w", it.Hash, err)
 		}
 	}
