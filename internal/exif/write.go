@@ -751,58 +751,129 @@ func formatSubSec(t time.Time) string {
 
 // --- XMP --------------------------------------------------------------------
 
-// RenderXMP builds a minimal, well-formed XMP sidecar carrying the changes. It
-// is what a RAW frame gets instead of a rewrite: the RAW itself is never
-// opened for writing, so the edit lives beside it in a file every other tool
-// already knows how to read.
-//
-// Only the fields this package writes appear. A sidecar is not a copy of the
-// frame's metadata and does not pretend to be one.
-func RenderXMP(c Changes) []byte {
-	var b strings.Builder
-	b.WriteString("<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n")
-	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="culler">` + "\n")
-	b.WriteString(`  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
-	b.WriteString(`    <rdf:Description rdf:about=""` + "\n")
-	b.WriteString(`        xmlns:dc="http://purl.org/dc/elements/1.1/"` + "\n")
-	b.WriteString(`        xmlns:exif="http://ns.adobe.com/exif/1.0/"` + "\n")
-	b.WriteString(`        xmlns:xmp="http://ns.adobe.com/xap/1.0/">` + "\n")
+// The namespaces the sidecar properties live in, and the RDF namespace whose
+// Seq and Alt containers structure two of them.
+const (
+	nsDC       = "http://purl.org/dc/elements/1.1/"
+	nsEXIF     = "http://ns.adobe.com/exif/1.0/"
+	nsXMPBasic = "http://ns.adobe.com/xap/1.0/"
+)
 
+// XMPProperty is one property of a frame's sidecar this package writes: the
+// namespace and name that identify it, and its content. The list a Changes
+// produces is the single statement of what an edit means in XMP \u2014 RenderXMP
+// serialises it into a fresh document, and internal/xmpexport splices it into
+// a sidecar that already exists, so the two can never say different things.
+type XMPProperty struct {
+	// Space is the namespace URI, Local the property name within it.
+	Space, Local string
+	// Inner renders the element's content given the prefix the target
+	// document binds the RDF namespace to \u2014 the one foreign namespace a value
+	// nests, for the Seq and Alt containers. Nil removes the property and
+	// writes nothing in its place.
+	Inner func(rdfPrefix string) string
+}
+
+// XMPProperties is the sidecar rendering of the changes: only the properties
+// this edit touches, so merging one edit into a sidecar leaves what an earlier
+// edit \u2014 or another tool \u2014 put there.
+func (c Changes) XMPProperties() []XMPProperty {
+	text := func(s string) func(string) string {
+		return func(string) string { return s }
+	}
+	var out []XMPProperty
 	if c.DateTimeOriginal != nil {
-		when := escapeXML(formatXMPTime(*c.DateTimeOriginal))
-		b.WriteString("      <exif:DateTimeOriginal>" + when + "</exif:DateTimeOriginal>\n")
-		b.WriteString("      <xmp:CreateDate>" + when + "</xmp:CreateDate>\n")
+		when := text(escapeXML(formatXMPTime(*c.DateTimeOriginal)))
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "DateTimeOriginal", Inner: when},
+			XMPProperty{Space: nsXMPBasic, Local: "CreateDate", Inner: when},
+		)
 	}
-	if c.Artist != nil && *c.Artist != "" {
-		b.WriteString("      <dc:creator>\n        <rdf:Seq>\n")
-		b.WriteString("          <rdf:li>" + escapeXML(*c.Artist) + "</rdf:li>\n")
-		b.WriteString("        </rdf:Seq>\n      </dc:creator>\n")
+	if c.Artist != nil {
+		p := XMPProperty{Space: nsDC, Local: "creator"}
+		if *c.Artist != "" {
+			name := escapeXML(*c.Artist)
+			p.Inner = func(rdf string) string {
+				return fmt.Sprintf("<%s:Seq><%s:li>%s</%s:li></%s:Seq>", rdf, rdf, name, rdf, rdf)
+			}
+		}
+		out = append(out, p)
 	}
-	if c.Copyright != nil && *c.Copyright != "" {
-		b.WriteString("      <dc:rights>\n        <rdf:Alt>\n")
-		b.WriteString(`          <rdf:li xml:lang="x-default">` + escapeXML(*c.Copyright) + "</rdf:li>\n")
-		b.WriteString("        </rdf:Alt>\n      </dc:rights>\n")
+	if c.Copyright != nil {
+		p := XMPProperty{Space: nsDC, Local: "rights"}
+		if *c.Copyright != "" {
+			rights := escapeXML(*c.Copyright)
+			p.Inner = func(rdf string) string {
+				return fmt.Sprintf(`<%s:Alt><%s:li xml:lang="x-default">%s</%s:li></%s:Alt>`, rdf, rdf, rights, rdf, rdf)
+			}
+		}
+		out = append(out, p)
 	}
-	if c.SetGPS != nil {
+	switch {
+	case c.SetGPS != nil:
 		// The sidecar is where a RAW frame's location lives: the RAW is never
 		// rewritten, so the position it should carry is written beside it in the
 		// form every other tool reads, "degrees,decimal-minutes" with the
 		// hemisphere letter.
-		b.WriteString("      <exif:GPSLatitude>" + xmpCoord(c.SetGPS.Latitude, "N", "S") + "</exif:GPSLatitude>\n")
-		b.WriteString("      <exif:GPSLongitude>" + xmpCoord(c.SetGPS.Longitude, "E", "W") + "</exif:GPSLongitude>\n")
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "GPSLatitude", Inner: text(xmpCoord(c.SetGPS.Latitude, "N", "S"))},
+			XMPProperty{Space: nsEXIF, Local: "GPSLongitude", Inner: text(xmpCoord(c.SetGPS.Longitude, "E", "W"))},
+		)
 		if c.SetGPS.HasAltitude {
 			alt, ref := c.SetGPS.Altitude, "0"
 			if alt < 0 {
 				alt, ref = -alt, "1"
 			}
-			b.WriteString(fmt.Sprintf("      <exif:GPSAltitude>%d/100</exif:GPSAltitude>\n", int64(math.Round(alt*100))))
-			b.WriteString("      <exif:GPSAltitudeRef>" + ref + "</exif:GPSAltitudeRef>\n")
+			out = append(out,
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitude", Inner: text(fmt.Sprintf("%d/100", int64(math.Round(alt*100))))},
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitudeRef", Inner: text(ref)},
+			)
+		} else {
+			// No altitude with the new position, so any altitude the sidecar
+			// already carried must go \u2014 a leftover would silently qualify the
+			// new coordinates.
+			out = append(out,
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitude"},
+				XMPProperty{Space: nsEXIF, Local: "GPSAltitudeRef"},
+			)
 		}
-	} else if c.StripGPS {
+	case c.StripGPS:
 		// A sidecar cannot remove what is inside the RAW, so it records the
 		// intent as an empty position rather than claiming the file was edited.
-		b.WriteString("      <exif:GPSLatitude></exif:GPSLatitude>\n")
-		b.WriteString("      <exif:GPSLongitude></exif:GPSLongitude>\n")
+		out = append(out,
+			XMPProperty{Space: nsEXIF, Local: "GPSLatitude", Inner: text("")},
+			XMPProperty{Space: nsEXIF, Local: "GPSLongitude", Inner: text("")},
+		)
+	}
+	return out
+}
+
+// RenderXMP builds a minimal, well-formed XMP sidecar carrying the changes. It
+// is what a RAW frame gets instead of a rewrite when no sidecar exists yet:
+// the RAW itself is never opened for writing, so the edit lives beside it in a
+// file every other tool already knows how to read. A sidecar that does exist
+// is merged into instead \u2014 see internal/xmpexport.
+//
+// Only the fields this package writes appear. A sidecar is not a copy of the
+// frame's metadata and does not pretend to be one.
+func RenderXMP(c Changes) []byte {
+	prefixes := map[string]string{nsDC: "dc", nsEXIF: "exif", nsXMPBasic: "xmp"}
+
+	var b strings.Builder
+	b.WriteString("<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n")
+	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="culler">` + "\n")
+	b.WriteString(`  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
+	b.WriteString(`    <rdf:Description rdf:about=""` + "\n")
+	b.WriteString(`        xmlns:dc="` + nsDC + `"` + "\n")
+	b.WriteString(`        xmlns:exif="` + nsEXIF + `"` + "\n")
+	b.WriteString(`        xmlns:xmp="` + nsXMPBasic + `">` + "\n")
+
+	for _, p := range c.XMPProperties() {
+		if p.Inner == nil {
+			continue // a removal has nothing to remove from a fresh document
+		}
+		name := prefixes[p.Space] + ":" + p.Local
+		b.WriteString("      <" + name + ">" + p.Inner("rdf") + "</" + name + ">\n")
 	}
 
 	b.WriteString("    </rdf:Description>\n  </rdf:RDF>\n</x:xmpmeta>\n")

@@ -386,6 +386,75 @@ func TestExifSetGPSWritesSidecarForRAW(t *testing.T) {
 	}
 }
 
+// A sidecar that already exists belongs to whoever wrote it. An edit merges
+// into it — Lightroom's rating, its keywords, an earlier culler edit — rather
+// than replacing the file with a fresh document that knows none of them.
+func TestExifApplyMergesIntoAnExistingSidecar(t *testing.T) {
+	a := testApp(t)
+	dir := frames(t)
+	raf := filepath.Join(dir, "DSCF0002.RAF")
+	const foreign = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 6.0">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:Rating>4</xmp:Rating>
+      <dc:subject>
+        <rdf:Bag>
+          <rdf:li>gulls</rdf:li>
+        </rdf:Bag>
+      </dc:subject>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+`
+	if err := os.WriteFile(raf+".xmp", []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{
+		Path:   raf,
+		SetGPS: &GPSCoordDTO{Latitude: 51.5066667, Longitude: -0.1275},
+	}}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	sidecar, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<xmp:Rating>4</xmp:Rating>", "<rdf:li>gulls</rdf:li>", "<exif:GPSLatitude>"} {
+		if !bytes.Contains(sidecar, []byte(want)) {
+			t.Errorf("merged sidecar is missing %q:\n%s", want, sidecar)
+		}
+	}
+}
+
+func TestExifApplySuccessiveEditsAccumulateInTheSidecar(t *testing.T) {
+	a := testApp(t)
+	raf := filepath.Join(frames(t), "DSCF0002.RAF")
+
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{Path: raf, Artist: str("Tomasz Cichy")}}); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	if _, err := NewExifService(a).Apply([]ExifEditDTO{{Path: raf, Copyright: str("© 2026")}}); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+
+	sidecar, err := os.ReadFile(raf + ".xmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(sidecar, []byte("Tomasz Cichy")) {
+		t.Errorf("the second edit destroyed the first:\n%s", sidecar)
+	}
+	if !bytes.Contains(sidecar, []byte("© 2026")) {
+		t.Errorf("the second edit did not land:\n%s", sidecar)
+	}
+}
+
 func TestExifSetGPSRejectsAnImpossibleLocation(t *testing.T) {
 	jpg := filepath.Join(frames(t), "DSCF0001.JPG")
 	_, err := NewExifService(testApp(t)).Apply([]ExifEditDTO{{

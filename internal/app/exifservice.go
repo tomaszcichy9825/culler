@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/ops"
 	"github.com/tomaszcichy9825/culler/internal/scan"
+	"github.com/tomaszcichy9825/culler/internal/xmpexport"
 )
 
 // Where the metadata writer keeps its two working directories, both inside the
@@ -371,10 +373,22 @@ type target struct {
 	skip   string // why this frame is being left alone, if it is
 }
 
-// render produces the bytes that will replace the target's file.
+// render produces the bytes that will replace the target's file. A RAW
+// frame's sidecar may already exist — written by Lightroom, by the XMP
+// export, or by an earlier edit here — and it belongs to whoever wrote it:
+// the edit is merged into it, and a sidecar that cannot be parsed refuses the
+// frame rather than being written over. Only a frame with no sidecar at all
+// gets a fresh document.
 func (t target) render() ([]byte, error) {
 	if t.raw {
-		return exif.RenderXMP(t.change), nil
+		existing, err := os.ReadFile(t.write)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return exif.RenderXMP(t.change), nil
+		case err != nil:
+			return nil, err
+		}
+		return xmpexport.MergeChanges(existing, t.change)
 	}
 	data, err := os.ReadFile(t.path)
 	if err != nil {
