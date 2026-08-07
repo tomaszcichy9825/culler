@@ -343,6 +343,97 @@ func TestReindexKeepsTheRowOfAnUnreadableFile(t *testing.T) {
 	}
 }
 
+// unreadable makes path unreadable and skips the test where that cannot be
+// arranged — Windows, or a run as root, where chmod does not bite.
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	if f, err := os.Open(path); err == nil {
+		f.Close()
+		t.Skip("cannot make the file unreadable on this platform")
+	}
+}
+
+// A kept unreadable row whose file has demonstrably changed — the scan still
+// sees its size and mtime, and they no longer match the row — is carrying a
+// verdict over bytes nobody has judged. The row stays, because the frame is
+// still there; the verdict goes, because what it judged is not.
+func TestReindexClearsTheVerdictOfAnUnreadableFrameWhoseContentMoved(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "DSCF0001", 100, 0, shotAt(9, 0))
+	lookup := func(hash, dir, stem string) (string, int) { return VerdictKeep, 3 }
+	if _, err := s.Index(root, IndexOptions{Lookup: lookup}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	// Rewritten — new size, new mtime — and then unreadable.
+	writeFrame(t, root, "DSCF0001", 150, 0, shotAt(9, 30))
+	unreadable(t, filepath.Join(root, "DSCF0001.RAF"))
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Unreadable != 1 {
+		t.Fatalf("stats report %d unreadable frames, want 1", stats.Unreadable)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("catalogue holds %d frames, want the kept unreadable one", res.Total)
+	}
+	if got := res.Frames[0].Verdict; got != "" {
+		t.Errorf("the row still carries verdict %q over content that changed since it was judged", got)
+	}
+	if got := res.Frames[0].Rating; got != 3 {
+		t.Errorf("the rating went with the verdict: got %d, want 3 — stars judge the photograph, not the cull", got)
+	}
+}
+
+// The other side of the same line: an unreadable frame whose size and mtime
+// still match the row was only unreadable, not changed. Its verdict stands.
+func TestReindexKeepsTheVerdictOfAnUnreadableFrameWhoseContentDidNot(t *testing.T) {
+	s := openStore(t)
+	root := t.TempDir()
+	writeFrame(t, root, "DSCF0001", 100, 80, shotAt(9, 0))
+	lookup := func(hash, dir, stem string) (string, int) { return VerdictKeep, 3 }
+	if _, err := s.Index(root, IndexOptions{Lookup: lookup}); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	// A renamed RAW makes the frame stale — its recorded path moved — without
+	// touching a byte or a timestamp. The primary JPEG is then unreadable, so
+	// the pass cannot re-hash the frame, but nothing about its content moved.
+	if err := os.Rename(filepath.Join(root, "DSCF0001.RAF"), filepath.Join(root, "DSCF0001.DNG")); err != nil {
+		t.Fatal(err)
+	}
+	unreadable(t, filepath.Join(root, "DSCF0001.JPG"))
+
+	stats, err := s.Index(root, IndexOptions{})
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if stats.Unreadable != 1 {
+		t.Fatalf("stats report %d unreadable frames, want 1", stats.Unreadable)
+	}
+	res, err := s.Search("", Facets{}, Page{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("catalogue holds %d frames, want the kept unreadable one", res.Total)
+	}
+	if got := res.Frames[0].Verdict; got != VerdictKeep {
+		t.Errorf("verdict %q, want %q kept: the files' bytes and times still match the row", got, VerdictKeep)
+	}
+}
+
 // WalkDir does not follow a symlinked directory, while UpsertDir happily
 // catalogues one — coverage is lexical. Without the two agreeing, a symlinked
 // folder flip-flops: catalogued when the user opens it, forgotten by the next

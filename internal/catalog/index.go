@@ -351,6 +351,14 @@ func primaryPath(raw, jpeg fileState) string {
 	return raw.path
 }
 
+// sameRecordedContent reports whether both files' sizes and modification
+// times still match what the row recorded. Paths are left out on purpose: a
+// rename moves no bytes, and it is the bytes a verdict judged.
+func sameRecordedContent(row rowState, raw, jpeg fileState) bool {
+	return row.raw.bytes == raw.bytes && row.raw.mtime == raw.mtime &&
+		row.jpeg.bytes == jpeg.bytes && row.jpeg.mtime == jpeg.mtime
+}
+
 // dirState reads back what the catalogue holds for one directory, keyed on the
 // path each frame is identified by. One query per directory, and the rows are
 // bounded by what fits in a folder.
@@ -434,6 +442,20 @@ func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, look
 			if row, ok := held[primaryPath(states[i][0], states[i][1])]; ok && row.hash != "" {
 				kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
 				stats.Frames++
+				// The row's verdict judged the bytes the last pass read. When
+				// the scan's size or mtime no longer matches the row, those
+				// bytes have moved, and an unreadable pass cannot judge the
+				// new ones: the row stays — presence is a fact — but the
+				// verdict goes rather than sentencing content nobody has seen.
+				// A frame whose recorded sizes and times still match was only
+				// unreadable, not changed, and keeps its verdict.
+				if row.verdict != "" && !sameRecordedContent(row, states[i][0], states[i][1]) {
+					if _, err := tx.Exec(
+						`UPDATE frames SET verdict = '' WHERE hash = ? AND dir = ? AND stem = ?`,
+						row.hash, g.Dir, g.Stem); err != nil {
+						return stats, fmt.Errorf("catalog: clear stale verdict for %s: %w", g.Stem, err)
+					}
+				}
 			}
 			continue
 		}
