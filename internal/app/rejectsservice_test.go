@@ -285,7 +285,7 @@ func TestUndoAfterEmptyRejectsSkipsToThePreviousBatch(t *testing.T) {
 		t.Fatalf("Empty: %v", err)
 	}
 
-	if err := NewApplyService(a).Undo(); err != nil {
+	if err := NewApplyService(a, nil).Undo(); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	if !exists(t, trashed) {
@@ -327,7 +327,7 @@ func TestExecutorRefusesToUndoADestroy(t *testing.T) {
 	batch := journal.Batch{ID: "b", Description: emptyRejectsDescription, Actions: []journal.Action{
 		{Verb: string(ops.VerbDestroy), Src: "/card/_Rejected/x.RAF", Outcome: journal.OutcomeOK},
 	}}
-	err = (&ops.Executor{Journal: jrnl}).Undo(batch)
+	_, err = (&ops.Executor{Journal: jrnl}).Undo(batch)
 	if err == nil {
 		t.Fatal("undo of a destroy batch succeeded")
 	}
@@ -443,5 +443,33 @@ func TestEmptyRecordsAFileItCouldNotRemove(t *testing.T) {
 	}
 	if !exists(t, rejected) {
 		t.Error("the rejected folder was removed while it still holds a file")
+	}
+}
+
+// Emptying is the one unrecoverable command, so two runs must never overlap:
+// the second would survey files the first is mid-way through destroying. Like
+// Import and Reindex, one runs at a time and the second is told so.
+func TestEmptyRefusesToRunTwiceAtOnce(t *testing.T) {
+	a := testApp(t)
+	dir := t.TempDir()
+	putRejects(t, dir, map[string]string{"A.RAF": "raw", "B.JPG": "jpeg", "C.RAF": "raw"})
+
+	svc := NewRejectsService(a)
+	var inner error
+	tried := false
+	svc.onProgress = func(RejectsProgress) {
+		if !tried {
+			tried = true
+			_, inner = svc.Empty([]string{dir})
+		}
+	}
+	if _, err := svc.Empty([]string{dir}); err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	if !tried {
+		t.Fatal("the progress hook never fired, so the guard was never exercised")
+	}
+	if inner == nil {
+		t.Fatal("a second empty ran while the first was destroying files")
 	}
 }

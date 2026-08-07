@@ -56,6 +56,28 @@ type Action struct {
 	Displaced string `json:"displaced,omitempty"`
 }
 
+// ClearedDecision is the app-level record of one decision a batch consumed:
+// the verdict a cut spent when its files left, or the routing a copy spent
+// when it landed. It exists so an undo that puts the files back can put the
+// decision back with them. The journal itself does not interpret it — it is
+// carried on the batch line and read back by the code that wrote it.
+type ClearedDecision struct {
+	Hash string `json:"hash"`
+	Dir  string `json:"dir"`
+	Stem string `json:"stem"`
+	// Verdict and Mask are what the frame carried before the batch cleared
+	// it; empty when only the routing was consumed.
+	Verdict string `json:"verdict,omitempty"`
+	Mask    string `json:"mask,omitempty"`
+	// Destination is the routing the batch consumed, empty when the frame had
+	// none.
+	Destination string `json:"destination,omitempty"`
+	// Files is the source files whose successful actions the clearing rested
+	// on, so undo can tell whether the frame's files all came back before
+	// restoring the decision over them.
+	Files []string `json:"files,omitempty"`
+}
+
 // Batch is the journal record for one applied operation.
 type Batch struct {
 	ID          string    `json:"id"`
@@ -63,6 +85,10 @@ type Batch struct {
 	Description string    `json:"description"`
 	Actions     []Action  `json:"actions"`
 	UndoOf      string    `json:"undo_of,omitempty"` // batch ID this batch reverses
+	// Cleared is what the batch consumed from the decision store. Absent in
+	// journals written before it existed; undo then restores nothing, which is
+	// the behaviour those journals always had.
+	Cleared []ClearedDecision `json:"cleared,omitempty"`
 }
 
 // Journal is an append-only JSON-lines file, one line per batch.

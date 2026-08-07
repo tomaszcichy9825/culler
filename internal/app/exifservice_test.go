@@ -281,7 +281,7 @@ func TestExifApplyThenUndoRestoresByteIdenticalFiles(t *testing.T) {
 		t.Error("the image data did not survive the write")
 	}
 
-	if err := NewApplyService(a).Undo(); err != nil {
+	if err := NewApplyService(a, nil).Undo(); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	restored, err := os.ReadFile(jpg)
@@ -321,7 +321,7 @@ func TestExifApplyWritesASidecarForARAWFrame(t *testing.T) {
 		t.Error("the RAW itself was modified; it must never be")
 	}
 
-	if err := NewApplyService(a).Undo(); err != nil {
+	if err := NewApplyService(a, nil).Undo(); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	if _, err := os.Lstat(raf + ".xmp"); err == nil {
@@ -357,7 +357,7 @@ func TestExifSetGPSWritesLocationToJPEGAndUndoes(t *testing.T) {
 		t.Errorf("coordinates = %.6f, %.6f", f.GPS.Latitude, f.GPS.Longitude)
 	}
 
-	if err := NewApplyService(a).Undo(); err != nil {
+	if err := NewApplyService(a, nil).Undo(); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	restored, err := os.ReadFile(jpg)

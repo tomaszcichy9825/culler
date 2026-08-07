@@ -55,7 +55,10 @@ type recycleBin struct {
 // so the recovered path is empty and the journal cannot undo the deletion:
 // recovery is the Recycle Bin's own restore. Undo of a recycled file is
 // therefore unsupported on Windows, and _Rejected mode is the alternative for
-// users who want in-app undo.
+// users who want in-app undo. The op engine understands the empty destination:
+// undo reports such files as restorable only from the Recycle Bin itself, and
+// the undo stack steps over batches made entirely of them rather than jamming
+// on a batch nothing can reverse.
 func (r recycleBin) Trash(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {

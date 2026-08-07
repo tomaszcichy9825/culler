@@ -1,9 +1,11 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -273,5 +275,46 @@ func TestHashGroupsProgressReachesTheTotalWithFilelessGroups(t *testing.T) {
 	}
 	if last != len(groups) {
 		t.Errorf("final progress = %d, want %d — the bar would stick below the total", last, len(groups))
+	}
+}
+
+// Progress over a folder must only ever climb: the workers hash in parallel,
+// and a report from a slower worker landing after a faster one's would rewind
+// the bar in front of the user.
+func TestHashGroupsReportsMonotonicProgress(t *testing.T) {
+	dir := t.TempDir()
+	groups := make([]scan.PhotoGroup, 0, 128)
+	for i := 0; i < 128; i++ {
+		stem := fmt.Sprintf("IMG_%04d", i)
+		path := filepath.Join(dir, stem+".JPG")
+		if err := os.WriteFile(path, []byte("frame "+stem), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, scan.PhotoGroup{
+			Dir:  dir,
+			Stem: stem,
+			Jpeg: &scan.FileRef{Path: path},
+		})
+	}
+
+	var mu sync.Mutex
+	var got []int
+	hashes := hashGroups(groups, 8, func(done int) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, done)
+	})
+	for i, h := range hashes {
+		if h == "" {
+			t.Fatalf("frame %d was not hashed", i)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i] < got[i-1] {
+			t.Fatalf("progress went backwards: %v", got)
+		}
+	}
+	if len(got) == 0 || got[len(got)-1] != len(groups) {
+		t.Fatalf("final report %v, want it to end at %d", got, len(groups))
 	}
 }

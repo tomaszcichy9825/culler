@@ -28,7 +28,7 @@ func TestApplyLeavesAnUndecidedTwinAlone(t *testing.T) {
 	dirA, dirB := twinFolders(t)
 	library := NewLibraryService(app)
 	decisions := NewDecisionService(app)
-	apply := NewApplyService(app)
+	apply := NewApplyService(app, nil)
 
 	folderA, err := library.OpenFolder(dirA)
 	if err != nil {

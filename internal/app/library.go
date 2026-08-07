@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
@@ -220,13 +219,20 @@ func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) 
 	hashes := make([]string, len(groups))
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
-	var done atomic.Int64
+	var mu sync.Mutex
+	done := 0
 	// report counts one frame as finished, readable or not. A group with no
 	// file still has to move the counter, or the final report — done equal to
-	// the total — never fires and the bar sticks below the top.
+	// the total — never fires and the bar sticks below the top. The count and
+	// the emission share one lock so reports can never run backwards: with an
+	// unserialised progress(n), a slower worker's report landing late would
+	// rewind the bar.
 	report := func() {
-		if n := done.Add(1); progress != nil && (n%16 == 0 || int(n) == len(groups)) {
-			progress(int(n))
+		mu.Lock()
+		defer mu.Unlock()
+		done++
+		if progress != nil && (done%16 == 0 || done == len(groups)) {
+			progress(done)
 		}
 	}
 	for i, g := range groups {

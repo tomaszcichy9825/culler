@@ -3,6 +3,7 @@ package ops
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tomaszcichy9825/culler/internal/journal"
@@ -203,7 +204,7 @@ func TestApplyThenUndoRestoresTree(t *testing.T) {
 		}
 	}
 
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	assertTree(t, dir, files) // byte-identical restore
@@ -239,11 +240,42 @@ func TestApplyRecordsPartialFailureAndUndoStillWorks(t *testing.T) {
 	}
 
 	// undo restores what succeeded, skips what failed
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "DSCF0001.RAF")); err != nil {
 		t.Errorf("undo did not restore the trashed file: %v", err)
+	}
+}
+
+// A trash whose destination the platform could not report — the Windows
+// Recycle Bin — leaves nothing for undo to move back. The batch must not jam
+// the undo stack with an opaque failure: undo names the Recycle Bin as the
+// place the files can still be restored from, and journals nothing, so the
+// batch's own record stays the last word.
+func TestUndoOfRecycleBinTrashNamesTheRecycleBin(t *testing.T) {
+	ex, j := newExecutor(t)
+	batch := journal.Batch{
+		ID:          "recycled-1",
+		Description: "Drop both (1 frame)",
+		Actions: []journal.Action{
+			{Verb: string(VerbTrash), Src: "/card/DSCF0001.RAF", Outcome: journal.OutcomeOK},
+			{Verb: string(VerbTrash), Src: "/card/DSCF0001.JPG", Outcome: journal.OutcomeOK},
+		},
+	}
+	_, err := ex.Undo(batch)
+	if err == nil {
+		t.Fatal("undoing a batch the Recycle Bin swallowed reported success")
+	}
+	if !strings.Contains(err.Error(), "Recycle Bin") {
+		t.Errorf("error %q does not tell the user where the files went", err)
+	}
+	batches, jerr := j.ReadAll()
+	if jerr != nil {
+		t.Fatal(jerr)
+	}
+	if len(batches) != 0 {
+		t.Errorf("an undo that could restore nothing was journalled: %+v", batches)
 	}
 }
 
@@ -265,7 +297,7 @@ func TestApplyMove(t *testing.T) {
 		t.Error("moved content wrong")
 	}
 
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(src); string(got) != "jpg2" {
@@ -321,7 +353,7 @@ func TestApplyCopyAndUndo(t *testing.T) {
 		t.Error("copy content wrong")
 	}
 
-	if err := ex.Undo(batch); err != nil {
+	if _, err := ex.Undo(batch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "IMG_0002.JPG")); !os.IsNotExist(err) {
@@ -348,7 +380,7 @@ func TestUndoRefusesToOverwriteNewFile(t *testing.T) {
 	// The undo cannot run without clobbering the newer file, so it reverses
 	// nothing — and must say so, not report success. Reporting nil is what let
 	// the caller mark the batch undone and reverse an older one on the next Undo.
-	if err := ex.Undo(batch); err == nil {
+	if _, err := ex.Undo(batch); err == nil {
 		t.Fatal("a fully-failed undo returned nil; the caller would report success and consume the batch")
 	}
 	if got, _ := os.ReadFile(src); string(got) != "newer" {
@@ -379,7 +411,7 @@ func TestUndoReportsPartialFailureButStillJournals(t *testing.T) {
 
 	// One reverses, one cannot: a partial undo is journalled (the batch is spent)
 	// but the caller is told it did not fully succeed.
-	if err := ex.Undo(batch); err == nil {
+	if _, err := ex.Undo(batch); err == nil {
 		t.Fatal("a partial undo returned nil; the failure would be invisible")
 	}
 	if got, _ := os.ReadFile(b); string(got) != "jpg1" {

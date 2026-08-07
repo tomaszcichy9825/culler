@@ -471,6 +471,78 @@ func TestExecuteClearsWhatItImportedAndLeavesTheRest(t *testing.T) {
 	}
 }
 
+// An import is ingest, not a cull: cut and keep verdicts on the card's frames
+// are PHOTOS mode's business, and the import must not plan so much as a trash
+// against the source card — in rejected-folder mode that trash would write a
+// rejected folder onto the card itself.
+func TestExecuteLeavesCutFramesOnTheCard(t *testing.T) {
+	card := cardDir(t, 3)
+	dir := imageDir(card, 0)
+	libraryRoot := t.TempDir()
+	a := importApp(t, libraryRoot)
+
+	folder, err := NewLibraryService(a).OpenFolder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := NewDecisionService(a)
+	// One routed, one cut, one untouched.
+	routed, cut := folder.Groups[0], folder.Groups[1]
+	if err := decisions.SetDestination(routed.Hash, routed.Dir, routed.Stem, "2026/portraits"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decisions.SetVerdict(cut.Hash, cut.Dir, cut.Stem, string(decide.Cut), string(decide.MaskBoth)); err != nil {
+		t.Fatal(err)
+	}
+
+	s := importService(t, a)
+	plan, err := s.ImportPlan(dir)
+	if err != nil {
+		t.Fatalf("ImportPlan: %v", err)
+	}
+	if plan.Cut != 1 {
+		t.Errorf("plan reports %d cut frames, want 1", plan.Cut)
+	}
+
+	batch, err := s.Execute(dir, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The plan's numbers are a promise about what execute does: the two files
+	// of the one routed frame, and nothing else.
+	if len(batch.Actions) != plan.Files || plan.Files != 2 {
+		t.Fatalf("executed %d actions against a plan of %d files, want 2", len(batch.Actions), plan.Files)
+	}
+	for _, action := range batch.Actions {
+		if action.Verb != "copy" {
+			t.Errorf("an import executed a %s on %s; it may only copy", action.Verb, action.Src)
+		}
+	}
+
+	// The card is left exactly as it was found: every file still there, and no
+	// rejected folder written onto it.
+	for _, stem := range []string{"DSCF0001", "DSCF0002", "DSCF0003"} {
+		for _, ext := range []string{".RAF", ".JPG"} {
+			if !exists(t, filepath.Join(dir, stem+ext)) {
+				t.Errorf("the import took %s off the card", stem+ext)
+			}
+		}
+	}
+	if exists(t, filepath.Join(dir, "_Rejected")) {
+		t.Error("the import wrote a rejected folder onto the card")
+	}
+
+	// The cut is left in place for PHOTOS mode to carry out, not consumed by
+	// an import that did nothing to its files.
+	store, err := a.decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok, err := store.Get(cut.Hash, cut.Dir, cut.Stem); err != nil || !ok || rec.Verdict != decide.Cut {
+		t.Errorf("the cut verdict did not survive the import: %v %v %+v", ok, err, rec)
+	}
+}
+
 func TestExecuteIsUndoneThroughTheJournal(t *testing.T) {
 	card := cardDir(t, 1)
 	dir := imageDir(card, 0)
@@ -484,7 +556,7 @@ func TestExecuteIsUndoneThroughTheJournal(t *testing.T) {
 	}
 	// One batch covers the library copy and the backup copy, so one undo takes
 	// the whole import back.
-	if err := NewApplyService(a).Undo(); err != nil {
+	if err := NewApplyService(a, nil).Undo(); err != nil {
 		t.Fatalf("Undo: %v", err)
 	}
 	for _, root := range []string{libraryRoot, backup} {
@@ -494,6 +566,25 @@ func TestExecuteIsUndoneThroughTheJournal(t *testing.T) {
 	}
 	if !exists(t, filepath.Join(dir, "DSCF0001.RAF")) {
 		t.Error("undo of an import must never touch the card")
+	}
+
+	// The routing the import consumed comes back with the files it removed, so
+	// the same import can simply be run again.
+	folder, err := NewLibraryService(a).OpenFolder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := a.decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := folder.Groups[0]
+	rec, ok, err := store.Get(g.Hash, g.Dir, g.Stem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || rec.Destination != "2026/portraits" {
+		t.Errorf("undo did not restore the routing: %v %+v", ok, rec)
 	}
 }
 

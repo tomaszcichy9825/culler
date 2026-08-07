@@ -266,7 +266,7 @@ func TestApplyImportsAndLeavesTheCardIntact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	batch, err := NewApplyService(a).Apply(card, nil)
+	batch, err := NewApplyService(a, nil).Apply(card, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestApplyKeepsTheDecisionWhenACopyFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	batch, err := NewApplyService(a).Apply(card, nil)
+	batch, err := NewApplyService(a, nil).Apply(card, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

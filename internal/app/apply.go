@@ -71,11 +71,20 @@ type BatchDTO struct {
 // ApplyService turns recorded decisions into file operations.
 type ApplyService struct {
 	app *App
+
+	// catalogue prunes applied frames out of the library index. It is the
+	// same service the shell registers, so an apply reuses its open handle
+	// instead of opening the catalogue afresh — and leaking the handle — on
+	// every batch. nil is allowed: the prune then opens a short-lived handle
+	// of its own and closes it before returning.
+	catalogue *LibraryIndexService
 }
 
-// NewApplyService binds the service to the shared state.
-func NewApplyService(a *App) *ApplyService {
-	return &ApplyService{app: a}
+// NewApplyService binds the service to the shared state. Pass the same
+// LibraryIndexService the shell registers so the apply shares its one handle
+// on the catalogue; nil is allowed and costs a transient handle per prune.
+func NewApplyService(a *App, catalogue *LibraryIndexService) *ApplyService {
+	return &ApplyService{app: a, catalogue: catalogue}
 }
 
 // FrameRef identifies one frame to apply: the folder it lives in and its
@@ -125,15 +134,23 @@ func (s *ApplyService) planItems(items []planned) (PlanDTO, error) {
 // carried out. A frame whose files did not all move keeps its decision, so a
 // failed action can be retried rather than silently forgotten.
 func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
-	items, err := s.collect(dir, hashes)
+	// The path is resolved once and everything downstream uses the resolved
+	// form, so the trasher and the scan agree about where the folder is. A ~
+	// only the scan expanded would leave the rejected folder hanging off a
+	// literal "~" beside the working directory.
+	resolved, err := expandPath(dir)
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	trasher, err := s.app.trasher(dir)
+	items, err := s.collect(resolved, hashes)
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	return s.run(items, trasher, []string{dir})
+	trasher, err := s.app.trasher(resolved)
+	if err != nil {
+		return BatchDTO{}, err
+	}
+	return s.run(items, trasher, []string{resolved})
 }
 
 // ApplyScope executes the plan for a set of frames spanning any number of
@@ -178,6 +195,12 @@ func (s *ApplyService) run(items []planned, trasher platform.Trasher, exportDirs
 			Trasher:   trasher,
 			Collision: cfg.Behaviour.CollisionPolicy,
 			Verify:    cfg.Behaviour.VerifyCopies,
+			// The decisions the batch is about to consume ride on its journal
+			// line, so an undo that brings the files back can bring the
+			// judgements back with them.
+			Annotate: func(b *journal.Batch) {
+				b.Cleared = consumedBy(p.planned, *b).record
+			},
 		}
 		var applyErr error
 		batch, applyErr = executor.Apply(p.dto.Description, p.actions)
@@ -243,7 +266,11 @@ func (s *ApplyService) Undo() error {
 	// from the setting, because a cross-filesystem move back is as capable of
 	// destroying the only intact copy as a forward move is.
 	executor := &ops.Executor{Journal: jrnl, Verify: s.app.Config().Behaviour.VerifyCopies}
-	return executor.Undo(target)
+	undone, err := executor.Undo(target)
+	// The files are back, so the decisions the batch consumed come back too —
+	// for exactly the frames whose files all returned. A restore that fails
+	// still reports: the user asked for their cull back, not just their files.
+	return errors.Join(err, s.restoreCleared(target, undone))
 }
 
 // planned is one frame with the actions its verdict produces.
@@ -560,10 +587,19 @@ func resolveDestination(dest, libraryRoot string) (string, error) {
 	if trimmed == "" {
 		return "", errors.New("a routed frame has no destination")
 	}
-	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "~") {
+	if standaloneDestination(trimmed) {
 		return expandPath(trimmed)
 	}
 	return filepath.Join(libraryRoot, trimmed), nil
+}
+
+// standaloneDestination reports whether a recorded destination names a place
+// of its own — an absolute path, or one rooted at ~ — rather than hanging off
+// the library root. Absoluteness is the platform's own idea of it, so a
+// drive-letter path is absolute on the platform that has drive letters and is
+// never mistaken for a library-relative folder.
+func standaloneDestination(dest string) bool {
+	return strings.HasPrefix(dest, "~") || filepath.IsAbs(dest)
 }
 
 // sortedKeys fixes the order destinations are planned in, so the same set of
@@ -629,12 +665,22 @@ func pluralFrames(n int) string {
 	return "frames"
 }
 
-// clearApplied clears the verdicts of the frames whose actions all succeeded.
-// A frame that lost only some of its files keeps its verdict so the user can
-// apply it again once the cause is fixed. Ratings are left alone: they judge
-// the photograph, not the cull, and a frame that survived still carries its
-// stars.
-func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error {
+// consumed is what a batch spent from the decision store: the writes that
+// clear it, the catalogue rows to prune, and the journal record that lets an
+// undo restore it.
+type consumed struct {
+	cleared []decide.VerdictItem
+	routed  []decide.DestinationItem
+	pruned  []catalog.FrameKey
+	record  []journal.ClearedDecision
+}
+
+// consumedBy works out which decisions a batch's outcomes consumed. A frame
+// whose actions did not all succeed keeps everything so the user can apply it
+// again once the cause is fixed; a frame whose plan moved nothing keeps its
+// verdict too — clearing a judgement in exchange for no work at all would
+// silently erase it, which is what a fully masked cut used to suffer.
+func consumedBy(items []planned, batch journal.Batch) consumed {
 	outcomes := make(map[string]string, len(batch.Actions))
 	for _, a := range batch.Actions {
 		// If the same source somehow appears twice, a success stands: the file
@@ -651,12 +697,11 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	// the catalogue — like a rating does. What an apply consumes is the
 	// work it performed: a cut frame's decision goes with its files, and a
 	// routed frame's destination is cleared once the copy has landed.
-	var cleared []decide.VerdictItem
-	var routed []decide.DestinationItem
-	var pruned []catalog.FrameKey
+	var c consumed
 	for _, it := range items {
 		done := true
 		removed := false
+		var files []string
 		for _, a := range it.actions {
 			if outcomes[a.Src] != journal.OutcomeOK {
 				done = false
@@ -665,23 +710,43 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 			if a.Verb == ops.VerbTrash || a.Verb == ops.VerbMove {
 				removed = true
 			}
+			files = append(files, a.Src)
 		}
 		if !done {
 			continue
 		}
-		if it.record.Verdict == decide.Cut || removed {
-			cleared = append(cleared, decide.VerdictItem{
+		if removed {
+			// Clearing a verdict takes the destination with it in the store,
+			// so the record carries both halves for the restore.
+			c.cleared = append(c.cleared, decide.VerdictItem{
 				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Verdict: decide.Undecided,
 			})
-		} else if it.record.Destination != "" {
-			routed = append(routed, decide.DestinationItem{
+			c.record = append(c.record, journal.ClearedDecision{
+				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem,
+				Verdict: string(it.record.Verdict), Mask: string(it.record.Mask),
+				Destination: it.record.Destination, Files: files,
+			})
+			c.pruned = append(c.pruned, catalog.FrameKey{Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem})
+		} else if it.record.Destination != "" && len(files) > 0 {
+			c.routed = append(c.routed, decide.DestinationItem{
 				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem, Destination: "",
 			})
-		}
-		if removed {
-			pruned = append(pruned, catalog.FrameKey{Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem})
+			c.record = append(c.record, journal.ClearedDecision{
+				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem,
+				Destination: it.record.Destination, Files: files,
+			})
 		}
 	}
+	return c
+}
+
+// clearApplied clears the verdicts of the frames whose actions all succeeded.
+// A frame that lost only some of its files keeps its verdict so the user can
+// apply it again once the cause is fixed. Ratings are left alone: they judge
+// the photograph, not the cull, and a frame that survived still carries its
+// stars.
+func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error {
+	c := consumedBy(items, batch)
 
 	// The catalogue must not keep frames whose files just left their folder.
 	// Best-effort: a prune failure never fails the apply — the files have
@@ -689,26 +754,130 @@ func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error 
 	// A frame that lost only one half — a drop-RAW that leaves the JPEG — is
 	// deliberately pruned whole here and re-catalogued from what survived on
 	// disk by the next UpsertDir or index pass.
-	if len(pruned) > 0 {
-		_ = NewLibraryIndexService(s.app).PruneApplied(pruned)
+	if len(c.pruned) > 0 {
+		_ = s.pruneApplied(c.pruned)
 	}
 
-	if len(cleared) == 0 && len(routed) == 0 {
+	if len(c.cleared) == 0 && len(c.routed) == 0 {
 		return nil
 	}
 	store, err := s.app.decisions()
 	if err != nil {
 		return err
 	}
-	if len(routed) > 0 {
-		if err := store.SetDestinationBatch(routed); err != nil {
+	if len(c.routed) > 0 {
+		if err := store.SetDestinationBatch(c.routed); err != nil {
 			return err
 		}
 	}
-	if len(cleared) == 0 {
+	if len(c.cleared) == 0 {
 		return nil
 	}
-	return store.SetVerdictBatch(cleared)
+	return store.SetVerdictBatch(c.cleared)
+}
+
+// pruneApplied forgets applied frames through the shared catalogue handle, or
+// through a short-lived one — closed before returning — when the service was
+// built without one, so no apply ever leaks an open catalogue.
+func (s *ApplyService) pruneApplied(keys []catalog.FrameKey) error {
+	if s.catalogue != nil {
+		return s.catalogue.PruneApplied(keys)
+	}
+	transient := NewLibraryIndexService(s.app)
+	defer transient.Close()
+	return transient.PruneApplied(keys)
+}
+
+// restoreCleared writes back the decisions the undone batch had consumed, for
+// exactly the frames whose files all came back. A frame only partly restored
+// regains nothing — half its files are still gone, and a verdict over files
+// that are not there is what clearing on apply exists to prevent. A decision
+// the user has recorded since the apply is left alone: undo restores files,
+// it does not overrule the person.
+func (s *ApplyService) restoreCleared(target, undone journal.Batch) error {
+	if len(target.Cleared) == 0 {
+		return nil
+	}
+	reversed := reversedSources(target, undone)
+	store, err := s.app.decisions()
+	if err != nil {
+		return err
+	}
+	var verdicts []decide.VerdictItem
+	var routed []decide.DestinationItem
+	for _, c := range target.Cleared {
+		if len(c.Files) == 0 {
+			continue
+		}
+		back := true
+		for _, f := range c.Files {
+			if !reversed[f] {
+				back = false
+				break
+			}
+		}
+		if !back {
+			continue
+		}
+		rec, ok, err := store.Get(c.Hash, c.Dir, c.Stem)
+		if err != nil {
+			return err
+		}
+		if c.Verdict != "" {
+			if ok && rec.Verdict != "" {
+				continue // re-judged since the apply; the person wins
+			}
+			verdicts = append(verdicts, decide.VerdictItem{
+				Hash: c.Hash, Dir: c.Dir, Stem: c.Stem,
+				Verdict: decide.Verdict(c.Verdict), Mask: decide.Mask(c.Mask),
+			})
+			// A cut never carries a destination, so only a keep's routing is
+			// worth putting back alongside its verdict.
+			if c.Destination != "" && c.Verdict == string(decide.Keep) {
+				routed = append(routed, decide.DestinationItem{
+					Hash: c.Hash, Dir: c.Dir, Stem: c.Stem, Destination: c.Destination,
+				})
+			}
+			continue
+		}
+		if c.Destination != "" {
+			if ok && rec.Destination != "" {
+				continue // re-routed since the apply
+			}
+			routed = append(routed, decide.DestinationItem{
+				Hash: c.Hash, Dir: c.Dir, Stem: c.Stem, Destination: c.Destination,
+			})
+		}
+	}
+	if len(verdicts) > 0 {
+		if err := store.SetVerdictBatch(verdicts); err != nil {
+			return err
+		}
+	}
+	if len(routed) > 0 {
+		return store.SetDestinationBatch(routed)
+	}
+	return nil
+}
+
+// reversedSources is the set of original source paths an undo actually put
+// back: an original action that succeeded, whose recorded destination the undo
+// batch reversed with an ok of its own. The undo records its work keyed on the
+// forward action's destination, which is what ties the two batches together.
+func reversedSources(target, undone journal.Batch) map[string]bool {
+	ok := make(map[string]bool, len(undone.Actions))
+	for _, u := range undone.Actions {
+		if u.Outcome == journal.OutcomeOK {
+			ok[u.Src] = true
+		}
+	}
+	out := map[string]bool{}
+	for _, a := range target.Actions {
+		if a.Outcome == journal.OutcomeOK && a.Dst != "" && ok[a.Dst] {
+			out[a.Src] = true
+		}
+	}
+	return out
 }
 
 // pickUndoTarget returns the most recent batch that is neither an undo itself,
@@ -726,11 +895,32 @@ func pickUndoTarget(batches []journal.Batch) (journal.Batch, bool) {
 	}
 	for i := len(batches) - 1; i >= 0; i-- {
 		b := batches[i]
-		if b.UndoOf == "" && !undone[b.ID] && !destroyed(b) {
+		if b.UndoOf == "" && !undone[b.ID] && !destroyed(b) && !unrestorable(b) {
 			return b, true
 		}
 	}
 	return journal.Batch{}, false
+}
+
+// unrestorable reports whether a batch's successful work all went somewhere
+// undo cannot reach: every action that succeeded was a trash whose destination
+// the platform never reported, which is how the Windows Recycle Bin records.
+// Undo would have nothing to act on, so such a batch is stepped over like a
+// destroy is — otherwise it would jam the undo stack for good, with every undo
+// picking it, failing, and journalling nothing. A batch with even one
+// restorable action stays a target: part of it can still come back.
+func unrestorable(b journal.Batch) bool {
+	succeeded := 0
+	for _, a := range b.Actions {
+		if a.Outcome != journal.OutcomeOK {
+			continue
+		}
+		succeeded++
+		if ops.Verb(a.Verb) != ops.VerbTrash || a.Dst != "" {
+			return false
+		}
+	}
+	return succeeded > 0
 }
 
 // destroyed reports whether a batch permanently deleted anything. The verb is
