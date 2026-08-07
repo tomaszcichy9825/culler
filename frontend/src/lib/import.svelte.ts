@@ -275,6 +275,13 @@ class ImportState {
 
   #ticket = 0;
 
+  /**
+   * Rising ticket for loadFolder, separate from #ticket: selectCard holds the
+   * card ticket across its own await of loadFolder, so the two must not share
+   * a counter or a selection would invalidate itself.
+   */
+  #planTicket = 0;
+
   /** refresh looks for cards again and keeps the selection if it survived. */
   async refresh() {
     if (source === null) return;
@@ -339,11 +346,19 @@ class ImportState {
    */
   async loadFolder(dir: string) {
     if (source === null || dir === "") return;
+    const ticket = ++this.#planTicket;
+    // A different folder must not sit beside the old plan while its own is in
+    // flight: Execute reads this.dir but the confirm reads the plan's numbers,
+    // and the two have to describe the same folder at every moment.
+    if (this.dir !== dir) this.plan = null;
     this.dir = dir;
     this.error = null;
     try {
-      this.plan = await source.ImportPlan(dir);
+      const plan = await source.ImportPlan(dir);
+      if (ticket !== this.#planTicket) return; // a newer folder has answered
+      this.plan = plan;
     } catch (error) {
+      if (ticket !== this.#planTicket) return;
       this.error = message(error);
       this.plan = null;
     }

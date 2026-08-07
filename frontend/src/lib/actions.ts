@@ -97,6 +97,10 @@ export async function pickRoot() {
   try {
     const chosen = await LibraryService.PickFolder();
     if (chosen === "") return;
+    // Opening the chosen folder is leaving the search, exactly as opening one
+    // from the tree or a session is: the grid has to be the folder's again
+    // before the stream starts filling it.
+    library.closeSearch();
     // addRoot registers and indexes: a folder the user deliberately added is
     // one they want counted, which is not true of one they merely opened.
     await library.addRoot(chosen);
@@ -227,9 +231,13 @@ interface ScanOptions {
 }
 
 async function scan(dir: string, { remember, announce }: ScanOptions) {
-  const seq = ++scanSeq;
+  // Validate before burning a sequence number: bumping scanSeq for a request
+  // that goes nowhere would orphan the live stream — finishScan and the
+  // watchdog both compare against scanSeq and would skip, leaving the app
+  // busy forever.
   const target = dir.trim();
   if (target === "") return;
+  const seq = ++scanSeq;
 
   app.busy = true;
   app.scanning = target;
@@ -268,6 +276,10 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
     // timer is handed over with the rest.
     stream = { token: ticket.token, seq, dir: ticket.dir, announce, slow, watchdog };
     app.beginStreamedFolder(ticket.dir, ticket.network);
+    // With a search holding the grid the stream fills the set-aside list, so
+    // a new folder's frames must start it afresh rather than append to the
+    // folder that was left.
+    if (library.searchOpen) preSearchGroups = [];
     app.network[ticket.dir] = ticket.network;
     if (announce) {
       app.view = "grid";
@@ -1217,7 +1229,9 @@ export const ACTIONS: Action[] = [
     group: FILES,
     icon: "✎",
     note: "shows the write plan first",
-    when: () => shell.mode === "exif" && exifState.dirtyFrames.length > 0,
+    // Drafts survive the rail moving on, so the gate is the unwritten count,
+    // not the frames currently in view.
+    when: () => shell.mode === "exif" && exifState.unwritten > 0,
     run: () => void exifState.requestWrite(),
   },
   {

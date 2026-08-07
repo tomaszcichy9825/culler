@@ -243,7 +243,8 @@
   // preferred because that is the half a write can reach in place. The list
   // is compared against what was last loaded so a streamed grid reassigning
   // its array on every batch does not re-read the same frames again and
-  // again, and leaving the mode clears the rail so drafts do not linger.
+  // again. Leaving the mode clears the rail but keeps the drafts: they are
+  // committed-but-unwritten work, and ⌘S is what lets go of them.
   let lastExifKey = "";
   $effect(() => {
     if (shell.mode !== "exif") {
