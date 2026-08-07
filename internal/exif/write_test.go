@@ -153,6 +153,43 @@ func TestRewriteJPEGClearsATagWithAnEmptyValue(t *testing.T) {
 	}
 }
 
+// Replacing a string must clear the old value's bytes whichever way the new
+// one is stored — in the entry itself, over the old span, or appended at the
+// end of the block. A name shortened to an initial that leaves the full name
+// readable in a hex editor has not been replaced, the same way GPS that is
+// merely unhooked has not been stripped.
+func TestPatchClearsTheOldValueInEveryBranch(t *testing.T) {
+	cases := []struct {
+		name   string
+		artist string // the replacement; "Old Artist" is what fullTIFF carries
+	}{
+		{name: "shrinks into the entry", artist: "T"},
+		{name: "fits the old span", artist: "New Art"},
+		{name: "grows past the old span", artist: "a considerably longer artist string than before"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			after, err := RewriteJPEG(jpegWith(fullTIFF(binary.LittleEndian)), Changes{Artist: ptr(tc.artist)})
+			if err != nil {
+				t.Fatalf("RewriteJPEG: %v", err)
+			}
+			if bytes.Contains(after, []byte("Old Artist")) {
+				t.Error("the replaced value is still sitting in the file")
+			}
+			f, err := Parse(after)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if f.Artist.Value != tc.artist {
+				t.Errorf("Artist = %q, want %q", f.Artist.Value, tc.artist)
+			}
+			if f.Copyright.Value != "Old Copyright" || f.Model.Value != "X-T5" {
+				t.Errorf("clearing the old value damaged an unrelated tag: %+v", f)
+			}
+		})
+	}
+}
+
 func TestRewriteJPEGStripsGPSFromTheBytesNotJustThePointer(t *testing.T) {
 	before := jpegWith(fullTIFF(binary.BigEndian))
 	if !bytes.Contains(before, []byte("N\x00")) {

@@ -398,6 +398,14 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 		return nil
 	}
 	old := d.entries[index]
+	// The old value's out-of-line bytes, cleared below once nothing points at
+	// them any more. A value that merely became unreachable would still be
+	// sitting in the file for anyone with a hex editor — the same reasoning
+	// that has eraseGPS zero the coordinates, applied to every replacement.
+	var stale span
+	if !old.inline && old.span != nil {
+		stale = span{at: old.at, length: uint32(len(old.span))}
+	}
 
 	var inline [4]byte
 	switch {
@@ -412,6 +420,7 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 			ed.buf[i] = 0
 		}
 		ed.order.PutUint32(inline[:], at)
+		stale = span{} // the old span now holds the new value
 	default:
 		at, err := ed.appendBlob(ch.data)
 		if err != nil {
@@ -426,6 +435,12 @@ func (ed *editor) patch(ifdAt uint32, ch change) error {
 	ed.order.PutUint16(p[2:], ch.typ)
 	ed.order.PutUint32(p[4:], ch.count)
 	copy(p[8:12], inline[:])
+
+	// With the entry repointed, the old span is unreachable unless a second
+	// entry shares those bytes, in which case they are the survivor's to keep.
+	if stale.length > 0 && !overlapsAny(stale.at, stale.length, ed.reachableSpans(0)) {
+		ed.zero(stale.at, stale.length)
+	}
 	return nil
 }
 
@@ -560,8 +575,8 @@ func (ed *editor) reachableSpans(skip uint32) []span {
 			if !e.inline && e.span != nil {
 				out = append(out, span{at: e.at, length: uint32(len(e.span))})
 			}
-			if e.tag == tagExifIFD {
-				queue = append(queue, ed.pointerOf(d, tagExifIFD))
+			if e.tag == tagExifIFD || e.tag == tagGPSIFD {
+				queue = append(queue, ed.pointerOf(d, e.tag))
 			}
 		}
 		if d.next != 0 {
