@@ -24,7 +24,7 @@
   import LoupeOverlay from "./components/LoupeOverlay.svelte";
   import Palettes from "./components/Palettes.svelte";
   import SettingsView from "./components/SettingsView.svelte";
-  import TableView from "./components/TableView.svelte";
+  import TableView, { table } from "./components/TableView.svelte";
   import { runAction, openFolder as openFolderAction } from "./lib/actions";
   import { ExifService, ImportService, LibraryIndexService, MapService, RejectsService } from "./lib/bindings";
   import { setVerdictFor } from "./lib/decisions";
@@ -106,6 +106,14 @@
   function moveFocus(dx: number, dy: number) {
     if (app.view === "loupe" && app.zoom) {
       loupe.pan(-dx * PAN_STEP, -dy * PAN_STEP);
+      return;
+    }
+    // CULL's table sorts its own view of the frames, so while it is up the
+    // arrows walk the order on screen through its registered API — stepping
+    // through the raw array would hop between unrelated rows, and up and down
+    // would move by the grid's column count besides.
+    if (shell.mode === "cull" && shell.layout === 2 && app.view === "grid") {
+      table.move(dx + dy);
       return;
     }
     const rowStep = app.view === "loupe" ? 1 : app.cols;
@@ -535,9 +543,12 @@
       return;
     }
     // Compare owns the keyboard while it is up: its keys are its own, not the
-    // grid's underneath. Anything it does not claim is swallowed rather than
-    // leaking through to a grid the user cannot see.
-    if (app.compare !== null && handleCompareKey(e)) {
+    // grid's underneath. Anything it does not claim — modifier chords included,
+    // which would open the palette under the overlay and strand its focus — is
+    // swallowed rather than leaking through to a screen the user cannot see.
+    // Esc still exits: it is one of the keys compare claims.
+    if (app.compare !== null) {
+      handleCompareKey(e);
       e.preventDefault();
       return;
     }
