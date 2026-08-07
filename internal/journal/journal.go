@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -49,6 +50,12 @@ type Journal struct {
 	mu   sync.Mutex
 	path string
 	f    *os.File
+	// needsNewline says the file does not end in a newline — a write died
+	// mid-line, here or in a previous run. The next append starts on a fresh
+	// line rather than continuing the torn one: glued together, both lines
+	// would be lost to ReadAll, including the batch that was fsynced and
+	// reported durable.
+	needsNewline bool
 }
 
 // Open opens (or creates) the journal at path for appending.
@@ -57,7 +64,31 @@ func Open(path string) (*Journal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Journal{path: path, f: f}, nil
+	torn, err := endsMidLine(path)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Journal{path: path, f: f, needsNewline: torn}, nil
+}
+
+// endsMidLine reports whether the file at path has content that does not end
+// in a newline — the tail a crash mid-append leaves behind.
+func endsMidLine(path string) (bool, error) {
+	r, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+	info, err := r.Stat()
+	if err != nil || info.Size() == 0 {
+		return false, err
+	}
+	last := make([]byte, 1)
+	if _, err := r.ReadAt(last, info.Size()-1); err != nil {
+		return false, err
+	}
+	return last[0] != '\n', nil
 }
 
 // Append writes one batch as a single JSON line and syncs it to disk before
@@ -69,14 +100,24 @@ func (j *Journal) Append(b Batch) error {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if _, err := j.f.Write(append(line, '\n')); err != nil {
+	out := append(line, '\n')
+	if j.needsNewline {
+		out = append([]byte{'\n'}, out...)
+	}
+	if _, err := j.f.Write(out); err != nil {
+		// The write may have emitted part of the line before failing; the next
+		// append must not continue it.
+		j.needsNewline = true
 		return fmt.Errorf("journal append: %w", err)
 	}
+	j.needsNewline = false
 	return j.f.Sync()
 }
 
 // ReadAll returns every intact batch in append order. A corrupt or truncated
-// line (crash mid-write) is skipped rather than poisoning history.
+// line (crash mid-write) is skipped rather than poisoning history, and there
+// is no ceiling on a line's size: one enormous batch — a full-card import —
+// must not put every batch after it out of reach.
 func (j *Journal) ReadAll() ([]Batch, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -90,16 +131,22 @@ func (j *Journal) ReadAll() ([]Batch, error) {
 	defer f.Close()
 
 	var batches []Batch
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		var b Batch
-		if err := json.Unmarshal(sc.Bytes(), &b); err != nil {
-			continue
+	r := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			var b Batch
+			if uerr := json.Unmarshal(line, &b); uerr == nil {
+				batches = append(batches, b)
+			}
 		}
-		batches = append(batches, b)
+		if err == io.EOF {
+			return batches, nil
+		}
+		if err != nil {
+			return batches, err
+		}
 	}
-	return batches, sc.Err()
 }
 
 // Last returns the most recent batch, if any.
