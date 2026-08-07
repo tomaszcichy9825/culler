@@ -255,6 +255,33 @@ func TestPickUndoTargetSkipsRecycleBinBatches(t *testing.T) {
 	}
 }
 
+// A batch mixing a Recycle-Bin trash with a copy the undo protectively kept
+// looks restorable to unrestorable() — the copy succeeded and has a
+// destination — so it is never stepped over on shape alone. The executor
+// journals such an undo as spent, and it is that record that lets the stack
+// move on to older work.
+func TestPickUndoTargetStepsPastAJournalledSpentMixedBatch(t *testing.T) {
+	batches := []journal.Batch{
+		{ID: "a", Description: "restorable", Actions: []journal.Action{
+			{Verb: "move", Src: "/card/a.JPG", Dst: "/library/a.JPG", Outcome: journal.OutcomeOK},
+		}},
+		{ID: "b", Description: "recycled plus kept copy", Actions: []journal.Action{
+			{Verb: "trash", Src: "/card/b.RAF", Outcome: journal.OutcomeOK},
+			{Verb: "copy", Src: "/card/b.JPG", Dst: "/library/b.JPG", Outcome: journal.OutcomeOK},
+		}},
+		{ID: "u", UndoOf: "b", Description: "Undo: recycled plus kept copy", Actions: []journal.Action{
+			{Verb: "copy", Src: "/library/b.JPG", Outcome: journal.OutcomeError, Err: "left alone as a possible replacement"},
+		}},
+	}
+	got, ok := pickUndoTarget(batches)
+	if !ok {
+		t.Fatal("no undo target, want the older restorable batch")
+	}
+	if got.ID != "a" {
+		t.Errorf("undo target %q, want %q: b's undo is journalled and spent", got.ID, "a")
+	}
+}
+
 func TestBatchDTO(t *testing.T) {
 	b := journal.Batch{
 		ID:          "42-1",
