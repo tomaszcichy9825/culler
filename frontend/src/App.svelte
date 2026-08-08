@@ -14,9 +14,6 @@
   import Loader from "./components/Loader.svelte";
   import ColdStart from "./components/ColdStart.svelte";
   import CompareView, { compare as compareApi } from "./components/CompareView.svelte";
-  import EditorPane from "./components/exif/EditorPane.svelte";
-  import FramesRail from "./components/exif/FramesRail.svelte";
-  import TargetsPane from "./components/exif/TargetsPane.svelte";
   import WritePlanDialog from "./components/exif/WritePlanDialog.svelte";
   import SearchBar from "./components/library/SearchBar.svelte";
   import StorageView from "./components/library/StorageView.svelte";
@@ -83,9 +80,8 @@
 
   const modeActions: Record<string, number> = {
     "mode-cull": 0,
-    "mode-exif": 1,
-    "mode-map": 2,
-    "mode-import": 3,
+    "mode-map": 1,
+    "mode-import": 2,
   };
 
   const paneActions: Record<string, Pane> = {
@@ -151,11 +147,11 @@
   void watchCatalogProgress();
   onOpenFolder((dir, focusHash) => {
     // A folder chosen from the tree is a scope pick: it stays in whatever mode
-    // is up, exactly as picking a session does, so the left-pane picker does the
-    // same thing in PHOTOS, EXIF and MAP. Only opening a specific frame — a
+    // is up, exactly as picking a session does, so the left-pane picker does
+    // the same thing in PHOTOS and MAP. Only opening a specific frame — a
     // search result or a map pin, which carry a hash — jumps to cull to show it,
     // as does a pick made from a mode that has no view of a folder.
-    const scoped = shell.mode === "cull" || shell.mode === "exif" || shell.mode === "map";
+    const scoped = shell.mode === "cull" || shell.mode === "map";
     if (focusHash !== undefined || !scoped) shell.setMode("cull");
     // Opening a result is leaving the search, not searching from inside a
     // folder: the grid has to be the folder's again before it loads.
@@ -220,33 +216,34 @@
     untrack(() => showSearchResults(open, results));
   });
 
-  // EXIF drafts are scoped to the folder they were typed in. Only an actual
-  // folder change — picked from the tree, a search result, a session, a map
-  // pin, an import — prunes every draft; opening or closing the search keeps
-  // them, except the drafts typed while the search itself was up, which
+  // Metadata drafts are scoped to the folder they were typed in. Only an
+  // actual folder change — picked from the tree, a search result, a session,
+  // a map pin, an import — prunes every draft; opening or closing the search
+  // keeps them, except the drafts typed while the search itself was up, which
   // belong to the search and go when it closes. The rule is documented on
   // ExifState.setScope; this effect just reports both facts, and runs in
-  // every mode, because drafts survive leaving EXIF and the folder can change
-  // from any of them. Reopening the same folder keeps the drafts: the files
-  // they belong to are still the files on screen.
+  // every mode, because drafts survive leaving PHOTOS and the folder can
+  // change from any mode. Reopening the same folder keeps the drafts: the
+  // files they belong to are still the files on screen.
   $effect(() => {
     const dir = app.folder?.dir ?? "";
     const searching = library.searchOpen;
     untrack(() => exifState.setScope(dir, searching));
   });
 
-  // EXIF mode edits what the grid had selected (or focused). The panes are
-  // mounted individually, so the shell owns the effect that keeps the rail
-  // fed — the same one-per-frame path list the assembled mode used, JPEG
+  // The inspector edits what the grid has selected (or focused), so the shell
+  // owns the effect that keeps the editor fed — one path per frame, JPEG
   // preferred because that is the half a write can reach in place. The list
   // is compared against what was last loaded so a streamed grid reassigning
   // its array on every batch does not re-read the same frames again and
-  // again. Leaving the mode clears the rail but keeps the drafts: they are
-  // committed-but-unwritten work, and ⌘S is what lets go of them — unless the
-  // folder context changes underneath them, which the effect above handles.
+  // again; exifState.load serialises the reads itself, so a slow one cannot
+  // land on top of a newer one. Leaving PHOTOS clears the loaded frames and
+  // any plan on screen but keeps the drafts: they are committed-but-unwritten
+  // work, and ⌘S is what lets go of them — unless the folder context changes
+  // underneath them, which the effect above handles.
   let lastExifKey = "";
   $effect(() => {
-    if (shell.mode !== "exif") {
+    if (shell.mode !== "cull") {
       if (lastExifKey !== "") {
         lastExifKey = "";
         exifState.frames = [];
@@ -401,7 +398,7 @@
         cycleLayout();
         break;
       case "zoom":
-        // The loupe is cull's; from EXIF/MAP/IMPORT the key must not zoom a
+        // The loupe is cull's; from MAP or IMPORT the key must not zoom a
         // loupe the user cannot see (app.view survives a mode switch), and
         // the map zooms with its own − and + keys.
         if (shell.mode !== "cull") break;
@@ -474,7 +471,7 @@
         // and runAction above is their one dispatcher — reaching this switch
         // for one means the guard declined (not in cull, no frames, or a
         // palette is open), so it must do nothing. Handling them here as a
-        // fallback drove the hidden grid from EXIF/MAP/IMPORT: verdicts landed
+        // fallback drove the hidden grid from MAP and IMPORT: verdicts landed
         // on frames the user could not see, and ⌘A in MAP selected the whole
         // folder invisibly and armed "place N selected" over all of it.
         if (action in modeActions) {
@@ -629,18 +626,13 @@
     >
       {#if shell.focusedPane === "left"}{@render focusHead("left")}{/if}
       <div class="pane-body">
-        <!-- The scope picker is the same in PHOTOS, EXIF and MAP: one folder
-             tree and session list that sets what every mode shows. EXIF and MAP
-             keep their own left-pane content below it — the frames being edited,
-             the places on the map — under a divider the user can drag and that
-             is remembered; PHOTOS is the picker alone. -->
+        <!-- The scope picker is the same in PHOTOS and MAP: one folder tree
+             and session list that sets what every mode shows. MAP keeps its
+             own left-pane content below it — the places on the map — under a
+             divider the user can drag and that is remembered; PHOTOS is the
+             picker alone. -->
         {#if shell.mode === "import"}
           <ImportLeft />
-        {:else if shell.mode === "exif"}
-          <VSplit storageKey="culler.split.exif-left">
-            {#snippet top()}<Sidebar bind:path />{/snippet}
-            {#snippet bottom()}<FramesRail mosaic={exifState.batch} />{/snippet}
-          </VSplit>
         {:else if shell.mode === "map"}
           <VSplit storageKey="culler.split.map-left">
             {#snippet top()}<Sidebar bind:path />{/snippet}
@@ -655,9 +647,7 @@
     <section class="pane centre" class:focused={shell.focusedPane === "centre"} class:dim={dimmed("centre")}>
       {#if shell.focusedPane === "centre"}{@render focusHead("centre")}{/if}
       <div class="pane-body">
-        {#if shell.mode === "exif"}
-          <EditorPane />
-        {:else if shell.mode === "import"}
+        {#if shell.mode === "import"}
           <ImportCentre
             layout={shell.layout}
             onreview={(dir) => {
@@ -716,8 +706,6 @@
       <div class="pane-body">
         {#if shell.mode === "cull"}
           <Inspector />
-        {:else if shell.mode === "exif"}
-          <TargetsPane />
         {:else if shell.mode === "import"}
           <ImportRight />
         {:else if shell.mode === "map"}
@@ -757,9 +745,7 @@
   {/if}
 
   <Palettes />
-  {#if shell.mode === "exif"}
-    <WritePlanDialog />
-  {/if}
+  <WritePlanDialog />
   <RejectsDialog />
   <GeotagDialog />
 

@@ -17,3 +17,17 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   likewise once its sub-layouts exist. The cycle must read the active mode's layout list from
   shell state so new modes inherit it. `⌥1–3` still jump directly. The space loupe overlay is
   unchanged.
+
+- **2026-08-07 — EXIF stops being a mode; editing moves into the PHOTOS inspector.** The
+  mode bar becomes PHOTOS · MAP · IMPORT, `⌃1–3`, with MAP and IMPORT shifting up a slot.
+  The inspector gains an Edit metadata section: the same four editable fields (capture time,
+  artist, copyright, strip GPS) beside the read-only rows it already carries, editing the
+  grid's action targets — the selection when there is one, the focused frame alone otherwise,
+  with disagreeing values reading ⟨mixed⟩. Nothing about the write changes: every edit is a
+  draft, the "N unwritten" chip counts them in the title bar, and `⌘S` (now answered in
+  PHOTOS) puts up the same write plan — backup, journal, RAW via sidecar, JPEG in place,
+  undoable — that screens 3a–3d specified. Draft scoping is unchanged too: a folder change
+  discards drafts, a search opened and closed keeps them, drafts typed during a search go
+  with it. Geotagging stays in MAP. The `write-metadata` binding keeps `mod+s`; a saved
+  config still naming the retired `mode-exif` action loads fine and the dead entry is
+  dropped so stock `⌃2` reaches MAP.

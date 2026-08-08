@@ -493,15 +493,16 @@ async function sessions() {
 // ---- what became of LIBRARY --------------------------------------------------
 
 function modes() {
-  eq("modes · there are still four", MODES.length, 4);
+  eq("modes · there are three", MODES.length, 3);
   const ids = MODES.map((m) => m.id as string);
   check("modes · LIBRARY has left the mode bar", !ids.includes("library"), `still there: ${ids.join(" · ")}`);
-  eq("modes · the fourth slot is IMPORT", MODES[3].id, "import");
-  eq("modes · and it is labelled so", MODES[3].label, "IMPORT");
-  eq("modes · IMPORT has three sub-layouts", MODES[3].layouts.join(" · "), "review · route · verify");
+  check("modes · EXIF has left the mode bar too", !ids.includes("exif"), `still there: ${ids.join(" · ")}`);
+  eq("modes · the last slot is IMPORT", MODES[2].id, "import");
+  eq("modes · and it is labelled so", MODES[2].label, "IMPORT");
+  eq("modes · IMPORT has three sub-layouts", MODES[2].layouts.join(" · "), "review · route · verify");
 
-  shell.setModeByIndex(3);
-  eq("modes · ⌃4 lands on IMPORT", shell.mode, "import");
+  shell.setModeByIndex(2);
+  eq("modes · ⌃3 lands on IMPORT", shell.mode, "import");
   eq("modes · which is where the ghost is drawn", shell.spec.label, "IMPORT");
   shell.setModeByIndex(0);
   eq("modes · ⌃1 comes back to CULL", shell.mode, "cull");
