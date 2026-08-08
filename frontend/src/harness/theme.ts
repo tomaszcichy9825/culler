@@ -45,7 +45,8 @@ import { palette } from "../lib/palette.svelte";
 import { settings } from "../lib/settings.svelte";
 import type { ConfigPort } from "../lib/settings.svelte";
 import { shell } from "../lib/shell.svelte";
-import { app } from "../lib/state.svelte";
+import { gridSort } from "../lib/sort.svelte";
+import { app, groupKey } from "../lib/state.svelte";
 
 interface Result {
   name: string;
@@ -446,6 +447,27 @@ async function run() {
     screen.leave();
     flushSync();
   }
+
+  // ---- a sort flip follows the frame, not the slot ----------------------------
+
+  // The bench frames share one shot time, so the default sort ties on it and
+  // holds name order; flipping to name Z–A reverses the sheet under the
+  // cursor. App.svelte's effect must move the cursor with the frame.
+  shell.setMode("cull");
+  shell.setLayout(0);
+  app.view = "grid";
+  flushSync();
+  app.setFocus(1);
+  flushSync();
+  const followed = groupKey(app.groups[app.focusIndex]);
+  gridSort.setField("name");
+  gridSort.reverse();
+  flushSync();
+  eq("sort · the flip really reordered the sheet", app.focusIndex, app.groups.length - 2);
+  eq("sort · and the focused frame stayed focused", groupKey(app.groups[app.focusIndex]), followed);
+  gridSort.setField("shot");
+  flushSync();
+  eq("sort · back on the default the cursor follows again", groupKey(app.groups[app.focusIndex]), followed);
 
   // Settings is its own window rather than a mode, and its aside and chips are
   // the densest use of the chromatic tokens anywhere.

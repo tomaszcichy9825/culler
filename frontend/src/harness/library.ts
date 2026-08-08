@@ -41,6 +41,7 @@ import {
 } from "../lib/library.svelte";
 import { visibleGroups } from "../lib/palette.svelte";
 import { MODES, shell } from "../lib/shell.svelte";
+import { gridSort } from "../lib/sort.svelte";
 import { app } from "../lib/state.svelte";
 
 interface Result {
@@ -370,6 +371,45 @@ async function registerOnOpen() {
   eq("migrate · a saved root the catalogue lacks is registered", registered.includes("/Users/t/Pictures"), true);
 }
 
+// ---- the grid sort -----------------------------------------------------------
+
+async function sorting() {
+  // visibleGroups is the one seam that derives app.groups, so the order it
+  // returns is the order the sheet, the loupe and auto-advance all walk.
+  library.closeSearch();
+  const f = folder("/Users/t/Pictures/2026-04", ["IMG_0101", "IMG_0102", "IMG_0103", "IMG_0104"]);
+  const [one, two, three, four] = f.groups!;
+  one.shot = "2026-04-01T10:00:00Z";
+  two.shot = "2026-04-01T12:00:00Z";
+  three.shot = "2026-04-01T12:00:00Z"; // a burst: the same second as IMG_0102
+  four.shot = ""; // the scan read no timestamp
+  app.setFolder(f);
+
+  const order = () => visibleGroups().map((g) => g.stem.slice(-4)).join(" ");
+
+  eq("sort · the default is shot time, newest first", gridSort.label, "shot ↓");
+  eq("sort · newest first, bursts in capture order, no timestamp last", order(), "0102 0103 0101 0104");
+
+  gridSort.reverse();
+  eq("sort · reversed runs oldest first, no timestamp still last", order(), "0101 0102 0103 0104");
+
+  gridSort.setField("name");
+  eq("sort · name sorts A to Z", order(), "0101 0102 0103 0104");
+  gridSort.reverse();
+  eq("sort · name reversed runs Z to A", order(), "0104 0103 0102 0101");
+
+  // The scan streams in batches: a late arrival must slot into sorted
+  // position on the sheet while the source list keeps arrival order.
+  gridSort.setField("shot");
+  const late = folder("/Users/t/Pictures/2026-04", ["IMG_0100"]).groups![0];
+  late.shot = "2026-04-01T14:00:00Z";
+  app.appendFrames([late]);
+  eq("sort · a streamed batch slots into sorted position", order(), "0100 0102 0103 0101 0104");
+  eq("sort · the source list keeps arrival order", app.allGroups[app.allGroups.length - 1].stem, "IMG_0100");
+
+  eq("sort · the choice is remembered across launches", localStorage.getItem("culler.gridSort"), "shot:desc");
+}
+
 // ---- search over the grid ----------------------------------------------------
 
 async function search() {
@@ -404,7 +444,9 @@ async function search() {
   flushSync();
   eq("search · the results are what the grid holds", app.groups.length, 9);
   eq("search · a result keeps its own folder", app.groups[0].dir, `${ROOT}/2026-05`);
-  eq("search · a result keeps its identity", app.groups[0].hash, "hash-DSCF1000");
+  // The grid sort applies to results too: DSCF1008 carries the newest shot
+  // time of the nine, so the default — shot, newest first — puts it on top.
+  eq("search · results follow the grid sort, newest first", app.groups[0].hash, "hash-DSCF1008");
   eq("search · a result maps onto a frame", frameToGroup(FRAMES[0]).jpegPath, FRAMES[0].jpegPath);
   eq("search · the banner counts what the index answered", text(host.querySelector(".found")), "9 in the index");
 
@@ -414,10 +456,13 @@ async function search() {
   press(field, "ArrowUp");
   eq("search · up walks back", app.focusIndex, 0);
 
-  app.setFocus(2);
+  // Index 3 of the sorted grid is DSCF1007; of the raw results it would be
+  // DSCF1003 — so this also proves ⏎ opens the frame the cursor is on in the
+  // order the user is looking at.
+  app.setFocus(3);
   press(field, "Enter");
   eq("search · return opens the result's folder", opened[0]?.dir, `${ROOT}/2026-05`);
-  eq("search · and lands on the frame itself", opened[0]?.hash, "hash-DSCF1002");
+  eq("search · and lands on the frame itself", opened[0]?.hash, "hash-DSCF1007");
 
   // Opening a result leaves the search, which is what puts the folder back.
   showSearchResults(library.searchOpen, library.results);
@@ -535,6 +580,7 @@ async function run() {
 
   await tree();
   await registerOnOpen();
+  await sorting();
   await search();
   await sessions();
   modes();
