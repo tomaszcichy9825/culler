@@ -3,9 +3,11 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/tomaszcichy9825/culler/internal/catalog"
 	"github.com/tomaszcichy9825/culler/internal/decide"
 )
 
@@ -359,6 +361,84 @@ func TestReindexRunsInTheBackgroundAndReportsProgress(t *testing.T) {
 	}
 	if s.Indexing() {
 		t.Error("the service still reports itself as indexing")
+	}
+}
+
+// Both phases of the walk reach the event: the listing that makes the folder
+// visible, and the hashing that reads content behind it with an honest total.
+func TestReindexReportsBothPhasesOnTheEvent(t *testing.T) {
+	s := indexService(t)
+	dir := card(t)
+	if _, err := s.RegisterRoot(dir); err != nil {
+		t.Fatalf("RegisterRoot: %v", err)
+	}
+
+	var mu sync.Mutex
+	var seen []CatalogProgress
+	done := make(chan struct{})
+	s.onProgress = func(p CatalogProgress) {
+		mu.Lock()
+		seen = append(seen, p)
+		mu.Unlock()
+		if p.Done {
+			close(done)
+		}
+	}
+	if err := s.Reindex(dir); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background index never finished")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var listing, hashing int
+	for _, p := range seen {
+		switch p.Phase {
+		case catalog.PhaseListing:
+			listing++
+		case catalog.PhaseHashing:
+			hashing++
+		}
+	}
+	if listing == 0 {
+		t.Error("no listing reports reached the event")
+	}
+	if hashing == 0 {
+		t.Fatal("no hashing reports reached the event")
+	}
+	final := seen[len(seen)-1]
+	if !final.Done {
+		t.Fatalf("the last report is not the pass-end one: %+v", final)
+	}
+	if final.Hashed != 2 || final.Pending != 2 {
+		t.Errorf("final report has read %d of %d, want 2 of 2", final.Hashed, final.Pending)
+	}
+}
+
+// An empty dir reindexes every registered root, one pass over each.
+func TestReindexOfEverythingCoversEveryRoot(t *testing.T) {
+	s := indexService(t)
+	one := card(t)
+	two := card(t)
+	for _, dir := range []string{one, two} {
+		if _, err := s.RegisterRoot(dir); err != nil {
+			t.Fatalf("RegisterRoot(%s): %v", dir, err)
+		}
+	}
+
+	if _, err := s.reindex(""); err != nil {
+		t.Fatalf("reindex: %v", err)
+	}
+	res, err := s.Search("", FacetsDTO{}, 0, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if res.Total != 4 {
+		t.Errorf("reindexing everything catalogued %d frames, want both cards' 4", res.Total)
 	}
 }
 

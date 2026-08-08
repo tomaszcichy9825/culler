@@ -12,9 +12,20 @@
   // finding a node's parent is a scan backwards for a shallower depth. The
   // depth only drives the indent.
 
-  import { formatCount, library, type CatalogTreeNode } from "../lib/library.svelte";
+  import { covers, formatCount, library, type CatalogTreeNode } from "../lib/library.svelte";
   import { app, tree } from "../lib/state.svelte";
   import NetworkChip from "./NetworkChip.svelte";
+
+  /**
+   * A root whose listing phase is still walking has counts that are about to
+   * change under it, so its count dims until the listing lands. An empty
+   * indexing root means every root is being walked in turn.
+   */
+  function listingPending(node: CatalogTreeNode): boolean {
+    const p = library.indexing;
+    if (p === null || p.phase !== "listing" || !node.isRoot) return false;
+    return p.root === "" || covers(node.path, p.root) || covers(p.root, node.path);
+  }
 
   interface Row {
     node: CatalogTreeNode;
@@ -217,7 +228,16 @@
             {formatCount(row.node.undecided)}
           </span>
         {/if}
-        <span class="count" data-count={row.node.frames}>{formatCount(row.node.frames)}</span>
+        <!-- While the listing walks a root its count is about to change, so it
+             dims — and a never-indexed root shows an ellipsis rather than a
+             zero that would read as an empty folder. -->
+        {#if listingPending(row.node)}
+          <span class="count listing" title="Listing this folder">
+            {row.node.frames === 0 ? "…" : formatCount(row.node.frames)}
+          </span>
+        {:else}
+          <span class="count" data-count={row.node.frames}>{formatCount(row.node.frames)}</span>
+        {/if}
       </button>
 
       {#if row.node.isRoot && app.network[row.node.path]}
@@ -361,6 +381,17 @@
     font-family: var(--font-mono);
     font-size: 9.5px;
     color: var(--text-dim);
+  }
+
+  .count.listing {
+    color: var(--text-faint);
+    animation: listing-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes listing-pulse {
+    50% {
+      opacity: 0.4;
+    }
   }
 
   .undecided {

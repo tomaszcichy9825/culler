@@ -15,27 +15,44 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
 
+// The two phases of an index pass. The listing walks the tree and writes rows
+// from directory listings alone; the hashing goes back and reads content to
+// give those rows their identities.
+const (
+	PhaseListing = "listing"
+	PhaseHashing = "hashing"
+)
+
 // Progress is what an index pass reports as it goes. Dirs and Frames are
 // cumulative for the pass, so they only ever climb; Done marks the last
 // report for a root.
 //
-// There is no total. Counting the tree before walking it would mean reading
-// every directory twice, and on a card reader that is the expensive half of
-// the whole operation.
+// The listing phase has no total — counting the tree before walking it would
+// mean reading every directory twice, and on a card reader that is the
+// expensive half of the whole operation. The hashing phase knows exactly what
+// the listing left it, so Hashed climbs towards Pending and a bar drawn from
+// them is honest.
 type Progress struct {
 	Root   string
 	Dir    string
 	Dirs   int
 	Frames int
-	Done   bool
+	// Phase says which half of the pass is reporting.
+	Phase string
+	// Hashed and Pending are the hashing phase's progress: how many frames
+	// have been read so far, of how many the listing left unidentified.
+	Hashed  int
+	Pending int
+	Done    bool
 }
 
 // Stats is what an index pass found.
 //
 // Frames is everything the pass accounted for, whether it had to read it or
-// not. Changed and Removed are what the pass actually did: on a rerun over an
-// untouched card both are zero, which is the point of recording sizes and
-// modification times in the first place.
+// not. Changed counts the rows the pass read content for and rewrote, and
+// Removed the rows it dropped: on a rerun over an untouched card both are
+// zero, which is the point of recording sizes and modification times in the
+// first place.
 type Stats struct {
 	Dirs    int
 	Frames  int
@@ -74,6 +91,10 @@ type IndexOptions struct {
 	// Progress is called after each directory and once more at the end. It
 	// runs on the indexing goroutine, so it must not block for long.
 	Progress func(Progress)
+
+	// hashFile replaces the content hasher in tests, which is how a test can
+	// count — or refuse — the reads a pass makes. Nil reads the file.
+	hashFile func(path string) (string, error)
 }
 
 func (o IndexOptions) scanConfig() scan.Config {
@@ -95,9 +116,17 @@ func (o IndexOptions) workers() int {
 // that have left are dropped. It registers root if it is not registered yet,
 // so opening a folder in the library is enough to start covering it.
 //
-// The walk streams. One directory is scanned, hashed and written at a time, so
-// a card with fifty thousand frames does not have to fit in memory before the
-// first row lands.
+// The pass runs in two phases. The listing walks the tree and writes a row
+// for every frame from the directory listing alone — paths, sizes, times,
+// shot-from-mtime, no identity — so the tree, the counts and the search have
+// the root within seconds of it being added. The hashing then goes back over
+// what the listing could not identify and reads it in, filling each row in
+// place. On a cloud-synced folder this is the difference between minutes and
+// seconds: listing placeholders is free, and only the read forces a download.
+//
+// The walk streams. One directory is scanned and written at a time, so a card
+// with fifty thousand frames does not have to fit in memory before the first
+// row lands.
 //
 // It is also incremental. A frame whose files still carry the size and
 // modification time the catalogue recorded is left alone — not re-read, not
@@ -131,6 +160,15 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 	// Every directory the walk could not list. Their subtrees are unknown, not
 	// gone, and the prune must leave them exactly as they were.
 	var failed []string
+	// The directories the listing left frames unidentified in, for the hashing
+	// phase to come back to. Bounded by the number of directories: the groups
+	// themselves are re-listed then, not held.
+	type pendingDir struct {
+		dir    string
+		frames int
+	}
+	var pendingDirs []pendingDir
+	totalPending := 0
 
 	err = walkDirFollowingRoot(clean, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -167,11 +205,15 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 		stats.Dirs++
 
 		if len(groups) > 0 {
-			done, err := s.writeDir(path, groups, workers, opts.Lookup)
+			done, todo, err := s.listDir(path, groups, opts.Lookup)
 			if err != nil {
 				return err
 			}
 			stats.add(done)
+			if todo > 0 {
+				pendingDirs = append(pendingDirs, pendingDir{dir: path, frames: todo})
+				totalPending += todo
+			}
 		} else {
 			removed, err := s.pruneDir(path, nil)
 			if err != nil {
@@ -181,7 +223,9 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 		}
 
 		if opts.Progress != nil {
-			opts.Progress(Progress{Root: clean, Dir: path, Dirs: stats.Dirs, Frames: stats.Frames})
+			opts.Progress(Progress{
+				Root: clean, Dir: path, Dirs: stats.Dirs, Frames: stats.Frames, Phase: PhaseListing,
+			})
 		}
 		return nil
 	})
@@ -209,6 +253,34 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 		return stats, err
 	}
 	stats.Removed += removed
+
+	// The hashing phase. The listing has landed and been pruned; everything
+	// the tree and the search show is already true, and what follows only
+	// fills identities in. The first report goes out before the first read,
+	// so a consumer can tell "listed, now reading" from "still listing".
+	hashed := 0
+	if opts.Progress != nil {
+		opts.Progress(Progress{
+			Root: clean, Dirs: stats.Dirs, Frames: stats.Frames,
+			Phase: PhaseHashing, Hashed: 0, Pending: totalPending,
+		})
+	}
+	for _, pd := range pendingDirs {
+		done, read, err := s.hashDir(pd.dir, cfg, workers, opts, func(soFar int) {
+			if opts.Progress != nil {
+				opts.Progress(Progress{
+					Root: clean, Dir: pd.dir, Dirs: stats.Dirs, Frames: stats.Frames,
+					Phase: PhaseHashing, Hashed: hashed + soFar, Pending: totalPending,
+				})
+			}
+		})
+		stats.add(done)
+		hashed += read
+		if err != nil {
+			return stats, err
+		}
+	}
+
 	// Stamping only lands when clean is itself a registered root. Given a
 	// folder inside one, this pass covered part of that root and not the whole
 	// of it, so the root's own last-indexed time is left where it was rather
@@ -218,7 +290,10 @@ func (s *Store) Index(root string, opts IndexOptions) (Stats, error) {
 		return stats, fmt.Errorf("catalog: stamp root %s: %w", clean, err)
 	}
 	if opts.Progress != nil {
-		opts.Progress(Progress{Root: clean, Dirs: stats.Dirs, Frames: stats.Frames, Done: true})
+		opts.Progress(Progress{
+			Root: clean, Dirs: stats.Dirs, Frames: stats.Frames,
+			Phase: PhaseHashing, Hashed: hashed, Pending: totalPending, Done: true,
+		})
 	}
 	return stats, nil
 }
@@ -277,9 +352,21 @@ func (s *Store) UpsertDir(dir string, opts IndexOptions) (Stats, error) {
 		removed, err := s.pruneDir(clean, nil)
 		return Stats{Dirs: 1, Removed: removed}, err
 	}
-	stats, err := s.writeDir(clean, groups, opts.workers(), opts.Lookup)
+	// Both phases, back to back: one directory is bounded, and a folder the
+	// user has open deserves identities now rather than behind them.
+	stats, todo, err := s.listDir(clean, groups, opts.Lookup)
 	stats.Dirs = 1
-	return stats, err
+	if err != nil {
+		return stats, err
+	}
+	if todo > 0 {
+		done, _, err := s.hashDir(clean, opts.scanConfig(), opts.workers(), opts, nil)
+		stats.add(done)
+		if err != nil {
+			return stats, err
+		}
+	}
+	return stats, nil
 }
 
 // covered reports whether dir is one of the registered roots or sits inside
@@ -406,134 +493,219 @@ func (s *Store) dirState(dir string) (map[string]rowState, error) {
 	return out, rows.Err()
 }
 
-// writeDir brings one directory's rows in line with the groups the scan found
-// and drops any row the scan did not find. Frames whose files still match what
-// was recorded are neither hashed nor rewritten; when only their judgement has
-// moved, the judgement alone is written.
-func (s *Store) writeDir(dir string, groups []scan.PhotoGroup, workers int, lookup func(hash, dir, stem string) (string, int)) (Stats, error) {
+// currentRow reports whether row already describes this exact state of the
+// frame's files, identity included — the one case a pass has nothing to read.
+func currentRow(row rowState, raw, jpeg fileState) bool {
+	return row.hash != "" && row.raw == raw && row.jpeg == jpeg
+}
+
+// listDir is the listing phase over one directory: every frame the scan found
+// becomes a row on the strength of the listing alone, and rows for files that
+// have left are dropped. No file content is read here, which is the point —
+// on a cloud-synced folder a read is a download.
+//
+// It returns how many frames still need an identity, for hashDir to come back
+// to. Three kinds of frame land in that count: a new one, whose row is written
+// here with an empty hash; one whose pending row a previous pass never filled;
+// and one whose files changed under a row that has an identity — that row is
+// left exactly as it was, because a stale row beats an unhashed one until the
+// new bytes have actually been read.
+func (s *Store) listDir(dir string, groups []scan.PhotoGroup, lookup func(hash, dir, stem string) (string, int)) (Stats, int, error) {
 	held, err := s.dirState(dir)
 	if err != nil {
-		return Stats{}, err
-	}
-
-	// Which groups still need an identity, and therefore a read of the file.
-	states := make([][2]fileState, len(groups))
-	known := make([]string, len(groups))
-	stale := make([]scan.PhotoGroup, 0, len(groups))
-	staleAt := make([]int, 0, len(groups))
-	for i, g := range groups {
-		raw, jpeg := stateOf(g)
-		states[i] = [2]fileState{raw, jpeg}
-		if row, ok := held[primaryPath(raw, jpeg)]; ok && row.raw == raw && row.jpeg == jpeg {
-			known[i] = row.hash
-			continue
-		}
-		stale = append(stale, g)
-		staleAt = append(staleAt, i)
-	}
-	fresh := hashGroups(stale, workers)
-	for i, at := range staleAt {
-		known[at] = fresh[i]
+		return Stats{}, 0, err
 	}
 
 	now := time.Now().Unix()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return Stats{}, err
+		return Stats{}, 0, err
 	}
 	defer tx.Rollback()
 
 	var stats Stats
+	pending := 0
 	kept := make([]FrameKey, 0, len(groups))
-	rewritten := make([]bool, len(groups))
-	for _, at := range staleAt {
-		rewritten[at] = true
-	}
-
-	for i, g := range groups {
-		hash := known[i]
-		// A frame whose primary file cannot be read has no identity, so there
-		// is nothing to key a fresh row on. But the file is on disk, and if
-		// the last pass wrote a row for it that row must survive the prune
-		// below: its content may be stale, and stale beats silently gone —
-		// the same call an unreadable directory gets. A frame never seen
-		// before has no row to keep and is skipped rather than guessed at.
-		if hash == "" {
-			stats.Unreadable++
-			if row, ok := held[primaryPath(states[i][0], states[i][1])]; ok && row.hash != "" {
-				kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
-				stats.Frames++
-				// The row's verdict judged the bytes the last pass read. When
-				// the scan's size or mtime no longer matches the row, those
-				// bytes have moved, and an unreadable pass cannot judge the
-				// new ones: the row stays — presence is a fact — but the
-				// verdict goes rather than sentencing content nobody has seen.
-				// A frame whose recorded sizes and times still match was only
-				// unreadable, not changed, and keeps its verdict.
-				if row.verdict != "" && !sameRecordedContent(row, states[i][0], states[i][1]) {
-					if _, err := tx.Exec(
-						`UPDATE frames SET verdict = '' WHERE hash = ? AND dir = ? AND stem = ?`,
-						row.hash, g.Dir, g.Stem); err != nil {
-						return stats, fmt.Errorf("catalog: clear stale verdict for %s: %w", g.Stem, err)
-					}
-				}
-			}
-			continue
-		}
-		verdict, rating := "", 0
-		if lookup != nil {
-			verdict, rating = lookup(hash, g.Dir, g.Stem)
-		}
-		if verdict != VerdictKeep && verdict != VerdictCut {
-			verdict = ""
-		}
-		if rating < 0 {
-			rating = 0
-		}
-		kept = append(kept, FrameKey{Hash: hash, Dir: g.Dir, Stem: g.Stem})
+	for _, g := range groups {
+		raw, jpeg := stateOf(g)
+		row, ok := held[primaryPath(raw, jpeg)]
 		stats.Frames++
 
-		if !rewritten[i] {
-			// The files are as they were. Only a judgement that has moved since
-			// the last pass is worth a write.
-			row := held[primaryPath(states[i][0], states[i][1])]
+		switch {
+		case ok && currentRow(row, raw, jpeg):
+			// The files are as they were. Only a judgement that has moved
+			// since the last pass is worth a write.
+			kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
+			verdict, rating := judgement(lookup, row.hash, g.Dir, g.Stem)
 			if row.verdict != verdict || row.rating != rating {
 				if _, err := tx.Exec(
 					`UPDATE frames SET verdict = ?, rating = ? WHERE hash = ? AND dir = ? AND stem = ?`,
-					verdict, rating, hash, g.Dir, g.Stem); err != nil {
-					return stats, fmt.Errorf("catalog: refresh %s: %w", g.Stem, err)
+					verdict, rating, row.hash, g.Dir, g.Stem); err != nil {
+					return stats, 0, fmt.Errorf("catalog: refresh %s: %w", g.Stem, err)
 				}
 			}
-			continue
+		case ok && row.hash != "":
+			// Changed under a row that has an identity. The row stays as it
+			// was until the new bytes are read: its verdict judged content
+			// that is known to have existed, which is more than the listing
+			// can say about what replaced it.
+			kept = append(kept, FrameKey{Hash: row.hash, Dir: g.Dir, Stem: g.Stem})
+			pending++
+		default:
+			// New, or a pending row from a pass that never got to read it.
+			// The listing alone makes it a row — no identity, no judgement,
+			// but a frame the tree can count and the search can find.
+			if !ok || row.raw != raw || row.jpeg != jpeg {
+				if _, err := tx.Exec(upsertFrameSQL,
+					"", g.Dir, g.Stem, g.Kind.String(), g.Shot.Unix(),
+					raw.path, jpeg.path, raw.bytes, jpeg.bytes, raw.mtime, jpeg.mtime,
+					0, "", now); err != nil {
+					return stats, 0, fmt.Errorf("catalog: list %s: %w", g.Stem, err)
+				}
+			}
+			kept = append(kept, FrameKey{Hash: "", Dir: g.Dir, Stem: g.Stem})
+			pending++
 		}
-
-		raw, jpeg := states[i][0], states[i][1]
-		if _, err := tx.Exec(upsertFrameSQL,
-			hash, g.Dir, g.Stem, g.Kind.String(), g.Shot.Unix(),
-			raw.path, jpeg.path, raw.bytes, jpeg.bytes, raw.mtime, jpeg.mtime,
-			rating, verdict, now); err != nil {
-			return stats, fmt.Errorf("catalog: write %s: %w", g.Stem, err)
-		}
-		stats.Changed++
 	}
 
 	if _, err := pruneDirTx(tx, dir, kept); err != nil {
-		return stats, err
+		return stats, 0, err
 	}
 	// Counted from the files rather than from the rows the prune touched: a
-	// frame that was rewritten in place gets a new identity and so loses its
-	// old row, and reporting that as a removal would make an edit look like a
-	// deletion.
+	// frame that was rewritten in place will get a new identity and so lose
+	// its old row, and reporting that as a removal would make an edit look
+	// like a deletion.
 	onDisk := map[string]bool{}
-	for i := range groups {
-		onDisk[primaryPath(states[i][0], states[i][1])] = true
+	for _, g := range groups {
+		raw, jpeg := stateOf(g)
+		onDisk[primaryPath(raw, jpeg)] = true
 	}
 	for path := range held {
 		if !onDisk[path] {
 			stats.Removed++
 		}
 	}
-	return stats, tx.Commit()
+	return stats, pending, tx.Commit()
+}
+
+// hashBatch is how many frames the hashing phase reads between writes and
+// progress reports. Small enough that rows land and the count moves while a
+// cloud folder is still downloading, large enough that the workers stay busy.
+const hashBatch = 32
+
+// hashDir is the hashing phase over one directory: the frames the listing
+// could not identify are read, and their rows filled in place. The directory
+// is re-listed rather than carried over from the listing phase, so the pass
+// holds directories in memory, never frames — and a file that moved between
+// the phases is classified against what is true now.
+//
+// It returns how many frames it read (or tried to). A directory that can no
+// longer be listed keeps its rows and reports nothing: it may be a card
+// mid-unplug, and the next pass settles it either way.
+func (s *Store) hashDir(dir string, cfg scan.Config, workers int, opts IndexOptions, onHashed func(int)) (Stats, int, error) {
+	groups, err := scan.ScanDir(dir, cfg)
+	if err != nil {
+		return Stats{}, 0, nil
+	}
+	held, err := s.dirState(dir)
+	if err != nil {
+		return Stats{}, 0, err
+	}
+
+	todo := make([]scan.PhotoGroup, 0, len(groups))
+	for _, g := range groups {
+		raw, jpeg := stateOf(g)
+		if row, ok := held[primaryPath(raw, jpeg)]; ok && currentRow(row, raw, jpeg) {
+			continue
+		}
+		todo = append(todo, g)
+	}
+
+	var stats Stats
+	done := 0
+	for start := 0; start < len(todo); start += hashBatch {
+		batch := todo[start:min(start+hashBatch, len(todo))]
+		fresh := hashGroups(batch, workers, opts.hashFile)
+		if err := s.fillRows(held, batch, fresh, opts.Lookup, &stats); err != nil {
+			return stats, done, err
+		}
+		done += len(batch)
+		if onHashed != nil {
+			onHashed(done)
+		}
+	}
+	return stats, done, nil
+}
+
+// fillRows writes one hashed batch: each frame that got an identity replaces
+// whatever row stood for it — the pending listing row, or the old identity
+// its content outgrew.
+func (s *Store) fillRows(held map[string]rowState, groups []scan.PhotoGroup, fresh []string, lookup func(hash, dir, stem string) (string, int), stats *Stats) error {
+	now := time.Now().Unix()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for i, g := range groups {
+		raw, jpeg := stateOf(g)
+		row, ok := held[primaryPath(raw, jpeg)]
+		hash := fresh[i]
+		if hash == "" {
+			// The file is on disk — the listing saw it — but its bytes cannot
+			// be read, so the frame keeps whatever row it has: pending, or the
+			// old identity, because stale beats silently gone. A verdict
+			// judged bytes; when the recorded sizes and times no longer match
+			// the row, those bytes have moved, and the verdict goes rather
+			// than sentencing content nobody has seen. A frame whose recorded
+			// state still matches was only unreadable, not changed, and keeps
+			// its verdict.
+			stats.Unreadable++
+			if ok && row.hash != "" && row.verdict != "" && !sameRecordedContent(row, raw, jpeg) {
+				if _, err := tx.Exec(
+					`UPDATE frames SET verdict = '' WHERE hash = ? AND dir = ? AND stem = ?`,
+					row.hash, g.Dir, g.Stem); err != nil {
+					return fmt.Errorf("catalog: clear stale verdict for %s: %w", g.Stem, err)
+				}
+			}
+			continue
+		}
+
+		verdict, rating := judgement(lookup, hash, g.Dir, g.Stem)
+		// One frame on disk, one row: the superseded row — pending, or the
+		// old identity — goes as the filled one lands. A twin under another
+		// stem or in another folder is a different frame and is not touched.
+		if _, err := tx.Exec(
+			`DELETE FROM frames WHERE dir = ? AND stem = ? AND hash <> ?`,
+			g.Dir, g.Stem, hash); err != nil {
+			return fmt.Errorf("catalog: supersede %s: %w", g.Stem, err)
+		}
+		if _, err := tx.Exec(upsertFrameSQL,
+			hash, g.Dir, g.Stem, g.Kind.String(), g.Shot.Unix(),
+			raw.path, jpeg.path, raw.bytes, jpeg.bytes, raw.mtime, jpeg.mtime,
+			rating, verdict, now); err != nil {
+			return fmt.Errorf("catalog: write %s: %w", g.Stem, err)
+		}
+		stats.Changed++
+	}
+	return tx.Commit()
+}
+
+// judgement asks the lookup what has been decided about a frame and clamps
+// the answer to what a row can hold.
+func judgement(lookup func(hash, dir, stem string) (string, int), hash, dir, stem string) (string, int) {
+	verdict, rating := "", 0
+	if lookup != nil {
+		verdict, rating = lookup(hash, dir, stem)
+	}
+	if verdict != VerdictKeep && verdict != VerdictCut {
+		verdict = ""
+	}
+	if rating < 0 {
+		rating = 0
+	}
+	return verdict, rating
 }
 
 // pruneDir drops every row filed under dir except the frames given, and
@@ -780,10 +952,13 @@ func walkDir(path string, d fs.DirEntry, fn fs.WalkDirFunc) error {
 // hashGroups returns the identity hash of every group's primary file, aligned
 // with groups and empty where the file could not be read. The worker count is
 // the caller's: all CPUs for a local disk, the configured low cap for a
-// network volume.
-func hashGroups(groups []scan.PhotoGroup, workers int) []string {
+// network volume. hashFile replaces the reader in tests; nil reads the file.
+func hashGroups(groups []scan.PhotoGroup, workers int, hashFile func(string) (string, error)) []string {
 	if workers < 1 {
 		workers = 1
+	}
+	if hashFile == nil {
+		hashFile = hash.Content
 	}
 	hashes := make([]string, len(groups))
 	sem := make(chan struct{}, workers)
@@ -798,7 +973,7 @@ func hashGroups(groups []scan.PhotoGroup, workers int) []string {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if h, err := hash.Content(path); err == nil {
+			if h, err := hashFile(path); err == nil {
 				hashes[i] = h
 			}
 		}(i, ref.Path)
