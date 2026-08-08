@@ -29,10 +29,14 @@
     <div class="head">
       <span class="title">Sources</span>
       <span class="hair"></span>
+      <!-- The listing phase counts frames as it finds them; the hashing phase
+           knows its total and says how far through it is. -->
       {#if library.indexing !== null}
         <span class="indexing" title={library.indexing.dir}>
           <span class="dot" aria-hidden="true"></span>
-          {formatCount(library.indexing.frames)}
+          {library.indexing.phase === "hashing" && library.indexing.pending > 0
+            ? `${formatCount(library.indexing.hashed)}/${formatCount(library.indexing.pending)}`
+            : formatCount(library.indexing.frames)}
         </span>
       {/if}
       <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar"> + add </button>

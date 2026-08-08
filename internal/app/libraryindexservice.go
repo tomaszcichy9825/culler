@@ -24,19 +24,26 @@ const catalogFile = "catalog.db"
 const EventCatalogProgress = "catalog:progress"
 
 // CatalogProgress reports how far an index pass has got. Dirs and Frames are
-// cumulative and only climb. There is no total: counting the tree first would
-// mean reading every directory twice, and on a card reader that is the
-// expensive half of the whole operation, so the UI shows an indeterminate
-// INDEXING chip rather than a bar that lies.
+// cumulative and only climb.
+//
+// The pass runs in two phases, and Phase says which one is reporting. The
+// listing has no total — counting the tree first would mean reading every
+// directory twice, and on a card reader that is the expensive half of the
+// whole operation — so the UI shows a climbing count. The hashing knows
+// exactly what the listing left it, so Hashed climbs towards Pending and a
+// bar drawn from the two is a measurement, not an estimate.
 //
 // The last report of a pass carries Done, and Error when the pass failed.
 type CatalogProgress struct {
-	Root   string `json:"root"`
-	Dir    string `json:"dir"`
-	Dirs   int    `json:"dirs"`
-	Frames int    `json:"frames"`
-	Done   bool   `json:"done"`
-	Error  string `json:"error"`
+	Root    string `json:"root"`
+	Dir     string `json:"dir"`
+	Dirs    int    `json:"dirs"`
+	Frames  int    `json:"frames"`
+	Phase   string `json:"phase"` // listing | hashing
+	Hashed  int    `json:"hashed"`
+	Pending int    `json:"pending"`
+	Done    bool   `json:"done"`
+	Error   string `json:"error"`
 }
 
 func init() {
@@ -360,13 +367,16 @@ func (s *LibraryIndexService) Reindex(dir string) error {
 	s.running.Add(1)
 	go func() {
 		defer s.running.Done()
-		stats, err := s.reindex(root)
+		out, err := s.reindex(root)
 		// The flag clears before the final report goes out: a consumer that
 		// hears Done and immediately asks Indexing() must be told no. The
 		// walk's own per-root Done events are suppressed for the same reason —
 		// this pass-end report is the only Done anyone sees.
 		s.indexing.Store(false)
-		final := CatalogProgress{Root: root, Dirs: stats.Dirs, Frames: stats.Frames, Done: true}
+		final := CatalogProgress{
+			Root: root, Dirs: out.stats.Dirs, Frames: out.stats.Frames,
+			Phase: catalog.PhaseHashing, Hashed: out.hashed, Pending: out.pending, Done: true,
+		}
 		if err != nil {
 			final.Error = err.Error()
 		}
@@ -375,50 +385,87 @@ func (s *LibraryIndexService) Reindex(dir string) error {
 	return nil
 }
 
+// reindexOutcome is what a pass amounted to: the walk's stats, plus how much
+// content the hashing phase read of what the listing left it, summed across
+// the roots the pass covered.
+type reindexOutcome struct {
+	stats   catalog.Stats
+	hashed  int
+	pending int
+}
+
 // reindex walks one root, or every registered root when root is empty, and
 // reports as it goes. It runs on the caller's goroutine; Reindex is the
 // version the frontend calls.
-func (s *LibraryIndexService) reindex(root string) (catalog.Stats, error) {
+//
+// Each root gets its own pass so the hash worker cap fits its volume: a
+// network share stalls under parallel head reads, so a root on one takes the
+// same low cap a folder open does, without slowing the local roots beside it.
+func (s *LibraryIndexService) reindex(root string) (reindexOutcome, error) {
 	store, err := s.catalogue()
 	if err != nil {
-		return catalog.Stats{}, err
+		return reindexOutcome{}, err
 	}
 	decisions, err := s.app.decisions()
 	if err != nil {
-		return catalog.Stats{}, err
+		return reindexOutcome{}, err
 	}
 
-	opts := catalog.IndexOptions{
-		Scan: s.app.Config().ScanConfig(),
-		// A network share stalls under parallel head reads, so the catalogue
-		// takes the same low worker cap a folder open does.
-		Workers: s.app.hashWorkers(root != "" && platform.IsNetwork(root)),
-		Lookup: func(hash, dir, stem string) (string, int) {
-			rec, ok, err := decisions.Get(hash, dir, stem)
-			if err != nil || !ok {
-				return "", 0
-			}
-			return string(rec.Verdict), rec.Rating
-		},
-		Progress: func(p catalog.Progress) {
-			// Per-root Done events are withheld: Reindex's goroutine sends
-			// the one pass-end report, after the indexing flag has cleared.
-			if p.Done {
-				return
-			}
-			s.report(CatalogProgress{
-				Root:   p.Root,
-				Dir:    p.Dir,
-				Dirs:   p.Dirs,
-				Frames: p.Frames,
-			})
-		},
-	}
-
+	roots := []string{root}
 	if root == "" {
-		return store.IndexAll(nil, opts)
+		registered, err := store.Roots()
+		if err != nil {
+			return reindexOutcome{}, err
+		}
+		roots = roots[:0]
+		for _, r := range registered {
+			roots = append(roots, r.Path)
+		}
 	}
-	return store.Index(root, opts)
+
+	var out reindexOutcome
+	for _, r := range roots {
+		opts := catalog.IndexOptions{
+			Scan:    s.app.Config().ScanConfig(),
+			Workers: s.app.hashWorkers(platform.IsNetwork(r)),
+			Lookup: func(hash, dir, stem string) (string, int) {
+				rec, ok, err := decisions.Get(hash, dir, stem)
+				if err != nil || !ok {
+					return "", 0
+				}
+				return string(rec.Verdict), rec.Rating
+			},
+			Progress: func(p catalog.Progress) {
+				// Per-root Done events are withheld: Reindex's goroutine sends
+				// the one pass-end report, after the indexing flag has
+				// cleared. Their totals still count towards it.
+				if p.Done {
+					out.hashed += p.Hashed
+					out.pending += p.Pending
+					return
+				}
+				s.report(CatalogProgress{
+					Root:    p.Root,
+					Dir:     p.Dir,
+					Dirs:    p.Dirs,
+					Frames:  p.Frames,
+					Phase:   p.Phase,
+					Hashed:  p.Hashed,
+					Pending: p.Pending,
+				})
+			},
+		}
+		stats, err := store.Index(r, opts)
+		out.stats.Dirs += stats.Dirs
+		out.stats.Frames += stats.Frames
+		out.stats.Changed += stats.Changed
+		out.stats.Removed += stats.Removed
+		out.stats.Unreadable += stats.Unreadable
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
 }
 
 // report publishes one progress record, through the test seam when there is

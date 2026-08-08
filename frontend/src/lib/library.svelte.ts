@@ -151,12 +151,23 @@ export interface CatalogTreeNode {
 /** What a node reports when its undecided count was not worked out. */
 export const UNDECIDED_UNKNOWN = -1;
 
-/** What an index pass reports. Mirrors the backend's CatalogProgress. */
+/**
+ * What an index pass reports. Mirrors the backend's CatalogProgress.
+ *
+ * The pass runs in two phases. The listing walks the tree and writes rows
+ * from directory listings alone — `dirs` and `frames` climb with no total.
+ * The hashing then reads content behind it, and knows exactly how much:
+ * `hashed` climbs towards `pending`, so a bar drawn from the two is honest.
+ */
 export interface CatalogProgress {
   root: string;
   dir: string;
   dirs: number;
   frames: number;
+  /** "listing" | "hashing". */
+  phase: string;
+  hashed: number;
+  pending: number;
   done: boolean;
   error: string;
 }
@@ -731,7 +742,17 @@ class LibraryState {
     this.error = null;
     try {
       await source.Reindex(dir);
-      this.indexing = { root: dir, dir: "", dirs: 0, frames: 0, done: false, error: "" };
+      this.indexing = {
+        root: dir,
+        dir: "",
+        dirs: 0,
+        frames: 0,
+        phase: "listing",
+        hashed: 0,
+        pending: 0,
+        done: false,
+        error: "",
+      };
     } catch (error) {
       this.error = message(error);
     }
@@ -792,10 +813,17 @@ class LibraryState {
    * applyProgress takes one report from a running index pass. The final report
    * clears the chip and pulls the new rows in, since what the user is looking
    * at has just changed underneath them.
+   *
+   * The pass's phase change gets the same treatment: the first hashing report
+   * means the listing has landed, so the tree, the counts and the search can
+   * show the root now — minutes ahead of the hashes on a cloud-synced folder —
+   * rather than when the whole pass finishes.
    */
   applyProgress(progress: CatalogProgress) {
     if (!progress.done) {
+      const before = this.indexing;
       this.indexing = progress;
+      if (progress.phase === "hashing" && before?.phase !== "hashing") void this.refresh();
       return;
     }
     this.indexing = null;

@@ -324,9 +324,14 @@ func (s *Store) RemoveFrames(keys []FrameKey) error {
 	defer tx.Rollback()
 
 	for _, k := range keys {
+		// The pending row goes with the named one: a frame the listing phase
+		// has catalogued but the hashing phase has not reached yet holds an
+		// empty hash under the same (dir, stem), and it describes the same
+		// files the apply just took away. A twin in another folder or under
+		// another stem is untouched either way.
 		if _, err := tx.Exec(
-			`DELETE FROM frames WHERE hash = ? AND dir = ? AND stem = ?`,
-			k.Hash, k.Dir, k.Stem); err != nil {
+			`DELETE FROM frames WHERE dir = ? AND stem = ? AND (hash = ? OR hash = '')`,
+			k.Dir, k.Stem, k.Hash); err != nil {
 			return fmt.Errorf("catalog: forget %s: %w", k.Stem, err)
 		}
 	}

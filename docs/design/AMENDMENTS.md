@@ -31,3 +31,18 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   with it. Geotagging stays in MAP. The `write-metadata` binding keeps `mod+s`; a saved
   config still naming the retired `mode-exif` action loads fine and the dead entry is
   dropped so stock `⌃2` reaches MAP.
+
+- **2026-08-08 — The catalogue indexes in two phases: list first, hash behind.** Adding a
+  root used to hash every frame before the folder was usable, which on a cloud-synced folder
+  forces a download per file and takes minutes with next to no feedback. An index pass now
+  writes every row from the directory listing alone — paths, sizes, mtimes, kind,
+  shot-from-mtime, an empty hash — so the tree, the counts and the search have the root within
+  seconds; a second phase then re-reads only the unidentified frames, batched, and fills each
+  row's identity in place, under the `NetworkHashWorkers` cap on network volumes. A reindex
+  whose sizes and mtimes still match the rows reads no content, exactly as before. A frame the
+  hashing has not reached is viewable and searchable but has no identity yet: recording a
+  verdict on it is refused with the existing "no frame identity" message, and opening its
+  folder hashes it immediately. Progress reports both phases on the catalogue event — the
+  listing counts climb with no total, the hashing reports read-of-total as a measurement — and
+  the UI shows them: the status-bar chip reads INDEXING n/m with a small bar, and a root's
+  tree count dims until its listing lands.

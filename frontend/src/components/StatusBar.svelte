@@ -2,6 +2,7 @@
   // The status bar: what mode you are in, what state that mode is in, the keys
   // that are live right now, and the counts. 30px, and it never scrolls.
 
+  import { formatCount, library } from "../lib/library.svelte";
   import { app } from "../lib/state.svelte";
   import { shell } from "../lib/shell.svelte";
   import ModeBar from "./ModeBar.svelte";
@@ -17,11 +18,32 @@
   }
 
   // The chip names the state the mode is in. Indexing outranks the layout
-  // because it is the thing the user is waiting on.
+  // because it is the thing the user is waiting on. A catalogue pass says how
+  // far it has got: a climbing frame count while the listing walks, then
+  // read-of-total once the hashing phase knows exactly what is left.
   let chip = $derived<Chip>(
     app.scanning !== null
       ? { text: "INDEXING", tone: "amber" }
-      : { text: shell.layoutLabel.toUpperCase(), tone: "accent" },
+      : library.indexing !== null
+        ? {
+            text:
+              library.indexing.phase === "hashing" && library.indexing.pending > 0
+                ? `INDEXING ${formatCount(library.indexing.hashed)}/${formatCount(library.indexing.pending)}`
+                : `INDEXING ${formatCount(library.indexing.frames)}`,
+            tone: "amber",
+          }
+        : { text: shell.layoutLabel.toUpperCase(), tone: "accent" },
+  );
+
+  // The share of the hashing phase done, for the sliver of a bar in the chip.
+  // The listing has no total, so it draws no bar — the count is the movement.
+  let indexingShare = $derived<number | null>(
+    app.scanning === null &&
+      library.indexing !== null &&
+      library.indexing.phase === "hashing" &&
+      library.indexing.pending > 0
+      ? Math.max(0, Math.min(100, (library.indexing.hashed / library.indexing.pending) * 100))
+      : null,
   );
 
   let hints = $derived.by(() => {
@@ -40,7 +62,12 @@
 <footer class="statusbar">
   <ModeBar />
 
-  <span class="chip {chip.tone}">{chip.text}</span>
+  <span class="chip {chip.tone}">
+    {chip.text}
+    {#if indexingShare !== null}
+      <span class="track" aria-hidden="true"><span class="fill" style:width="{indexingShare}%"></span></span>
+    {/if}
+  </span>
 
   <div class="hints">
     {#each hints as hint (hint.key)}
@@ -75,12 +102,34 @@
 
   .chip {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 2px 7px;
     border-radius: 3px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
     white-space: nowrap;
+  }
+
+  /* The hashing phase's progress, as a sliver inside the chip. It is a
+     measurement — read X of M — never an estimate. */
+  .track {
+    display: inline-block;
+    width: 34px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--amber-wash-16);
+    overflow: hidden;
+  }
+
+  .fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: currentColor;
+    transition: width 200ms ease;
   }
 
   .chip.accent {
