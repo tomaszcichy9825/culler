@@ -528,10 +528,22 @@ func rafJPEG(data []byte) ([]byte, bool) {
 	}
 	off := uint64(binary.BigEndian.Uint32(data[rafPreviewOffsetPos:]))
 	length := uint64(binary.BigEndian.Uint32(data[rafPreviewLengthPos:]))
-	if length < minJPEGSize || off < rafPreviewLengthPos+4 || off+length > uint64(len(data)) {
+	if length < minJPEGSize || off < rafPreviewLengthPos+4 || off >= uint64(len(data)) {
 		return nil, false
 	}
-	return data[off : off+length], true
+	// The declared length can outrun the bytes actually read: Read caps
+	// itself at a header budget, and a modern body's embedded JPEG can be
+	// bigger than it — an X100VI writes ~6 MB. The EXIF APP1 sits in the
+	// first few KB of that JPEG, so the truncated slice is enough; the
+	// segment walk stops at whatever the cut leaves.
+	end := off + length
+	if end > uint64(len(data)) {
+		end = uint64(len(data))
+	}
+	if end-off < minJPEGSize {
+		return nil, false
+	}
+	return data[off:end], true
 }
 
 // firstEXIFSegment returns the TIFF payload of a JPEG's EXIF APP1, or nil.

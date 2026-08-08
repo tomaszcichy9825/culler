@@ -163,6 +163,30 @@ func TestReadRAFHeader(t *testing.T) {
 	}
 }
 
+// A real camera's embedded JPEG can be bigger than the header budget Read
+// caps itself at — an X100VI writes ~6 MB — so the declared length reaches
+// past the bytes actually read. The EXIF APP1 sits in the first few KB of
+// that JPEG; refusing the whole preview because its tail was not read is what
+// made every real RAF on such a body read back empty.
+func TestReadRAFWhosePreviewOutrunsTheHeaderBudget(t *testing.T) {
+	inner := jpegWith(fullTIFF(binary.BigEndian))
+	raf := make([]byte, rafPreviewLengthPos+4)
+	copy(raf, "FUJIFILMCCD-RAW ")
+	binary.BigEndian.PutUint32(raf[rafPreviewOffsetPos:], uint32(len(raf)))
+	// The header names a preview far longer than the file holds, exactly what
+	// Read sees when the budget truncates a large embedded JPEG.
+	binary.BigEndian.PutUint32(raf[rafPreviewLengthPos:], uint32(len(inner))+8<<20)
+	raf = append(raf, inner...)
+
+	f, err := Read(writeTemp(t, "DSCF0221.RAF", raf))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if f.Make.Value != "FUJIFILM" || f.ISO.Value != 640 {
+		t.Errorf("a truncated preview must still yield its EXIF: %+v", f)
+	}
+}
+
 func TestReadRejectsUnknownContainer(t *testing.T) {
 	if _, err := Read(writeTemp(t, "notes.txt", []byte("this is not a photograph"))); err == nil {
 		t.Fatal("a text file should not parse as EXIF")
