@@ -28,7 +28,7 @@
     const out: Hint[] = [];
     if (shell.focusedPane !== null || app.view === "loupe") out.push({ key: "esc", label: "back to grid" });
     out.push({ key: "⌘1–3", label: "panes" });
-    out.push({ key: "⌃1–4", label: "modes" });
+    out.push({ key: "⌃1–3", label: "modes" });
     out.push({ key: "⌥1–3", label: "layout" });
     // Tab walks the same list ⌥1–3 jumps around in, so the two sit together.
     if (shell.nextLayout() !== null) out.push({ key: "⇥", label: "cycle layout" });
