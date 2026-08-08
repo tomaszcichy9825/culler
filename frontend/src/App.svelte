@@ -99,6 +99,15 @@
   let path = $state(lastFolder());
   let lookup = $derived(buildLookup(app.keymap));
 
+  // Reopen in the mode the last session was left in — but only when there is
+  // a last folder to reopen. A cold start must land on PHOTOS, whose centre
+  // pane is the ColdStart guidance; MAP and IMPORT draw their panes with or
+  // without a folder, so restoring them over nothing would open the app on a
+  // blank map with no way to see why. The per-mode sub-layouts are restored
+  // unconditionally by the shell itself: they only say where each mode lands
+  // when it is next entered.
+  if (lastFolder() !== "") shell.restoreMode();
+
   /**
    * CULL's first two sub-layouts are the grid and one frame at a time, which
    * the app already has as its two views — so choosing a layout and the view

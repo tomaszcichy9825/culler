@@ -27,6 +27,7 @@
   import FieldRow from "./exif/FieldRow.svelte";
   import { sampleHistogram } from "../lib/histogram";
   import { queuedImage } from "../lib/imageQueue";
+  import { remember, stored } from "../lib/persist";
   import { previewURL } from "../lib/preview";
   import { app, groupKey } from "../lib/state.svelte";
   import {
@@ -51,27 +52,18 @@
   /** The collapsible sections, in the order they are drawn. */
   const SECTIONS = ["histogram", "metadata", "edit", "files", "warnings"] as const;
 
-  function stored(id: string): boolean {
-    try {
-      return localStorage.getItem(STORE + id) === "collapsed";
-    } catch {
-      // A webview with storage denied still draws; it just forgets.
-      return false;
-    }
+  function storedShut(id: string): boolean {
+    return stored(STORE + id, (raw) => raw === "collapsed", false);
   }
 
   let shut = $state<Record<string, boolean>>(
-    Object.fromEntries(SECTIONS.map((id) => [id, stored(id)])),
+    Object.fromEntries(SECTIONS.map((id) => [id, storedShut(id)])),
   );
 
   function toggle(id: string) {
     const next = shut[id] !== true;
     shut = { ...shut, [id]: next };
-    try {
-      localStorage.setItem(STORE + id, next ? "collapsed" : "open");
-    } catch {
-      // As above: the pane works, the preference does not survive a restart.
-    }
+    remember(STORE + id, next ? "collapsed" : "open");
   }
 
   let bins = $state<number[] | null>(null);

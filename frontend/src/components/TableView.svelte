@@ -39,6 +39,9 @@
   /** Columns that have something on GroupDTO to sort by. */
   export type SortId = "stem" | "pair" | "shot" | "rating" | "verdict";
 
+  /** Where the table's own sort is remembered across launches. */
+  const TABLE_SORT_KEY = "culler.tableSort";
+
   export interface TableSort {
     column: SortId;
     ascending: boolean;
@@ -184,6 +187,7 @@
   // screen of overscan exist as DOM.
 
   import { exifCache, valueOf } from "../lib/exifcache.svelte";
+  import { remember, stored } from "../lib/persist";
   import { previewURL } from "../lib/preview";
   import { queuedImage } from "../lib/imageQueue";
   import { groupKey } from "../lib/state.svelte";
@@ -223,8 +227,28 @@
   }: Props = $props();
 
   // Shot time, newest first — the grid's default, so switching layouts does
-  // not turn the shoot upside down. The column headers re-sort from here.
-  let sort = $state<TableSort>({ column: "shot", ascending: false });
+  // not turn the shoot upside down. The column headers re-sort from here, and
+  // the chosen column and direction come back on the next mount and the next
+  // launch alike; a stored column the table no longer sorts by falls back to
+  // the default. Every consumer of table.sort() reads whatever the current
+  // sort is, so a restored one needs nothing from them.
+  let sort = $state<TableSort>(
+    stored(
+      TABLE_SORT_KEY,
+      (raw) => {
+        const [column, direction] = raw.split(":");
+        if (!SORTABLE.includes(column as SortId)) return null;
+        if (direction !== "asc" && direction !== "desc") return null;
+        return { column: column as SortId, ascending: direction === "asc" };
+      },
+      { column: "shot", ascending: false },
+    ),
+  );
+
+  function setSort(next: TableSort) {
+    sort = next;
+    remember(TABLE_SORT_KEY, `${next.column}:${next.ascending ? "asc" : "desc"}`);
+  }
 
   let scroller = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLDivElement | null>(null);
@@ -274,18 +298,18 @@
 
   table.cycleSort = () => {
     const at = SORTABLE.indexOf(sort.column);
-    sort = { column: SORTABLE[(at + 1) % SORTABLE.length], ascending: true };
+    setSort({ column: SORTABLE[(at + 1) % SORTABLE.length], ascending: true });
   };
 
   table.reverseSort = () => {
-    sort = { column: sort.column, ascending: !sort.ascending };
+    setSort({ column: sort.column, ascending: !sort.ascending });
   };
 
   table.sort = () => sort;
 
   /** A header click sorts by that column, or reverses it if it already does. */
   function clickHeader(column: SortId) {
-    sort = column === sort.column ? { column, ascending: !sort.ascending } : { column, ascending: true };
+    setSort(column === sort.column ? { column, ascending: !sort.ascending } : { column, ascending: true });
   }
 
   // Focus has to drag the viewport with it, or arrowing past the last visible

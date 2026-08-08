@@ -549,8 +549,22 @@ function modes() {
   shell.setModeByIndex(2);
   eq("modes · ⌃3 lands on IMPORT", shell.mode, "import");
   eq("modes · which is where the ghost is drawn", shell.spec.label, "IMPORT");
+  eq("modes · the switch is remembered across launches", localStorage.getItem("culler.mode"), "import");
+  shell.setLayout(2);
+  eq(
+    "modes · the sub-layout record is remembered too, one index per mode",
+    localStorage.getItem("culler.layouts"),
+    `${shell.layouts.cull},${shell.layouts.map},2`,
+  );
+  shell.setLayout(0);
   shell.setModeByIndex(0);
   eq("modes · ⌃1 comes back to CULL", shell.mode, "cull");
+  eq("modes · and that is what a relaunch would find", localStorage.getItem("culler.mode"), "cull");
+
+  app.sidebar = false;
+  eq("sidebar · hiding it is remembered across launches", localStorage.getItem("culler.sidebar"), "closed");
+  app.sidebar = true;
+  eq("sidebar · as is bringing it back", localStorage.getItem("culler.sidebar"), "open");
 
   const actions = new Set(ACTIONS.map((a) => a.id));
   check("actions · search is an action of its own", actions.has("search"), "the / binding needs a registry row");

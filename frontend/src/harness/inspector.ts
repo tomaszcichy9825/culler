@@ -256,7 +256,40 @@ async function tableColumns() {
     `${exifCache.calls} calls for ${flat().length} paths`,
   );
 
+  // The table's sort is a preference of its own, apart from the grid's: a
+  // header click writes it down, a fresh mount starts from it, and a stored
+  // value the table cannot sort by falls back to the default.
+  localStorage.removeItem("culler.tableSort");
+  host.querySelector<HTMLButtonElement>(".head .c-stem .sort")!.click();
+  flushSync();
+  eq("table · a header click is remembered across launches", localStorage.getItem("culler.tableSort"), "stem:asc");
   unmount(view);
+
+  const again = mount(TableView, {
+    target: host,
+    props: { groups, focusIndex: 0, onFocus: () => {}, preview: true },
+  });
+  flushSync();
+  eq(
+    "table · a fresh mount starts from the remembered sort",
+    host.querySelector(".head .c-stem")?.getAttribute("aria-sort"),
+    "ascending",
+  );
+  unmount(again);
+
+  localStorage.setItem("culler.tableSort", "banana:sideways");
+  const corrupt = mount(TableView, {
+    target: host,
+    props: { groups, focusIndex: 0, onFocus: () => {}, preview: true },
+  });
+  flushSync();
+  eq(
+    "table · a corrupt stored sort falls back to the default",
+    host.querySelector(".head .c-shot")?.getAttribute("aria-sort"),
+    "descending",
+  );
+  unmount(corrupt);
+  localStorage.removeItem("culler.tableSort");
   host.remove();
 }
 

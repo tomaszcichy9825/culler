@@ -410,6 +410,14 @@ async function heatLayout() {
   for (let i = 3; i < pixels.length; i += 4) if (pixels[i] > 0) painted++;
   check("heat · the blobs are actually painted", painted > 0, `${painted} pixels have alpha`);
 
+  // The −/+ blob scale is a preference: a press writes it down for the next
+  // launch to start from.
+  localStorage.removeItem("culler.map.blobScale");
+  const wrap = host.querySelector<HTMLElement>(".wrap")!;
+  wrap.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true }));
+  eq("heat · the blob scale is remembered across launches", localStorage.getItem("culler.map.blobScale"), "1.25");
+  localStorage.removeItem("culler.map.blobScale");
+
   pane.drop();
 }
 

@@ -10,6 +10,7 @@
 // than a decision about anyone's photographs.
 
 import type { GroupDTO } from "./bindings";
+import { remember, stored } from "./persist";
 
 /** Where the chosen sort is remembered across launches. */
 const SORT_KEY = "culler.gridSort";
@@ -65,16 +66,15 @@ function isField(v: string): v is SortField {
 
 /** What a relaunch finds in storage, or null when nothing valid was kept. */
 function readStored(): { field: SortField; descending: boolean } | null {
-  try {
-    const raw = localStorage.getItem(SORT_KEY);
-    if (raw === null) return null;
-    const [field, direction] = raw.split(":");
-    if (!isField(field) || (direction !== "asc" && direction !== "desc")) return null;
-    return { field, descending: direction === "desc" };
-  } catch {
-    // A webview with storage disabled still sorts; it just forgets.
-    return null;
-  }
+  return stored(
+    SORT_KEY,
+    (raw) => {
+      const [field, direction] = raw.split(":");
+      if (!isField(field) || (direction !== "asc" && direction !== "desc")) return null;
+      return { field, descending: direction === "desc" };
+    },
+    null,
+  );
 }
 
 class GridSortState {
@@ -122,11 +122,7 @@ class GridSortState {
   }
 
   private persist() {
-    try {
-      localStorage.setItem(SORT_KEY, `${this.field}:${this.descending ? "desc" : "asc"}`);
-    } catch {
-      // See readStored.
-    }
+    remember(SORT_KEY, `${this.field}:${this.descending ? "desc" : "asc"}`);
   }
 }
 

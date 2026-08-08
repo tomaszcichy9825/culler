@@ -8,6 +8,7 @@
   // so a section can never be dragged shut and lost.
 
   import type { Snippet } from "svelte";
+  import { remember, stored } from "../lib/persist";
 
   interface Props {
     /** Where the fraction is remembered. Unique per split. */
@@ -27,13 +28,14 @@
   }
 
   function read(): number {
-    try {
-      const stored = parseFloat(localStorage.getItem(storageKey) ?? "");
-      return Number.isFinite(stored) ? clamp(stored) : initial;
-    } catch {
-      // A webview with storage off just starts from the default every time.
-      return initial;
-    }
+    return stored(
+      storageKey,
+      (raw) => {
+        const f = parseFloat(raw);
+        return Number.isFinite(f) ? clamp(f) : null;
+      },
+      initial,
+    );
   }
 
   let fraction = $state(read());
@@ -57,12 +59,7 @@
     if (!dragging) return;
     dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    try {
-      localStorage.setItem(storageKey, String(fraction));
-    } catch {
-      // The size still holds for the session; it just will not survive a
-      // relaunch, which is better than refusing to drag.
-    }
+    remember(storageKey, String(fraction));
   }
 
   // The divider is keyboard-reachable so the split is not mouse-only. Up and
@@ -76,11 +73,7 @@
     else if (e.key === "ArrowDown") fraction = clamp(fraction + step);
     else return;
     e.preventDefault();
-    try {
-      localStorage.setItem(storageKey, String(fraction));
-    } catch {
-      // As above: session-only is an acceptable fallback.
-    }
+    remember(storageKey, String(fraction));
   }
 </script>
 

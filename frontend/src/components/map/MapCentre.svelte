@@ -21,6 +21,7 @@
   import { app } from "../../lib/state.svelte";
   import { geotag } from "../../lib/geotag.svelte";
   import { library } from "../../lib/library.svelte";
+  import { remember, stored } from "../../lib/persist";
   import { previewURL } from "../../lib/preview";
   import {
     clusterPositions,
@@ -48,8 +49,26 @@
   let pins: L.LayerGroup | null = null;
   let track: L.LayerGroup | null = null;
 
-  /** The −/+ blob scale of the heat layout. */
-  let blobScale = $state(1);
+  /** The −/+ blob scale of the heat layout, remembered across launches. */
+  const BLOB_KEY = "culler.map.blobScale";
+  const BLOB_MIN = 0.25;
+  const BLOB_MAX = 4;
+
+  let blobScale = $state(
+    stored(
+      BLOB_KEY,
+      (raw) => {
+        const f = parseFloat(raw);
+        return Number.isFinite(f) && f >= BLOB_MIN && f <= BLOB_MAX ? f : null;
+      },
+      1,
+    ),
+  );
+
+  function setBlobScale(next: number) {
+    blobScale = Math.max(BLOB_MIN, Math.min(BLOB_MAX, next));
+    remember(BLOB_KEY, String(blobScale));
+  }
 
   /** Where the map opens when there is nothing to fit: the whole world. */
   const HOME: [number, number] = [20, 0];
@@ -421,11 +440,11 @@
       case "+":
       case "=":
         if (layout !== 1) return;
-        blobScale = Math.min(4, blobScale * 1.25);
+        setBlobScale(blobScale * 1.25);
         break;
       case "-":
         if (layout !== 1) return;
-        blobScale = Math.max(0.25, blobScale / 1.25);
+        setBlobScale(blobScale / 1.25);
         break;
       case "Enter":
         mapState.open();
