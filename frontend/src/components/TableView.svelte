@@ -33,7 +33,7 @@
     moveTo: () => {},
     cycleSort: () => {},
     reverseSort: () => {},
-    sort: () => ({ column: "shot", ascending: true }),
+    sort: () => ({ column: "shot", ascending: false }),
   };
 
   /** Columns that have something on GroupDTO to sort by. */
@@ -222,8 +222,9 @@
     cutRemoves = "both",
   }: Props = $props();
 
-  // The design draws the table sorted by shot time, ascending.
-  let sort = $state<TableSort>({ column: "shot", ascending: true });
+  // Shot time, newest first — the grid's default, so switching layouts does
+  // not turn the shoot upside down. The column headers re-sort from here.
+  let sort = $state<TableSort>({ column: "shot", ascending: false });
 
   let scroller = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLDivElement | null>(null);

@@ -12,6 +12,7 @@
 
 import { DecisionService } from "./bindings";
 import type { DestinationDTO, GroupDTO } from "./bindings";
+import { gridSort } from "./sort.svelte";
 import { app } from "./state.svelte";
 import { verdictOf } from "./verdict";
 
@@ -457,19 +458,19 @@ export function routeKey(e: KeyPress, count: number, run: (alt: boolean) => void
 }
 
 /**
- * visibleGroups is the grid's contents once the filter has had its say. It is
- * a plain function rather than a $derived export so that reading it inside a
- * component's own $derived tracks both app.groups and the filter.
- *
- * Nothing consumes it yet: app.groups is the grid's source, and swapping it is
- * a one-line change in App.svelte and Grid.svelte that belongs to whoever owns
- * those files. Until then the filter narrows what the palette reports and
- * nothing else.
+ * visibleGroups is the grid's contents once the filter and the sort have had
+ * their say. It is a plain function rather than a $derived export so that
+ * reading it inside an effect or a component's own $derived tracks the source
+ * list, the filter and the sort together — App.svelte derives app.groups from
+ * it, which is how the contact sheet, the loupe, the filmstrip and
+ * auto-advance all see one order. allGroups itself is never reordered: a
+ * streamed scan keeps appending to it, and search results replace it, so the
+ * sort lives here where both flows pass through.
  */
 export function visibleGroups(): GroupDTO[] {
   const f = palette.filter;
-  if (!filterIsSet(f)) return app.allGroups;
-  return app.allGroups.filter((g) => matchesFilter(g, f));
+  const shown = filterIsSet(f) ? app.allGroups.filter((g) => matchesFilter(g, f)) : app.allGroups;
+  return gridSort.apply(shown);
 }
 
 /** How many frames a filter would leave, without applying it. */

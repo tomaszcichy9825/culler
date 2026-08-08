@@ -11,6 +11,7 @@
   // the pane has between them.
 
   import { library } from "../lib/library.svelte";
+  import { gridSort } from "../lib/sort.svelte";
   import { app, groupKey } from "../lib/state.svelte";
   import Tile from "./Tile.svelte";
 
@@ -139,10 +140,24 @@
 </script>
 
 <header class="sheet-head">
-  <!-- The scan returns frames in stem order and nothing yet re-sorts them, so
-       this says what the sheet is actually showing rather than what it will
-       show once there is a sort control. -->
-  <span class="key">sorted by</span><span class="value">name ↑</span>
+  <!-- The sort every surface follows: app.groups is derived in this order, so
+       the loupe, the filmstrip and auto-advance walk what the sheet shows.
+       One keycap for the field, one for the way up. -->
+  <span class="key">sorted by</span>
+  <span class="sorter">
+    <button
+      type="button"
+      class="cap"
+      onclick={() => gridSort.cycleField()}
+      title="Sort by {gridSort.field === 'shot' ? 'name' : 'shot time'} instead"
+    >{gridSort.field}</button>
+    <button
+      type="button"
+      class="cap"
+      onclick={() => gridSort.reverse()}
+      title={gridSort.descending ? "Reverse: oldest or A first" : "Reverse: newest or Z first"}
+    >{gridSort.descending ? "↓" : "↑"}</button>
+  </span>
   <span class="rule"></span>
   <span class="key">verdicts</span>
   <span class="legend"><span class="swatch keep"></span><span class="value">{counts.keep} keep</span></span>
@@ -250,7 +265,8 @@
     flex: 1;
   }
 
-  .sizer {
+  .sizer,
+  .sorter {
     display: inline-flex;
     align-items: center;
     gap: 5px;

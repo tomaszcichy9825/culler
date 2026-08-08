@@ -24,6 +24,7 @@ import { rejects } from "./rejects.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
+import { gridSort } from "./sort.svelte";
 import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, groupKey, loupe, picker, tree } from "./state.svelte";
 import type { HashPatch } from "./state.svelte";
 import { MAX_RATING } from "./verdict";
@@ -1145,6 +1146,33 @@ export const ACTIONS: Action[] = [
   layoutAction(1),
   layoutAction(2),
   { id: "toggle-sidebar", label: "show or hide the sidebar", group: VIEW, icon: "▯", run: () => (app.sidebar = !app.sidebar) },
+  {
+    id: "sort-by-shot",
+    label: "sort by shot time",
+    group: VIEW,
+    icon: "⇅",
+    note: "newest first — reverse flips it",
+    when: culling,
+    run: () => gridSort.setField("shot"),
+  },
+  {
+    id: "sort-by-name",
+    label: "sort by name",
+    group: VIEW,
+    icon: "⇅",
+    note: "A to Z — reverse flips it",
+    when: culling,
+    run: () => gridSort.setField("name"),
+  },
+  {
+    id: "reverse-sort",
+    label: "reverse the sort",
+    group: VIEW,
+    icon: "⇵",
+    note: () => `now ${gridSort.label}`,
+    when: culling,
+    run: () => gridSort.reverse(),
+  },
 
   modeAction(0),
   modeAction(1),
