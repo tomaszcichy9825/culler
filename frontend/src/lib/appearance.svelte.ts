@@ -10,6 +10,8 @@
 // the same localStorage key and applies the same attribute, so a change here
 // and a relaunch agree.
 
+import { remember, stored } from "./persist";
+
 /** Where the resolved scheme is remembered — the key index.html reads. */
 const THEME_KEY = "culler.theme";
 const ACCENT_KEY = "culler.accent";
@@ -83,23 +85,6 @@ function accentTokens(base: Rgb, theme: "dark" | "light"): Record<string, string
 
 const ACCENT_TOKEN_NAMES = Object.keys(accentTokens([0, 0, 0], "dark"));
 
-function read(key: string, fallback: string): string {
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    // A webview with storage disabled still renders; it just forgets.
-    return fallback;
-  }
-}
-
-function write(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // See read.
-  }
-}
-
 function isScheme(v: string): v is Scheme {
   return v === "system" || v === "dark" || v === "light";
 }
@@ -136,11 +121,9 @@ class AppearanceState {
     if (this.started || typeof document === "undefined") return;
     this.started = true;
 
-    const scheme = read(THEME_KEY, "system");
-    if (isScheme(scheme)) this.scheme = scheme;
-    const accent = read(ACCENT_KEY, "blue");
-    if (isAccent(accent)) this.accent = accent;
-    this.mono = read(MONO_KEY, "");
+    this.scheme = stored(THEME_KEY, (raw) => (isScheme(raw) ? raw : null), "system");
+    this.accent = stored(ACCENT_KEY, (raw) => (isAccent(raw) ? raw : null), "blue");
+    this.mono = stored(MONO_KEY, (raw) => raw, "");
 
     const media = window.matchMedia("(prefers-color-scheme: light)");
     this.systemLight = media.matches;
@@ -156,20 +139,20 @@ class AppearanceState {
 
   setScheme(scheme: Scheme) {
     this.scheme = scheme;
-    write(THEME_KEY, scheme);
+    remember(THEME_KEY, scheme);
     this.apply();
   }
 
   setAccent(accent: AccentName) {
     this.accent = accent;
-    write(ACCENT_KEY, accent);
+    remember(ACCENT_KEY, accent);
     this.apply();
   }
 
   /** setMono takes a face name; empty restores the bundled one. */
   setMono(face: string) {
     this.mono = face.trim();
-    write(MONO_KEY, this.mono);
+    remember(MONO_KEY, this.mono);
     this.apply();
   }
 

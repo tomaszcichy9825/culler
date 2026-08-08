@@ -15,6 +15,7 @@
 // up what it replaces.
 
 import type { GroupDTO } from "./bindings";
+import { forget, remember, stored } from "./persist";
 
 /** One frame that carries coordinates. Mirrors the backend's PositionDTO. */
 export interface MapPosition {
@@ -107,24 +108,18 @@ export const TILE_ATTRIBUTION = "© OpenStreetMap contributors";
 export const TILE_MAX_ZOOM = 19;
 
 function readConsent(): TileConsent {
-  try {
-    const stored = localStorage.getItem(TILE_CONSENT_KEY);
-    return stored === "granted" || stored === "declined" ? stored : "unasked";
-  } catch {
-    // A webview with storage disabled has not consented to anything, which is
-    // the answer that fetches nothing.
-    return "unasked";
-  }
+  // A webview with storage disabled has not consented to anything, which is
+  // the answer that fetches nothing.
+  return stored<TileConsent>(
+    TILE_CONSENT_KEY,
+    (raw) => (raw === "granted" || raw === "declined" ? raw : null),
+    "unasked",
+  );
 }
 
 function writeConsent(value: TileConsent) {
-  try {
-    if (value === "unasked") localStorage.removeItem(TILE_CONSENT_KEY);
-    else localStorage.setItem(TILE_CONSENT_KEY, value);
-  } catch {
-    // The session still has its answer in memory; it just will not survive a
-    // restart, which is better than refusing to draw the map.
-  }
+  if (value === "unasked") forget(TILE_CONSENT_KEY);
+  else remember(TILE_CONSENT_KEY, value);
 }
 
 // --- clustering -------------------------------------------------------------

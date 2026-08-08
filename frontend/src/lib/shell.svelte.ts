@@ -7,6 +7,8 @@
 // lives apart: the folder, the selection and the pending decisions survive a
 // mode switch untouched.
 
+import { remember, stored } from "./persist";
+
 export type Mode = "cull" | "map" | "import";
 export type Pane = "left" | "centre" | "right";
 
@@ -57,14 +59,46 @@ function specOf(mode: Mode): ModeSpec {
   return MODES.find((m) => m.id === mode) ?? MODES[0];
 }
 
+/** Where the mode and each mode's chosen sub-layout are remembered. */
+const MODE_KEY = "culler.mode";
+const LAYOUTS_KEY = "culler.layouts";
+
+function isMode(v: string): v is Mode {
+  return MODES.some((m) => m.id === v);
+}
+
+/**
+ * The remembered sub-layouts, one integer per mode in MODES order ("0,2,0").
+ * Each index is validated against its own mode's list; an index a stale value
+ * holds for a mode that lost a layout falls back to that mode's first, and
+ * the other modes keep what they stored.
+ */
+function storedLayouts(): Record<Mode, number> {
+  const defaults: Record<Mode, number> = { cull: 0, map: 0, import: 0 };
+  return stored(
+    LAYOUTS_KEY,
+    (raw) => {
+      const parts = raw.split(",");
+      const out = { ...defaults };
+      MODES.forEach((m, i) => {
+        const n = Number(parts[i]);
+        if (Number.isInteger(n) && n >= 0 && n < m.layouts.length) out[m.id] = n;
+      });
+      return out;
+    },
+    defaults,
+  );
+}
+
 class ShellState {
   mode = $state<Mode>("cull");
 
   /**
    * The chosen sub-layout of every mode, not just the current one: switching
-   * away and back returns to the layout that mode was left in.
+   * away and back returns to the layout that mode was left in — as does a
+   * relaunch, which reads the record back from storage.
    */
-  layouts = $state<Record<Mode, number>>({ cull: 0, map: 0, import: 0 });
+  layouts = $state<Record<Mode, number>>(storedLayouts());
 
   /** The pane holding the keyboard, or null when the grid has it. */
   focusedPane = $state<Pane | null>(null);
@@ -90,9 +124,22 @@ class ShellState {
   setMode(mode: Mode) {
     if (this.mode === mode) return;
     this.mode = mode;
+    remember(MODE_KEY, mode);
     // A pane focus belongs to the mode it was taken in — the left pane of MAP
     // is a different pane from the left pane of CULL.
     this.focusedPane = null;
+  }
+
+  /**
+   * restoreMode reopens the mode a previous launch was left in. The host calls
+   * it only when a last folder exists: with nothing to show, the app must
+   * cold-start on PHOTOS, whose centre pane is the only one that explains how
+   * to open a folder — MAP and IMPORT draw their panes regardless, so
+   * restoring them over an empty catalogue would open on a blank map with no
+   * way to see why.
+   */
+  restoreMode() {
+    this.setMode(stored(MODE_KEY, (raw) => (isMode(raw) ? raw : null), "cull"));
   }
 
   /** setModeByIndex backs ⌃1–3, which are positional rather than named. */
@@ -106,6 +153,7 @@ class ShellState {
   setLayout(index: number): boolean {
     if (index < 0 || index >= this.spec.layouts.length) return false;
     this.layouts[this.mode] = index;
+    remember(LAYOUTS_KEY, MODES.map((m) => this.layouts[m.id]).join(","));
     return true;
   }
 

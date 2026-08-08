@@ -20,6 +20,7 @@ import { frameToGroup, library } from "./library.svelte";
 import type { GroupDTO } from "./bindings";
 import type { CatalogFrame } from "./library.svelte";
 import { palette } from "./palette.svelte";
+import { forget, remember, stored } from "./persist";
 import { rejects } from "./rejects.svelte";
 import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
@@ -39,11 +40,7 @@ const LAST_FOLDER = "culler.lastFolder";
 const ROOTS = "culler.roots";
 
 export function lastFolder(): string {
-  try {
-    return localStorage.getItem(LAST_FOLDER) ?? "";
-  } catch {
-    return "";
-  }
+  return stored(LAST_FOLDER, (raw) => raw, "");
 }
 
 /**
@@ -57,30 +54,24 @@ export function lastFolder(): string {
  * catalogue already covers is a no-op.
  */
 export async function migrateRoots() {
-  let saved: string[] = [];
-  try {
-    const raw = localStorage.getItem(ROOTS);
-    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-    saved = Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
-  } catch {
-    saved = [];
-  }
+  // A malformed value throws inside the parser, which stored() answers with
+  // the fallback: nothing to migrate.
+  const saved = stored<string[]>(
+    ROOTS,
+    (raw) => {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+    },
+    [],
+  );
 
   await library.loadRoots();
   if (saved.length > 0) await library.adopt(saved);
-  try {
-    localStorage.removeItem(ROOTS);
-  } catch {
-    // A webview with storage disabled still culls fine; it just repeats this.
-  }
+  forget(ROOTS);
 }
 
 function rememberFolder(dir: string) {
-  try {
-    localStorage.setItem(LAST_FOLDER, dir);
-  } catch {
-    // See migrateRoots.
-  }
+  remember(LAST_FOLDER, dir);
 }
 
 /**
