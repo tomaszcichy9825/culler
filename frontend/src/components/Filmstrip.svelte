@@ -24,8 +24,17 @@
     groups: GroupDTO[];
     /** Index of the frame the app is on, which the strip keeps in view. */
     index: number;
-    /** Asked for a new index. The caller decides whether focus actually moves. */
-    onselect: (index: number) => void;
+    /**
+     * Asked for a new index. The caller decides whether focus actually moves.
+     * A click passes its event with it, so shift and ⌘ mean the same here as
+     * they do on the contact sheet; the arrows pass none.
+     */
+    onselect: (index: number, e?: MouseEvent) => void;
+    /**
+     * Selection membership, if the host tracks one. Without it the strip draws
+     * focus alone, which is what the screens with no selection want.
+     */
+    isSelected?: (group: GroupDTO) => boolean;
     /** Height of the strip itself: 104 in the loupe-first layout, 78 in the overlay. */
     height?: number;
     thumbWidth?: number;
@@ -50,6 +59,7 @@
     groups,
     index,
     onselect,
+    isSelected,
     height = 104,
     thumbWidth = 112,
     thumbHeight = 72,
@@ -124,12 +134,13 @@
       type="button"
       class="frame"
       class:focused={i === index}
+      class:selected={isSelected?.(g) ?? false}
       style:width="{thumbWidth}px"
       bind:this={frameEls[i]}
       role="option"
       tabindex="-1"
       aria-selected={i === index}
-      onclick={() => onselect(i)}
+      onclick={(e) => onselect(i, e)}
     >
       <span class="thumb" style:height="{thumbHeight}px">
         {#if url !== ""}
@@ -201,6 +212,30 @@
   .frame.focused .thumb {
     border-color: var(--border-focus);
     box-shadow: var(--focus-ring);
+  }
+
+  /* A swept range has to be visible in the strip too, or extending a selection
+     from the loupe is a thing you do blind. Same language as the tile: a wash
+     over the thumbnail and a solid accent edge. */
+  .frame.selected .thumb {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+
+  .frame.selected .thumb::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--accent-wash-18);
+    pointer-events: none;
+  }
+
+  .frame.selected.focused .thumb {
+    box-shadow: inset 0 0 0 2px var(--accent), var(--focus-ring);
+  }
+
+  .frame.selected .stem {
+    color: var(--text);
   }
 
   .thumb img {

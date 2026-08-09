@@ -11,6 +11,7 @@
   // owns is the rating, because the dots are already there to be read.
 
   import type { GroupDTO } from "../lib/bindings";
+  import { selectFrame } from "../lib/actions";
   import { app } from "../lib/state.svelte";
   import { setRating } from "../lib/decisions";
   import type { Bytes } from "../lib/frame";
@@ -28,8 +29,8 @@
     groups?: GroupDTO[];
     /** Defaults to the app's focused frame. */
     index?: number;
-    /** Defaults to moving the app's focus. */
-    onfocus?: (index: number) => void;
+    /** Defaults to the app's own click rules: plain, shift-extend, ⌘-toggle. */
+    onfocus?: (index: number, e?: MouseEvent) => void;
     /** Defaults to the same helper the 1–5 keys run. */
     onrating?: (stars: number) => void;
     /** File sizes, if the caller has them. The rows do without when it has not. */
@@ -48,9 +49,9 @@
   let group = $derived<GroupDTO | null>(groups[index] ?? null);
   let badge = $derived(group ? verdictBadge(group, cut) : null);
 
-  function focus(to: number) {
-    if (onfocus) onfocus(to);
-    else app.setFocus(to);
+  function focus(to: number, e?: MouseEvent) {
+    if (onfocus) onfocus(to, e);
+    else selectFrame(to, e);
   }
 
   function rate(stars: number) {
@@ -142,6 +143,7 @@
     {groups}
     {index}
     onselect={focus}
+    isSelected={(g) => app.isSelected(g)}
     height={78}
     thumbWidth={96}
     thumbHeight={62}

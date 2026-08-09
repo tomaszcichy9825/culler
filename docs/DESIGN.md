@@ -213,7 +213,18 @@ R4 holds for any feature added later — if an action isn't in the palette, it d
 
 ### R6: individual and bulk operations
 
-Standard anchor/extend selection model. Action target resolution:
+Standard anchor/extend selection model. The anchor is the last frame plainly clicked, focused
+by `s`, or landed on by select-all; it is held as a frame identity rather than a position, so
+flipping the sort or narrowing the filter mid-selection cannot move it onto a different
+photograph. `Shift`+arrows sweep from the anchor to wherever focus has reached, in the order
+on screen — a whole row per press on the contact sheet, one row of its own sort in the table,
+one frame in the loupe — shrinking when arrowed back towards the anchor and growing past it.
+With a pointer: a plain click focuses one frame and re-anchors, `Shift`+click sweeps the
+range, `Cmd/Ctrl`+click toggles a single frame and leaves the anchor alone. Frames picked out
+by hand survive a later sweep. A plain click deliberately leaves no one-frame selection
+behind, because rule 2 below is what makes solo culling fast.
+
+Action target resolution:
 
 1. If a selection exists → the action applies to the whole selection.
 2. If no selection exists → the action applies to the focused group only, and focus advances.

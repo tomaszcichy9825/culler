@@ -42,10 +42,10 @@ export const ACTION_GROUPS: ActionGroup[] = [
   {
     title: "Focus and selection",
     actions: [
-      { id: "focus-left", label: "move focus left", note: "grid, filmstrip and table", scope: "cull", source: "config", chords: ["ArrowLeft"] },
-      { id: "focus-right", label: "move focus right", note: "in the zoomed loupe, pans instead", scope: "cull", source: "config", chords: ["ArrowRight"] },
-      { id: "focus-up", label: "move focus up", note: "one row in the grid", scope: "cull", source: "config", chords: ["ArrowUp"] },
-      { id: "focus-down", label: "move focus down", note: "one row in the grid", scope: "cull", source: "config", chords: ["ArrowDown"] },
+      { id: "focus-left", label: "move focus left", note: "grid, filmstrip and table — shift extends", scope: "cull", source: "config", chords: ["ArrowLeft"] },
+      { id: "focus-right", label: "move focus right", note: "zoomed, it pans instead — shift extends", scope: "cull", source: "config", chords: ["ArrowRight"] },
+      { id: "focus-up", label: "move focus up", note: "one row in the grid — shift extends", scope: "cull", source: "config", chords: ["ArrowUp"] },
+      { id: "focus-down", label: "move focus down", note: "one row in the grid — shift extends", scope: "cull", source: "config", chords: ["ArrowDown"] },
       { id: "toggle-select", label: "toggle selection", note: "adds the frame under the cursor", scope: "cull", source: "config", chords: ["s"] },
       { id: "select-all", label: "select all", note: "every frame in the folder", scope: "cull", source: "config", chords: ["mod+a"] },
       { id: "escape", label: "clear selection / leave loupe", note: "unwinds one step at a time", scope: "global", source: "config", chords: ["Escape"] },

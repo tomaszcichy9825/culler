@@ -102,6 +102,22 @@ function eventKey(e: KeyboardEvent): string {
 
 /** eventSignature reduces a keyboard event to the same form as parseChord. */
 export function eventSignature(e: KeyboardEvent): string {
+  return signatureOf(e, e.shiftKey);
+}
+
+/**
+ * unshiftedSignature reads the press as though Shift were not held, so a chord
+ * nothing binds with Shift can still be recognised as its plain binding. It is
+ * how Shift+arrow reaches the focus actions as an "extend the selection"
+ * variant: the four focus chords stay configurable in one place, rather than
+ * gaining shifted twins that Go's DefaultKeymap and the settings catalogue
+ * would both have to be kept in step with.
+ */
+export function unshiftedSignature(e: KeyboardEvent): string {
+  return signatureOf(e, false);
+}
+
+function signatureOf(e: KeyboardEvent, shift: boolean): string {
   const primary = isMac ? e.metaKey : e.ctrlKey;
   // The Windows key binds nothing, so a chord held with it is not a binding
   // at all rather than a binding with the modifier ignored. Ctrl on macOS is a
@@ -111,7 +127,7 @@ export function eventSignature(e: KeyboardEvent): string {
     key: eventKey(e),
     mod: primary,
     ctrl: isMac && e.ctrlKey,
-    shift: e.shiftKey,
+    shift,
     alt: e.altKey,
   });
 }
