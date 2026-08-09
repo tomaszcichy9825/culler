@@ -486,6 +486,42 @@ func (s *Store) Get(hash, dir, stem string) (Record, bool, error) {
 	return r, true, nil
 }
 
+// Decided names one frame the store holds a record for that an apply could act
+// on: a verdict, or a routing.
+type Decided struct {
+	Hash string
+	Stem string
+}
+
+// ActionableIn lists the frames in dir the store holds a verdict or a
+// destination for. It is what lets a plan identify a handful of judged frames
+// instead of reading every file in the folder: a frame nobody has judged can
+// produce no action, so a plan never has to know what it is.
+//
+// A rated but unjudged frame is left out on purpose. A rating says something
+// about the photograph and nothing about the cull, and planning has never done
+// anything with one.
+func (s *Store) ActionableIn(dir string) ([]Decided, error) {
+	rows, err := s.db.Query(
+		`SELECT hash, stem FROM decisions WHERE dir = ? AND (verdict <> '' OR destination <> '')`,
+		dir,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decide: read decisions for %s: %w", dir, err)
+	}
+	defer rows.Close()
+
+	var out []Decided
+	for rows.Next() {
+		var d Decided
+		if err := rows.Scan(&d.Hash, &d.Stem); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // Clear wipes every record. Used when the user discards a session rather than
 // applying it.
 func (s *Store) Clear() error {

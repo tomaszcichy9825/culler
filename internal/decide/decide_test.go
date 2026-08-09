@@ -574,3 +574,50 @@ CREATE INDEX IF NOT EXISTS decisions_dir ON decisions(dir);
 		t.Errorf("the decided frame did not migrate: %+v", got["DSCF0003"])
 	}
 }
+
+// ActionableIn is what saves a plan from reading a whole card: it names the
+// frames an apply could act on, so nothing else has to be identified. It must
+// answer with the judged and the routed and nothing else — a rating is not an
+// instruction, and a frame in another folder is not in this plan.
+func TestActionableInNamesOnlyTheFramesAnApplyCouldActOn(t *testing.T) {
+	s := openStore(t)
+	const dir = "/card/DCIM"
+
+	if err := s.SetVerdict("h1", dir, "DSCF0001", Cut, MaskBoth); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRating("h2", dir, "DSCF0002", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDestination("h3", dir, "DSCF0003", "2026/portraits"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVerdict("h4", "/card/OTHER", "DSCF0004", Cut, MaskBoth); err != nil {
+		t.Fatal(err)
+	}
+	// A cleared verdict is not an instruction either.
+	if err := s.SetVerdict("h5", dir, "DSCF0005", Keep, MaskBoth); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVerdict("h5", dir, "DSCF0005", Undecided, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ActionableIn(dir)
+	if err != nil {
+		t.Fatalf("ActionableIn: %v", err)
+	}
+	stems := map[string]string{}
+	for _, d := range got {
+		stems[d.Stem] = d.Hash
+	}
+	want := map[string]string{"DSCF0001": "h1", "DSCF0003": "h3"}
+	if len(stems) != len(want) {
+		t.Fatalf("ActionableIn = %+v, want %+v", stems, want)
+	}
+	for stem, hash := range want {
+		if stems[stem] != hash {
+			t.Errorf("%s has hash %q, want %q", stem, stems[stem], hash)
+		}
+	}
+}

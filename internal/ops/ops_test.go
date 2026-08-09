@@ -336,6 +336,36 @@ func TestUndoOfRecycledPlusKeptCopyIsJournalledAsSpent(t *testing.T) {
 	}
 }
 
+// An apply of many files has to be able to say how far it has got, or a cull of
+// a full card looks like a hung application. Progress counts actions finished,
+// successful or not: the user is waiting on the work, not on its outcome.
+func TestApplyReportsProgress(t *testing.T) {
+	dir, _ := setupTree(t)
+	ex, _ := newExecutor(t)
+
+	var seen [][2]int
+	ex.Progress = func(done, total int) { seen = append(seen, [2]int{done, total}) }
+
+	actions := []FileAction{
+		{Verb: VerbTrash, Src: filepath.Join(dir, "DSCF0001.RAF")},
+		{Verb: VerbTrash, Src: filepath.Join(dir, "DSCF0001.JPG")},
+		{Verb: VerbTrash, Src: filepath.Join(dir, "GONE.RAF")}, // fails, still counts
+	}
+	if _, err := ex.Apply("drop", actions); err != nil {
+		t.Fatal(err)
+	}
+
+	want := [][2]int{{1, 3}, {2, 3}, {3, 3}}
+	if len(seen) != len(want) {
+		t.Fatalf("progress reported %v, want %v", seen, want)
+	}
+	for i, got := range seen {
+		if got != want[i] {
+			t.Errorf("progress %d = %v, want %v", i, got, want[i])
+		}
+	}
+}
+
 func TestApplyMove(t *testing.T) {
 	dir, _ := setupTree(t)
 	dest := t.TempDir()

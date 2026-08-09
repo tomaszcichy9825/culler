@@ -399,6 +399,10 @@ Acceptance targets:
 - Warm-cache scroll: 60fps sustained.
 - Keystroke to decision-badge render: under 16ms. Decisions are database writes batched on a
   ticker, never synchronous with the keystroke.
+- Apply cost follows the decisions, not the folder. Planning identifies only the frames the
+  store holds a verdict or a destination for, so culling six frames out of two thousand costs
+  six identity reads per pass and not two thousand. Both halves report progress, and the grid
+  is patched from what the batch consumed rather than by reopening the folder.
 
 ---
 

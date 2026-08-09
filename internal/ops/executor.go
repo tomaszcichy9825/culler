@@ -49,6 +49,12 @@ type Executor struct {
 	// facts — the decisions the batch consumed — to the one line undo will
 	// read back. It must not touch the actions themselves.
 	Annotate func(b *journal.Batch)
+
+	// Progress, when set, is called after every action with how many of them
+	// have finished and how many there are. A failed action counts: the user is
+	// waiting on the work, not on its outcome. It is called from Apply's own
+	// goroutine, in order, so nothing it does needs a lock of its own.
+	Progress func(done, total int)
 }
 
 var batchCounter atomic.Uint64
@@ -71,6 +77,11 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 		Description: description,
 	}
 	priorFailed := false
+	report := func() {
+		if e.Progress != nil {
+			e.Progress(len(batch.Actions), len(actions))
+		}
+	}
 	for _, a := range actions {
 		rec := journal.Action{Verb: string(a.Verb), Src: a.Src}
 		if a.NeedsPrior && priorFailed {
@@ -80,6 +91,7 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			rec.Outcome = journal.OutcomeError
 			rec.Err = "skipped: the action before it did not happen"
 			batch.Actions = append(batch.Actions, rec)
+			report()
 			continue
 		}
 		dst, displaced, err := e.execute(a)
@@ -120,6 +132,7 @@ func (e *Executor) Apply(description string, actions []FileAction) (journal.Batc
 			}
 		}
 		batch.Actions = append(batch.Actions, rec)
+		report()
 	}
 	if e.Annotate != nil {
 		e.Annotate(&batch)

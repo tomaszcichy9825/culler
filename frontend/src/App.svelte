@@ -62,6 +62,7 @@
     selectFrame,
     showSearchResults,
     undo,
+    watchApplyProgress,
     watchScanProgress,
     watchScanStream,
   } from "./lib/actions";
@@ -215,6 +216,7 @@
   void (async () => {
     watchScanProgress();
     watchScanStream();
+    watchApplyProgress();
     await Promise.all([loadSettings(), migrateRoots()]);
     if (path !== "") await openFolder(path);
     if (app.folder) path = app.folder.dir;

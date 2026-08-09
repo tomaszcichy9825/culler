@@ -17,7 +17,7 @@ import { ApplyService, ConfigService, LibraryService, XMPExportService } from ".
 import { flush, message, setRating, setVerdict, toggleMask } from "./decisions";
 import { exifState } from "./exif.svelte";
 import { frameToGroup, library } from "./library.svelte";
-import type { GroupDTO } from "./bindings";
+import type { BatchDTO, GroupDTO } from "./bindings";
 import type { CatalogFrame } from "./library.svelte";
 import { palette } from "./palette.svelte";
 import { forget, remember, stored } from "./persist";
@@ -26,7 +26,17 @@ import { settings } from "./settings.svelte";
 import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
 import { gridSort } from "./sort.svelte";
-import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, groupKey, loupe, picker, tree } from "./state.svelte";
+import {
+  app,
+  applyHashPatches,
+  clearRouting,
+  DEFAULT_SLOW_SCAN_SECONDS,
+  groupKey,
+  loupe,
+  picker,
+  tree,
+  withoutFrames,
+} from "./state.svelte";
 import type { FrameMods, HashPatch } from "./state.svelte";
 import { MAX_RATING } from "./verdict";
 import type { Half } from "./verdict";
@@ -626,6 +636,9 @@ export async function requestApply() {
     app.notify("still scanning — hold on");
     return;
   }
+  // The same guard the confirm has: pressing ↩ twice while the plan is still
+  // being worked out must not start a second one.
+  if (app.busy) return;
   const refs = scopeRefs();
   if (refs.length === 0) {
     app.notify("nothing to apply");
@@ -633,16 +646,37 @@ export async function requestApply() {
   }
   await flush();
   app.busy = true;
+  app.applyProgress = { phase: "planning", done: 0, total: 1 };
   try {
     app.plan = await ApplyService.PlanScope(refs);
   } catch (err) {
     app.notify(`could not plan: ${message(err)}`, "error");
   } finally {
     app.busy = false;
+    app.applyProgress = null;
   }
 }
 
-/** confirmApply executes the plan on screen and reloads the scope. */
+/**
+ * consumeBatch drops the frames an apply took off disk and clears the routing
+ * of the ones it delivered, without reopening anything. The batch says exactly
+ * what it consumed and the backend has already pruned the catalogue, so a
+ * rescan would walk and re-identify a whole card to learn about a handful of
+ * frames. The search buffer is patched too: with a search on the grid, the
+ * folder's own frames are set aside there and would otherwise come back stale.
+ */
+function consumeBatch(batch: BatchDTO) {
+  const removed = batch.removed ?? [];
+  const unrouted = batch.unrouted ?? [];
+  if (removed.length === 0 && unrouted.length === 0) return;
+  app.consumeApplied(removed, unrouted);
+  if (preSearchGroups.length > 0) {
+    clearRouting(preSearchGroups, unrouted);
+    preSearchGroups = withoutFrames(preSearchGroups, removed);
+  }
+}
+
+/** confirmApply executes the plan on screen and brings the grid up to date. */
 export async function confirmApply() {
   // A second Enter before the first apply resolves would run a second batch
   // over the same refs; the plan is only nulled after the await.
@@ -651,24 +685,37 @@ export async function confirmApply() {
   const searching = library.searchOpen;
   const dir = app.folder?.dir;
   app.busy = true;
+  app.applyProgress = { phase: "applying", done: 0, total: app.plan.actions?.length ?? 0 };
   try {
     const batch = await ApplyService.ApplyScope(refs);
     const failed = (batch.actions ?? []).filter((a) => a.outcome !== "ok").length;
     app.plan = null;
-    await reloadScope(searching, dir);
-    app.clearSelection();
-    if (failed > 0) app.notify(`${failed} action(s) failed; their frames kept their decision`, "error");
-    else app.notify(batch.description || "applied");
+    if (failed > 0) {
+      // A partial failure leaves the folder in a state the batch does not
+      // fully describe — some files moved, some did not, and a frame that
+      // half-moved keeps its verdict. Reopening is the simple, always-correct
+      // answer, and it is the rare path.
+      await reloadScope(searching, dir);
+      app.clearSelection();
+      app.notify(`${failed} action(s) failed; their frames kept their decision`, "error");
+    } else {
+      consumeBatch(batch);
+      app.notify(batch.description || "applied");
+    }
   } catch (err) {
     app.plan = null;
     await reloadScope(searching, dir);
     app.notify(`apply failed: ${message(err)}`, "error");
   } finally {
     app.busy = false;
+    app.applyProgress = null;
   }
 }
 
 export function cancelApply() {
+  // Once the batch is running there is nothing left to cancel — the files are
+  // already moving — and taking the dialog away would only hide that.
+  if (app.busy) return;
   app.plan = null;
 }
 
@@ -709,6 +756,24 @@ export function watchScanProgress() {
     if (!belongsToScan(progress.dir, target)) return;
     app.scanProgressDir = progress.dir;
     app.scanProgress = { done: progress.done, total: progress.total };
+  });
+}
+
+/**
+ * watchApplyProgress subscribes to the backend's apply progress for the life
+ * of the app. Call it once, at startup. Events that arrive when nothing is
+ * applying are ignored: the state is cleared by whichever call started it, and
+ * a late event must not put the chrome back into a working state.
+ */
+export function watchApplyProgress() {
+  Events.On("apply:progress", (event) => {
+    const progress = event.data;
+    if (!progress || app.applyProgress === null) return;
+    app.applyProgress = {
+      phase: progress.phase,
+      done: progress.done,
+      total: progress.total,
+    };
   });
 }
 
