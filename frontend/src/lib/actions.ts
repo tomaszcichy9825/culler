@@ -27,7 +27,7 @@ import { CONTACT_SHEET, LOUPE_FIRST, MODES, shell } from "./shell.svelte";
 import type { Pane } from "./shell.svelte";
 import { gridSort } from "./sort.svelte";
 import { app, applyHashPatches, DEFAULT_SLOW_SCAN_SECONDS, groupKey, loupe, picker, tree } from "./state.svelte";
-import type { HashPatch } from "./state.svelte";
+import type { FrameMods, HashPatch } from "./state.svelte";
 import { MAX_RATING } from "./verdict";
 import type { Half } from "./verdict";
 
@@ -831,6 +831,51 @@ export function moveFocus(dx: number, dy: number) {
   // on the contact sheet a vertical step is a whole row of tiles.
   const rowStep = tableOrders() || app.view === "loupe" ? 1 : app.cols;
   advanceFocus(dx + dy * rowStep);
+}
+
+/**
+ * visibleOrder is the frames in the order the user can see them. The table
+ * sorts its own view while it is up; every other screen walks app.groups,
+ * which is already the order the sheet, the loupe and the filmstrip show. A
+ * range is measured in this order and never in the raw array — "everything
+ * between these two" has to mean everything between them on screen.
+ */
+function visibleOrder(): GroupDTO[] {
+  if (!tableOrders()) return app.groups;
+  return sortRows(app.groups, table.sort()).map((row) => row.group);
+}
+
+/**
+ * selectFrame is what a click on a frame means, wherever it was drawn: plain
+ * focuses it alone, shift sweeps the range from the anchor, and ⌘ (Ctrl off
+ * macOS) toggles the one frame with the anchor left where it was. One door, so
+ * the contact sheet, the table and the filmstrip cannot drift apart.
+ */
+export function selectFrame(index: number, e?: FrameMods) {
+  app.pick(index, e, visibleOrder());
+}
+
+/**
+ * extendFocus is Shift held with a focus key. Focus moves exactly as it would
+ * without the modifier — a whole row on the contact sheet, one row of the
+ * table's own sort, one frame in the loupe — and the selection follows it from
+ * the anchor, so arrowing back towards the anchor shrinks the range and past
+ * it grows one the other way.
+ */
+export function extendFocus(dx: number, dy: number) {
+  // Selection belongs to the grid, and only CULL shows it. MAP and IMPORT
+  // draw the same frames as pins and rows they do not mark as selected, and a
+  // sweep there would arm "place N selected" over frames nobody chose.
+  if (shell.mode !== "cull" || app.groups.length === 0) return;
+  if (palette.open) return;
+  // Zoomed, the arrows pan the photograph. There is no focus movement to
+  // extend, and Shift must not quietly turn a pan into a selection.
+  if (app.view === "loupe" && app.zoom) return;
+  // The anchor is where focus was before the press, not after it: the first
+  // Shift+↓ of a session has to select the frame it started on as well.
+  if (app.anchor === null) app.dropAnchor(app.focusIndex);
+  moveFocus(dx, dy);
+  app.selectTo(app.focusIndex, visibleOrder());
 }
 
 /**

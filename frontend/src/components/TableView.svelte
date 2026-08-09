@@ -204,8 +204,12 @@
     groups: GroupDTO[];
     /** Which of those frames has focus, as an index into `groups`. */
     focusIndex: number;
-    /** Asks for focus to move. The index is into `groups`, never a row number. */
-    onFocus: (index: number) => void;
+    /**
+     * Asks for focus to move. The index is into `groups`, never a row number.
+     * A row click passes its event too, because the modifiers decide whether
+     * the click extends or toggles a selection — a rule the host owns.
+     */
+    onFocus: (index: number, e?: MouseEvent) => void;
     /** A frame was opened — double click, or ⏎ on the focused row. */
     onActivate?: (index: number) => void;
     /** Selection membership, if the host tracks one. */
@@ -383,7 +387,7 @@
             aria-rowindex={place + 2}
             aria-selected={isSelected?.(g) ?? false}
             tabindex="-1"
-            onclick={() => onFocus(row.index)}
+            onclick={(e) => onFocus(row.index, e)}
             ondblclick={() => onActivate?.(row.index)}
           >
             <span class="cell c-thumb" role="gridcell">
@@ -624,15 +628,35 @@
     background: var(--bg-row-zebra);
   }
 
-  /* The design draws no selected-but-unfocused row for this screen. This is the
-     grid tile's selected border, moved to the edge the focused row marks. */
+  /* A range of rows has to read as a block from across the room, the way a
+     swept range of tiles does — an inset hairline on its own was invisible at
+     a glance, which is the whole complaint range selection exists to answer.
+     So: the accent wash across the row, and the accent itself on the edge the
+     focused row also marks. */
   .row.selected {
-    box-shadow: inset 2px 0 0 var(--border-selected);
+    background: var(--accent-wash-10);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .row.selected .c-stem {
+    color: var(--text-hi);
+  }
+
+  /* Zebra striping is a reading aid for undecided rows; inside a selection the
+     wash is the thing being read, so it wins. */
+  .row.zebra.selected {
+    background: var(--accent-wash-14);
   }
 
   .row.focused {
     background: var(--bg-row-active);
     box-shadow: var(--focus-edge);
+  }
+
+  /* Focused AND selected is the far end of a sweep: both marks, neither lost. */
+  .row.focused.selected {
+    background: var(--accent-wash-16);
+    box-shadow: var(--focus-edge), inset 3px 0 0 var(--accent);
   }
 
   .cell {
