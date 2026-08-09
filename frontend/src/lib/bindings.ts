@@ -24,6 +24,8 @@ export type {
   DirEntryDTO,
   FolderDTO,
   GroupDTO,
+  LibraryFolderDTO,
+  LibraryFoldersDTO,
   PlanDTO,
   RatingItem,
   ResultDTO,

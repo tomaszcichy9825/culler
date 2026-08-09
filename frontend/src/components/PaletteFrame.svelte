@@ -34,8 +34,14 @@
 
   // Taking the keyboard is what makes ownsKeys() true for everything typed
   // here, which is what keeps the grid's bindings quiet behind the dialog.
+  //
+  // A palette that draws a real text field wants the field focused instead:
+  // ownsKeys() is true either way, and only the field can hold a caret, a
+  // selection and a paste. The panel is the fallback for the palettes that
+  // collect their query a keystroke at a time.
   $effect(() => {
-    root?.focus();
+    const field = root?.querySelector<HTMLElement>("[data-palette-field]");
+    (field ?? root)?.focus();
   });
 
   // The body scrolls, and the cursor must not walk out of it: whichever
@@ -49,11 +55,26 @@
     bodyEl?.querySelector(".at")?.scrollIntoView({ block: "nearest" });
   });
 
+  /**
+   * editing reports that the press came from the palette's own text field, so
+   * routeKey knows to leave the caret keys alone. It is asked of the event
+   * rather than of a prop: the field is the only element in a palette that
+   * holds text, and an event that came from anywhere else in the panel is the
+   * list's however the palette is built.
+   */
+  function editing(target: EventTarget | null): boolean {
+    return target instanceof HTMLElement && target.hasAttribute("data-palette-field");
+  }
+
   function onKeydown(e: KeyboardEvent) {
     // Nothing typed into a palette belongs to the window listener, including
     // the Esc it would otherwise answer by blurring.
     e.stopPropagation();
-    if (routeKey(e, count, onrun) !== "ignore") e.preventDefault();
+    const outcome = routeKey(e, count, onrun, editing(e.target));
+    // "caret" is a press the field is about to answer itself. Preventing it
+    // would leave ← and ⌥← doing nothing at all, which is worse than the row
+    // cursor they used to move.
+    if (outcome !== "ignore" && outcome !== "caret") e.preventDefault();
   }
 </script>
 

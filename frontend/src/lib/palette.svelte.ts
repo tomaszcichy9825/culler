@@ -10,8 +10,8 @@
 // The grid filter lives here too. It is a view over app.groups, never a write
 // to it — nothing in this module changes a frame or a verdict.
 
-import { DecisionService } from "./bindings";
-import type { DestinationDTO, GroupDTO } from "./bindings";
+import { DecisionService, LibraryIndexService } from "./bindings";
+import type { DestinationDTO, GroupDTO, LibraryFolderDTO, LibraryFoldersDTO } from "./bindings";
 import { gridSort } from "./sort.svelte";
 import { app } from "./state.svelte";
 import { verdictOf } from "./verdict";
@@ -292,6 +292,62 @@ class DestinationList {
 
 export const destinations = new DestinationList();
 
+/* ---- library folders ----
+   The places the library already files photographs, which is what the palette
+   suggests from once something has been typed. They are not destinations: the
+   list is a read of the catalogue, nothing is recorded by showing one, and a
+   folder only becomes a destination when the user picks it. */
+
+/** How many folders the palette asks the catalogue for. */
+export const FOLDER_LIMIT = 400;
+
+/** The catalogue call the folder list makes, swapped out by the bench. */
+export const libraryFolderPort = {
+  list: (limit: number): Promise<LibraryFoldersDTO> => LibraryIndexService.Folders(limit),
+};
+
+/**
+ * The catalogued folders and the library root a relative destination hangs
+ * off. Loaded when the palette opens rather than held for the session: an index
+ * pass, or an apply, changes what the library holds.
+ */
+class LibraryFolders {
+  rows = $state<LibraryFolderDTO[]>([]);
+  /** Where a destination that is not an absolute path lands. */
+  root = $state("");
+  loaded = $state(false);
+  /**
+   * Why there are no suggestions, when there is a reason worth showing. A
+   * catalogue that cannot be read is not an error the palette refuses over:
+   * typing a path still works, and that is the flow this feature sits beside.
+   */
+  error = $state("");
+
+  async load(): Promise<void> {
+    try {
+      const out = await libraryFolderPort.list(FOLDER_LIMIT);
+      this.rows = out.folders ?? [];
+      this.root = out.root;
+      this.error = "";
+    } catch (err) {
+      this.rows = [];
+      this.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.loaded = true;
+    }
+  }
+
+  /**
+   * destinationFor is the folder written the way a destination is recorded:
+   * library-relative when it lives under the library root, absolute otherwise.
+   */
+  destinationFor(f: LibraryFolderDTO): string {
+    return f.rel !== "" ? f.rel : f.path;
+  }
+}
+
+export const libraryFolders = new LibraryFolders();
+
 /**
  * leafOf is the last part of a destination, which is what a chip on a tile has
  * room for. A template keeps its braces here: `{date:2006-01-02}` is what the
@@ -401,11 +457,22 @@ export interface KeyPress {
 }
 
 /**
- * What a press turned out to mean. Everything but "ignore" is a press the
- * palette has consumed, so it is also what tells the frame when to call
- * preventDefault.
+ * What a press turned out to mean. Everything but "ignore" and "caret" is a
+ * press the palette has consumed, so it is also what tells the frame when to
+ * call preventDefault — a "caret" press belongs to the text field the event
+ * came from, and preventing it is exactly the bug that made editing a typed
+ * destination mean deleting back to the mistake.
  */
-export type KeyOutcome = "close" | "move" | "edge" | "run" | "type" | "erase" | "reserved" | "ignore";
+export type KeyOutcome =
+  | "close"
+  | "move"
+  | "edge"
+  | "run"
+  | "type"
+  | "erase"
+  | "reserved"
+  | "caret"
+  | "ignore";
 
 /** printable reports whether a press should be treated as typing. */
 function printable(e: KeyPress): boolean {
@@ -413,14 +480,30 @@ function printable(e: KeyPress): boolean {
 }
 
 /**
- * routeKey is every palette's keyboard, in one place so the three cannot drift
+ * The keys that move a text caret rather than a row cursor: ← and → with any
+ * modifier on them, since ⌥← is a word and ⌘← is the start of the line and
+ * both are the field's business, not the list's.
+ */
+function movesTheCaret(e: KeyPress): boolean {
+  return e.key === "ArrowLeft" || e.key === "ArrowRight";
+}
+
+/**
+ * routeKey is every palette's keyboard, in one place so they cannot drift
  * apart. count is how many rows the palette is showing, so the cursor wraps at
  * the right place, and run is what ⏎ does with alt held or not.
+ *
+ * editing says the press came from a real text field — the destination
+ * palette's, which holds its own text so that a caret, a selection and a paste
+ * all behave the way they do everywhere else. Then this function claims only
+ * the keys that are unambiguously the list's (↑↓, ⏎, Esc, Tab) and hands the
+ * rest back: the field types, erases and moves its own caret, and Home/End go
+ * to the ends of the text rather than the ends of the list.
  *
  * Nothing here traps anything: Esc closes, and the frame gives the keyboard
  * back to the grid when it goes.
  */
-export function routeKey(e: KeyPress, count: number, run: (alt: boolean) => void): KeyOutcome {
+export function routeKey(e: KeyPress, count: number, run: (alt: boolean) => void, editing = false): KeyOutcome {
   switch (e.key) {
     case "Escape":
       palette.close();
@@ -432,9 +515,11 @@ export function routeKey(e: KeyPress, count: number, run: (alt: boolean) => void
       palette.move(-1, count);
       return "move";
     case "Home":
+      if (editing) return "caret";
       palette.index = 0;
       return "edge";
     case "End":
+      if (editing) return "caret";
       palette.index = Math.max(0, count - 1);
       return "edge";
     case "Enter":
@@ -445,10 +530,14 @@ export function routeKey(e: KeyPress, count: number, run: (alt: boolean) => void
       // focus cannot walk out of the dialog while it means nothing.
       return "reserved";
     case "Backspace":
+      if (editing) return "caret";
       if (e.metaKey === true || e.altKey === true) palette.clearQuery();
       else palette.backspace();
       return "erase";
   }
+
+  if (movesTheCaret(e)) return editing ? "caret" : "ignore";
+  if (editing) return "caret";
 
   if (printable(e)) {
     palette.type(e.key);
