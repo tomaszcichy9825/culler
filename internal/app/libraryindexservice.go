@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,6 +166,30 @@ type TreeNodeDTO struct {
 	Bytes     int64  `json:"bytes"`
 	HasDirs   bool   `json:"hasDirs"`
 	IsRoot    bool   `json:"isRoot"`
+}
+
+// LibraryFolderDTO is one folder the library already has, offered as somewhere
+// to route frames to.
+//
+// Path is always the folder itself. Rel is the same folder written the way a
+// destination is recorded when it lives under the library root — "2026/
+// portraits" rather than the absolute path — which is the form that means the
+// same thing on every machine the library is opened on. It is empty for a
+// folder that is not under the library root, and for the library root itself,
+// which has no relative form anybody could type.
+type LibraryFolderDTO struct {
+	Path   string `json:"path"`
+	Rel    string `json:"rel"`
+	Name   string `json:"name"`
+	Frames int    `json:"frames"`
+}
+
+// LibraryFoldersDTO is the folder list plus the library root a relative
+// destination hangs off, so the palette can show where a routed frame would
+// actually land without a second call.
+type LibraryFoldersDTO struct {
+	Root    string             `json:"root"`
+	Folders []LibraryFolderDTO `json:"folders"`
 }
 
 // StorageRootDTO is what one root holds.
@@ -757,6 +782,57 @@ func (s *LibraryIndexService) undecidedUnder(store *catalog.Store, n catalog.Nod
 		}
 	}
 	return undecided, nil
+}
+
+// Folders is the places the library already files photographs, busiest first,
+// for the destination palette to suggest from. A limit of zero takes the
+// catalogue's own default.
+//
+// It is a read of what has been indexed, not of the disk: no folder is stat'd
+// and none is created. An app that has never opened the catalogue does not open
+// one to answer — a palette that a browse-only session opens must not be what
+// creates the index file — so the answer is then the library root and no
+// suggestions, which is exactly what the palette had before this existed.
+func (s *LibraryIndexService) Folders(limit int) (LibraryFoldersDTO, error) {
+	root, err := expandPath(s.app.Config().Behaviour.LibraryRoot)
+	if err != nil {
+		return LibraryFoldersDTO{}, err
+	}
+	out := LibraryFoldersDTO{Root: root, Folders: []LibraryFolderDTO{}}
+	if !s.catalogueExists() {
+		return out, nil
+	}
+	store, err := s.catalogue()
+	if err != nil {
+		return LibraryFoldersDTO{}, err
+	}
+	folders, err := store.Dirs(limit)
+	if err != nil {
+		return LibraryFoldersDTO{}, err
+	}
+	for _, f := range folders {
+		out.Folders = append(out.Folders, LibraryFolderDTO{
+			Path:   f.Path,
+			Rel:    libraryRelative(f.Path, root),
+			Name:   f.Name,
+			Frames: f.Frames,
+		})
+	}
+	return out, nil
+}
+
+// libraryRelative writes a folder the way a destination under the library root
+// is recorded, and answers "" for anything else — including the root itself,
+// which relativises to "." and is not a destination anyone can type.
+func libraryRelative(path, root string) string {
+	if root == "" || path == root {
+		return ""
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return rel
 }
 
 // PruneApplied forgets the frames whose files an apply has just taken away.

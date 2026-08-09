@@ -205,6 +205,86 @@ func TestChildrenRejectsARelativePath(t *testing.T) {
 	}
 }
 
+// Dirs is what the destination palette suggests from, so it has to name the
+// levels between a root and the folder frames are filed in: "2026" is a place
+// to file a photograph even when nothing is filed directly in it.
+func TestDirsNamesEveryLevelBetweenARootAndItsFrames(t *testing.T) {
+	s, root := shootTree(t)
+
+	folders, err := s.Dirs(0)
+	if err != nil {
+		t.Fatalf("Dirs: %v", err)
+	}
+
+	byPath := map[string]Folder{}
+	for _, f := range folders {
+		byPath[f.Path] = f
+	}
+	for _, want := range []struct {
+		path   string
+		frames int
+		direct int
+	}{
+		{root, 5, 1},
+		{filepath.Join(root, "2026-05"), 3, 2},
+		{filepath.Join(root, "2026-05", "100_FUJI"), 1, 1},
+		{filepath.Join(root, "2026-06"), 1, 1},
+	} {
+		got, ok := byPath[want.path]
+		if !ok {
+			t.Errorf("Dirs left out %s: %+v", want.path, folders)
+			continue
+		}
+		if got.Frames != want.frames || got.Direct != want.direct {
+			t.Errorf("%s holds %d frames (%d of its own), want %d (%d)",
+				want.path, got.Frames, got.Direct, want.frames, want.direct)
+		}
+		if got.Name != filepath.Base(want.path) {
+			t.Errorf("%s is called %q, want %q", want.path, got.Name, filepath.Base(want.path))
+		}
+	}
+	if len(folders) != 4 {
+		t.Errorf("Dirs returned %d folders, want the 4 in the tree: %+v", len(folders), folders)
+	}
+}
+
+// The busiest folder leads, because a palette shows the first handful of what
+// it is given and the busiest folder is the likeliest destination.
+func TestDirsPutsTheBusiestFolderFirstAndHonoursTheLimit(t *testing.T) {
+	s := openStore(t)
+	root := fix("/archive")
+	seedDir(t, s, filepath.Join(root, "quiet"), 1)
+	seedDir(t, s, filepath.Join(root, "busy"), 4)
+	if _, err := s.AddRoot(root); err != nil {
+		t.Fatalf("AddRoot: %v", err)
+	}
+
+	folders, err := s.Dirs(2)
+	if err != nil {
+		t.Fatalf("Dirs: %v", err)
+	}
+	if len(folders) != 2 {
+		t.Fatalf("Dirs(2) returned %d folders, want 2: %+v", len(folders), folders)
+	}
+	if folders[0].Path != root || folders[1].Path != filepath.Join(root, "busy") {
+		t.Errorf("Dirs(2) = %s, %s; want the root then its busiest folder", folders[0].Path, folders[1].Path)
+	}
+}
+
+// A catalogue nobody has indexed yet has no folders to offer, and saying so is
+// not an error: the palette then shows what the user types and nothing else.
+func TestDirsOnAnEmptyCatalogueIsEmpty(t *testing.T) {
+	s := openStore(t)
+
+	folders, err := s.Dirs(0)
+	if err != nil {
+		t.Fatalf("Dirs: %v", err)
+	}
+	if len(folders) != 0 {
+		t.Errorf("Dirs on an empty catalogue = %+v, want nothing", folders)
+	}
+}
+
 func TestKeysUnderCoversTheWholeSubtree(t *testing.T) {
 	s, root := shootTree(t)
 

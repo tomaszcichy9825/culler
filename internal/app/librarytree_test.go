@@ -137,6 +137,123 @@ func TestSearchWritesTheOverlayBackSoTheFacetCountsFollow(t *testing.T) {
 	}
 }
 
+// libraryRooted is catalogued(t) with the library root pointed at the archive,
+// so the folders under it come back in the relative shape a destination is
+// recorded in.
+func libraryRooted(t *testing.T) (*LibraryIndexService, string) {
+	t.Helper()
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Behaviour.LibraryRoot = root
+	a := newAt(filepath.Join(t.TempDir(), "config.json"), t.TempDir(), cfg)
+	t.Cleanup(func() {
+		if err := a.Close(); err != nil {
+			t.Errorf("close app: %v", err)
+		}
+	})
+	s := NewLibraryIndexService(a)
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close index service: %v", err)
+		}
+	})
+
+	portraits := filepath.Join(root, "2026", "portraits")
+	if err := os.MkdirAll(portraits, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shoot(t, portraits, "DSCF0001", time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC))
+	if _, err := s.RegisterRoot(root); err != nil {
+		t.Fatalf("RegisterRoot: %v", err)
+	}
+	if _, err := s.reindex(root); err != nil {
+		t.Fatalf("reindex: %v", err)
+	}
+	return s, root
+}
+
+func TestFoldersOffersTheCatalogueRelativeToTheLibraryRoot(t *testing.T) {
+	s, root := libraryRooted(t)
+
+	out, err := s.Folders(0)
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	if out.Root != root {
+		t.Errorf("Folders reports the library root as %q, want %q", out.Root, root)
+	}
+
+	byPath := map[string]LibraryFolderDTO{}
+	for _, f := range out.Folders {
+		byPath[f.Path] = f
+	}
+	// The relative form is what a destination is recorded in, so it is what the
+	// palette offers: "2026/portraits" means the same thing on every machine
+	// the library is opened on.
+	deep, ok := byPath[filepath.Join(root, "2026", "portraits")]
+	if !ok {
+		t.Fatalf("Folders left out the folder holding the frames: %+v", out.Folders)
+	}
+	if deep.Rel != filepath.Join("2026", "portraits") {
+		t.Errorf("relative form = %q, want %q", deep.Rel, filepath.Join("2026", "portraits"))
+	}
+	if deep.Name != "portraits" || deep.Frames != 1 {
+		t.Errorf("folder = %+v, want portraits holding 1 frame", deep)
+	}
+	// The level in between is a place to file a photograph too.
+	mid, ok := byPath[filepath.Join(root, "2026")]
+	if !ok {
+		t.Fatalf("Folders left out the level between the root and the frames: %+v", out.Folders)
+	}
+	if mid.Rel != "2026" {
+		t.Errorf("the intermediate folder's relative form = %q, want 2026", mid.Rel)
+	}
+	// The root itself is the library root, and "" is not a destination anyone
+	// can type, so it carries no relative form.
+	if top, ok := byPath[root]; !ok || top.Rel != "" {
+		t.Errorf("the library root itself = %+v, want it listed with no relative form", top)
+	}
+}
+
+// A folder outside the library root is still a destination — it is just an
+// absolute one, and the palette has to offer it as such.
+func TestFoldersLeavesAFolderOutsideTheLibraryRootAbsolute(t *testing.T) {
+	s, _ := catalogued(t)
+
+	out, err := s.Folders(0)
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	if len(out.Folders) == 0 {
+		t.Fatal("Folders offered nothing from a catalogued archive")
+	}
+	for _, f := range out.Folders {
+		if f.Rel != "" {
+			t.Errorf("%s came back relative to a library root it is not under", f.Path)
+		}
+	}
+}
+
+// Opening the palette must not be what creates the catalogue: an app that has
+// never visited LIBRARY has nothing to suggest, and saying so costs no file.
+func TestFoldersDoesNotCreateACatalogue(t *testing.T) {
+	s := indexService(t)
+
+	out, err := s.Folders(0)
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	if len(out.Folders) != 0 {
+		t.Errorf("Folders offered %+v from an app with no catalogue", out.Folders)
+	}
+	if out.Root == "" {
+		t.Error("Folders gave no library root, which the palette needs to resolve a relative destination")
+	}
+	if _, err := os.Stat(filepath.Join(s.app.dataDir, catalogFile)); !os.IsNotExist(err) {
+		t.Errorf("asking for the folder list created %s", catalogFile)
+	}
+}
+
 func TestSessionsCountTheDecisionsAsTheyStandNow(t *testing.T) {
 	s, _ := catalogued(t)
 	mark(t, s, "DSCF0001", decide.Keep, 0)

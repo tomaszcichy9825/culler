@@ -124,6 +124,134 @@ func (s *Store) Children(dir string) ([]Node, error) {
 	return out, nil
 }
 
+// Folder is one directory the catalogue covers: a registered root, a folder
+// frames are filed in, or a level between the two.
+//
+// It is deliberately flatter than Node. A Node is a row of the tree, drawn with
+// its byte totals and its twisty; a Folder is a place a photograph could be
+// filed, which is a list a palette fuzzy-matches against and nothing else.
+type Folder struct {
+	Path string
+	Name string
+	// Frames is everything at or under the folder, and Direct is what is filed
+	// in the folder itself. A level that only leads somewhere else has a Direct
+	// of zero and is still a perfectly good destination.
+	Frames int
+	Direct int
+}
+
+// DefaultFolderLimit is how many folders Dirs offers a caller that names no
+// limit of its own. A palette shows a handful and fuzzy-matches the rest, so
+// the cap is about what a list can usefully be rather than what SQLite can
+// return.
+const DefaultFolderLimit = 500
+
+// Dirs is the folders the catalogue knows about, busiest first, capped at
+// limit — zero or less taking DefaultFolderLimit.
+//
+// Every level between a root and a folder holding frames is named, because a
+// year folder nothing is filed directly in is still somewhere to file a
+// photograph, and a list that only held leaf folders would not offer it.
+//
+// The one query behind this groups by directory, so what it reads is bounded by
+// the shape of the tree rather than by how many frames are in it — the same
+// property dirTotals leans on. The rollup and the cap are done here rather than
+// in SQL because the ancestors do not exist as rows to be counted.
+func (s *Store) Dirs(limit int) ([]Folder, error) {
+	if limit <= 0 {
+		limit = DefaultFolderLimit
+	}
+	roots, err := rootPaths(s.db)
+	if err != nil {
+		return nil, err
+	}
+	totals, err := s.allDirTotals()
+	if err != nil {
+		return nil, err
+	}
+
+	byPath := map[string]*Folder{}
+	folder := func(path string) *Folder {
+		f, ok := byPath[path]
+		if !ok {
+			f = &Folder{Path: path, Name: filepath.Base(path)}
+			byPath[path] = f
+		}
+		return f
+	}
+	for _, t := range totals {
+		folder(t.dir).Direct += t.frames
+		// The frames count towards the folder itself and towards every level
+		// between it and the root it lives under. A directory no root covers —
+		// a root removed since the last pass, say — still names itself, so a
+		// folder the user has been filing into does not vanish from the list
+		// before the next index pass notices.
+		for _, dir := range ancestry(t.dir, roots) {
+			folder(dir).Frames += t.frames
+		}
+	}
+
+	out := make([]Folder, 0, len(byPath))
+	for _, f := range byPath {
+		out = append(out, *f)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Frames != out[j].Frames {
+			return out[i].Frames > out[j].Frames
+		}
+		return out[i].Path < out[j].Path
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ancestry is dir and every folder between it and the root it sits under, the
+// root included. A dir no root covers is only itself.
+func ancestry(dir string, roots []string) []string {
+	out := []string{dir}
+	root := ""
+	for _, r := range roots {
+		// The longest root wins, so a root nested inside another does not walk
+		// the ancestry past the folder the user actually registered.
+		if under(dir, r) && len(r) > len(root) {
+			root = r
+		}
+	}
+	if root == "" || root == dir {
+		return out
+	}
+	for up := filepath.Dir(dir); under(up, root); up = filepath.Dir(up) {
+		out = append(out, up)
+		if up == root || up == filepath.Dir(up) {
+			break
+		}
+	}
+	return out
+}
+
+// allDirTotals is dirTotals over the whole catalogue rather than one subtree.
+func (s *Store) allDirTotals() ([]dirTotal, error) {
+	rows, err := s.db.Query(
+		`SELECT dir, COUNT(*), COALESCE(SUM(raw_bytes),0), COALESCE(SUM(jpeg_bytes),0)
+		 FROM frames GROUP BY dir`)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: total every folder: %w", err)
+	}
+	defer rows.Close()
+
+	var out []dirTotal
+	for rows.Next() {
+		var t dirTotal
+		if err := rows.Scan(&t.dir, &t.frames, &t.rawBytes, &t.jpegBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // dirTotal is one catalogued directory and what is filed directly in it.
 type dirTotal struct {
 	dir       string

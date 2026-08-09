@@ -5,9 +5,9 @@
 // nothing to the bundle. It exists because routing is a keyboard flow with a
 // backend on the end of it — press a digit, a whole selection is bound for a
 // folder — and the keyboard half has to be checkable without a card, a
-// library, or a person to look at it. The destination service is answered
-// through the port the palette store already goes through, so the assertions
-// here are about the real component and the real store.
+// library, or a person to look at it. Both services are answered through the
+// ports the palette store already goes through, so the assertions here are
+// about the real component and the real store.
 //
 // Run it with the dev server up, against whichever port it reports:
 //   npx vite --port 9349
@@ -19,12 +19,13 @@
 // Every assertion lands in #results as JSON, and the document title carries
 // the tally so a check can read one line.
 
-import { flushSync, mount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import ApplyBar from "../components/ApplyBar.svelte";
 import MovePalette from "../components/MovePalette.svelte";
 import Tile from "../components/Tile.svelte";
-import type { DestinationDTO, GroupDTO, PlanDTO } from "../lib/bindings";
-import { destinationPort, destinations, leafOf, palette } from "../lib/palette.svelte";
+import type { DestinationDTO, GroupDTO, LibraryFolderDTO, PlanDTO } from "../lib/bindings";
+import { expandTemplate, formatDate, resolve } from "../lib/destination";
+import { destinationPort, destinations, leafOf, libraryFolderPort, palette } from "../lib/palette.svelte";
 import { app } from "../lib/state.svelte";
 
 interface Result {
@@ -58,6 +59,8 @@ function stage(width: number, height: number): HTMLDivElement {
 /* ---- a fake destinations service ---- */
 
 const DIR = "/Volumes/FUJI_SD/DCIM/103_FUJI";
+/** Where a library-relative destination lands, as the backend reports it. */
+const LIBRARY = "/library";
 
 /**
  * The service the palette store talks to, answered in memory. It is a real
@@ -166,6 +169,28 @@ destinationPort.pin = (p, v) => service.pin(p, v);
 destinationPort.bind = (p, s) => service.bind(p, s);
 destinationPort.forget = (p) => service.forget(p);
 
+/* ---- a fake catalogue ---- */
+
+/** folder builds one catalogued folder the way LibraryIndexService reports it. */
+function folder(path: string, frames: number): LibraryFolderDTO {
+  const rel = path.startsWith(`${LIBRARY}/`) ? path.slice(LIBRARY.length + 1) : "";
+  return { path, rel, name: path.slice(path.lastIndexOf("/") + 1), frames };
+}
+
+/** Every folder the library holds, busiest first as the catalogue returns it. */
+const catalogue: LibraryFolderDTO[] = [
+  folder(`${LIBRARY}/2026/portraits`, 412),
+  folder(`${LIBRARY}/2026/keepers`, 180),
+  folder(`${LIBRARY}/2026`, 640),
+  folder("/archive/2019/portfolio", 55),
+];
+
+let folderCalls = 0;
+libraryFolderPort.list = (limit: number) => {
+  folderCalls++;
+  return Promise.resolve({ root: LIBRARY, folders: catalogue.slice(0, limit) });
+};
+
 /* ---- frames ---- */
 
 function frame(n: number, over: Partial<GroupDTO> = {}): GroupDTO {
@@ -201,15 +226,78 @@ function loadFrames() {
   app.plan = null;
 }
 
-/** press sends a key to the open palette the way the browser would. */
-function press(key: string, over: KeyboardEventInit = {}) {
-  const target = document.querySelector('[data-keys="local"]') ?? document.body;
-  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...over }));
+/* ---- driving the palette ---- */
+
+let host: HTMLElement | null = null;
+let component: Record<string, unknown> | null = null;
+
+function openPalette(kind: "move" | "copy" = "move"): HTMLElement {
+  closePalette();
+  palette.show(kind);
+  host = stage(1000, 640);
+  component = mount(MovePalette, { target: host }) as Record<string, unknown>;
   flushSync();
+  return host;
 }
 
+function closePalette() {
+  if (component !== null) void unmount(component);
+  host?.remove();
+  component = null;
+  host = null;
+}
+
+/** The palette's text field, which is a real input and holds its own caret. */
+function field(): HTMLInputElement | null {
+  return host?.querySelector<HTMLInputElement>("[data-palette-field]") ?? null;
+}
+
+/**
+ * press sends a key the way the browser would: at the field when there is one,
+ * so the routing sees the same target the real keyboard produces. It hands the
+ * event back, because whether the palette let the press through to the field is
+ * exactly what the cursor-key assertions are about.
+ */
+function press(key: string, over: KeyboardEventInit = {}): KeyboardEvent {
+  const target = field() ?? host?.querySelector('[data-keys="local"]') ?? document.body;
+  const ev = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...over });
+  target.dispatchEvent(ev);
+  flushSync();
+  return ev;
+}
+
+/**
+ * type presses each key and then does what the browser's default action would
+ * have done with it — a synthetic keydown inserts nothing on its own. A press
+ * the palette consumed inserts nothing here either, which is the point.
+ */
 function type(s: string) {
-  for (const ch of s) press(ch);
+  for (const ch of s) {
+    const ev = press(ch);
+    const el = field();
+    if (el === null || ev.defaultPrevented) continue;
+    const at = el.selectionStart ?? el.value.length;
+    const to = el.selectionEnd ?? at;
+    el.value = el.value.slice(0, at) + ch + el.value.slice(to);
+    el.setSelectionRange(at + 1, at + 1);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+  }
+}
+
+/** erase is Backspace, default action and all. */
+function erase(n = 1) {
+  for (let i = 0; i < n; i++) {
+    const ev = press("Backspace");
+    const el = field();
+    if (el === null || ev.defaultPrevented) continue;
+    const at = el.selectionStart ?? el.value.length;
+    if (at === 0) continue;
+    el.value = el.value.slice(0, at - 1) + el.value.slice(el.selectionEnd ?? at);
+    el.setSelectionRange(at - 1, at - 1);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+  }
 }
 
 /** settle lets the palette's awaits (load, use, pin) finish. */
@@ -219,76 +307,213 @@ async function settle() {
   flushSync();
 }
 
-function openPalette(): HTMLElement {
-  const host = stage(1000, 640);
-  mount(MovePalette, { target: host });
-  flushSync();
-  return host;
+function rowPaths(): (string | null)[] {
+  return [...(host?.querySelectorAll(".row") ?? [])].map((r) => r.getAttribute("data-destination"));
+}
+
+function rowKinds(): (string | null)[] {
+  return [...(host?.querySelectorAll(".row") ?? [])].map((r) => r.getAttribute("data-kind"));
 }
 
 async function run() {
+  /* ---- the pure rules the preview is drawn from ---- */
+
+  eq("template · a date token takes a Go layout", formatDate(new Date(2026, 4, 17, 14, 5, 9), "2006-01-02"), "2026-05-17");
+  eq("template · and the pieces a folder name is written from", formatDate(new Date(2026, 4, 17, 14, 5, 9), "Jan 2 15:04"), "May 17 14:05");
+  eq(
+    "template · a token the frame cannot answer takes its own segment",
+    expandTemplate("/library/{camera}/{stem}", {
+      shot: null,
+      stem: "DSCF0001",
+      ext: "raf",
+      camera: "",
+      lens: "",
+    }).path,
+    "/library/DSCF0001",
+  );
+  eq(
+    "template · a separator inside a value is not a new folder level",
+    expandTemplate("{camera}", { shot: null, stem: "", ext: "", camera: "Nikon/Z8", lens: "" }).path,
+    "Nikon-Z8",
+  );
+  eq("resolve · a relative destination hangs off the library root", resolve("2026/portraits", LIBRARY), "/library/2026/portraits");
+  eq("resolve · an absolute one is taken at its word", resolve("/elsewhere/keep", LIBRARY), "/elsewhere/keep");
+
   /* ---- the list the palette shows ---- */
 
-  service.seed(["/library/2026/rejects", "/library/2026/portraits", "/library/2026/keepers"]);
-  palette.show("move");
+  // The remembered list deliberately does not hold the portraits folder: it is
+  // the catalogue's, and finding it is what the suggestions are for.
+  service.seed([`${LIBRARY}/2026/rejects`, `${LIBRARY}/2025/weddings`, `${LIBRARY}/2026/keepers`]);
   loadFrames();
-  const paletteHost = openPalette();
+  openPalette();
   await settle();
 
-  const rowPaths = [...paletteHost.querySelectorAll(".row")].map((r) => r.getAttribute("data-destination"));
-  eq("palette · rows come from the service, most recent first", rowPaths, [
-    "/library/2026/keepers",
-    "/library/2026/portraits",
-    "/library/2026/rejects",
+  eq("palette · rows come from the service, most recent first", rowPaths().slice(0, 3), [
+    `${LIBRARY}/2026/keepers`,
+    `${LIBRARY}/2025/weddings`,
+    `${LIBRARY}/2026/rejects`,
   ]);
-  const digits = [...paletteHost.querySelectorAll(".row")].map((r) => text(r.querySelector(".cap.slot")));
+  const digits = [...host!.querySelectorAll('.row[data-kind="remembered"]')].map((r) => text(r.querySelector(".cap.slot")));
   eq("palette · the first nine carry their digit", digits, ["1", "2", "3"]);
+  check("palette · the catalogue was asked for its folders", folderCalls > 0, `${folderCalls} calls`);
 
-  /* ---- fuzzy search, and creating a path that is not on the list ---- */
+  // A folder that is also a remembered destination is one place, however the
+  // two lists write it: the relative form resolves to the same folder.
+  const keepers = rowPaths().filter((p) => resolve(p ?? "", LIBRARY) === `${LIBRARY}/2026/keepers`);
+  eq("palette · a suggestion that is already a destination is not offered twice", keepers.length, 1);
+  check(
+    "palette · the folders the library holds are offered under the remembered ones",
+    rowKinds().includes("folder"),
+    rowKinds().join(","),
+  );
 
-  // "port" is both a search and a library-relative path nobody has used, so
-  // the create row leads and the match follows it. Everything that does not
-  // match is gone.
+  /* ---- fuzzy search against the catalogue ---- */
+
+  // "port" is a word, not a path, so it is a search: the folder the library
+  // already has leads, and creating a folder called "port" is the deliberate
+  // choice at the bottom.
   type("port");
   await settle();
-  const searched = [...paletteHost.querySelectorAll(".row")].map((r) => r.getAttribute("data-destination"));
-  eq("palette · typing narrows to the match", searched, ["port", "/library/2026/portraits"]);
+  // A folder outside the library root matches on the same terms and is offered
+  // as the absolute path it is; the best match still leads.
+  eq("search · a typed word finds the library folder", rowPaths(), [
+    "2026/portraits",
+    "/archive/2019/portfolio",
+    "port",
+  ]);
+  eq("search · the matches lead and the create row follows them", rowKinds(), ["folder", "folder", "create"]);
+  eq(
+    "search · the suggestion says what the library has filed there",
+    text(host!.querySelector('.row[data-kind="folder"] .rmeta')),
+    "412 frames filed here",
+  );
+  eq(
+    "search · the preview resolves it against the library root",
+    text(host!.querySelector(".dest .folder")),
+    `${LIBRARY}/2026/portraits`,
+  );
+  check(
+    "search · and says which kind of destination it is",
+    text(host!.querySelector(".dest .shape")).startsWith("library-relative"),
+    text(host!.querySelector(".dest .shape")),
+  );
 
-  for (let i = 0; i < 4; i++) press("Backspace");
-  type("/library/2026/wildlife");
+  /* ---- the cursor keys belong to the text, not to the list ---- */
+
+  const before = palette.index;
+  const left = press("ArrowLeft");
+  eq("keys · ← is the field's, so the row cursor stays put", palette.index, before);
+  eq("keys · and the palette does not swallow it", left.defaultPrevented, false);
+  const wordLeft = press("ArrowLeft", { altKey: true });
+  eq("keys · ⌥← is the field's too", wordLeft.defaultPrevented, false);
+  const lineStart = press("Home");
+  eq("keys · Home goes to the start of the text, not the top of the list", lineStart.defaultPrevented, false);
+  eq("keys · which leaves the row cursor alone", palette.index, before);
+  const down = press("ArrowDown");
+  eq("keys · ↓ walks the rows", palette.index, before + 1);
+  eq("keys · and is the palette's, so the caret does not move", down.defaultPrevented, true);
+  press("ArrowUp");
+  eq("keys · ↑ walks back", palette.index, before);
+
+  // Editing the middle of a typed path is the thing the old routing made
+  // impossible: the caret goes back, a character goes in, and the text either
+  // side of it survives.
+  const el = field()!;
+  el.setSelectionRange(0, 0);
+  type("s");
   await settle();
-  const fresh = paletteHost.querySelector(".row");
-  eq("palette · an unknown path leads the list", fresh?.getAttribute("data-destination"), "/library/2026/wildlife");
-  eq("palette · and offers to create it", text(fresh?.querySelector(".rmeta")), "create and use");
+  eq("keys · a character typed at the caret lands there", palette.query, "sport");
+  erase();
+  await settle();
+  eq("keys · and backspace takes it back", palette.query, "port");
 
-  /* ---- Enter assigns, and advances focus like a verdict ---- */
+  /* ---- ⏎ takes the suggestion ---- */
 
   press("Enter");
   await settle();
-  eq("assign · the focused frame is routed", app.groups[0].destination, "/library/2026/wildlife");
+  eq("assign · the focused frame is routed to the library folder", app.groups[0].destination, "2026/portraits");
   eq("assign · a destination implies a keep", app.groups[0].verdict, "keep");
   eq("assign · focus advances, as a verdict does", app.focusIndex, 1);
   eq("assign · the palette closes", palette.open, false);
   check(
     "assign · the destination is remembered",
-    service.calls.includes("use /library/2026/wildlife"),
+    service.calls.includes("use 2026/portraits"),
     service.calls.join(", "),
   );
   eq("assign · nothing else was routed", app.groups[1].destination, "");
+  closePalette();
+
+  /* ---- a path that is not a folder anybody has is still a destination ---- */
+
+  app.setFocus(0);
+  openPalette();
+  await settle();
+  type("/library/2026/wildlife");
+  await settle();
+  eq("create · a typed path leads, ahead of anything it happens to match", rowKinds()[0], "create");
+  eq("create · and is exactly what was typed", rowPaths()[0], "/library/2026/wildlife");
+  eq("create · offered as a create rather than as a match", text(host!.querySelector(".row .rmeta")), "create and use");
+  eq(
+    "create · the preview takes an absolute path at its word",
+    text(host!.querySelector(".dest .shape")),
+    "absolute path",
+  );
+  press("Enter");
+  await settle();
+  eq("create · ⏎ routes exactly there", app.groups[0].destination, "/library/2026/wildlife");
+  closePalette();
+
+  /* ---- templates ---- */
+
+  app.setFocus(0);
+  openPalette();
+  await settle();
+  type("{date:2006}/portraits");
+  await settle();
+  check("template · the token hint is shown", host!.querySelector(".tokens") !== null);
+  eq("template · a template is a path being written, so it leads", rowKinds()[0], "create");
+  eq("template · and says it makes a folder per frame", text(host!.querySelector(".row .rmeta")), "create per frame");
+  eq(
+    "template · the preview expands it against the focused frame",
+    text(host!.querySelector(".dest .folder")),
+    `${LIBRARY}/2026/portraits`,
+  );
+  press("Escape");
+  await settle();
+  closePalette();
+
+  /* ---- the verb the palette was opened with ---- */
+
+  app.setFocus(0);
+  app.toggleSelect();
+  app.setFocus(1);
+  app.toggleSelect();
+  openPalette("copy");
+  await settle();
+  eq("verb · the title states the verb and the count", text(host!.querySelector(".title")), "copy 2 frames to…");
+  eq("verb · and so does the confirm", text(host!.querySelector(".primary")), "copy ⏎");
+  closePalette();
+  app.clearSelection();
+
+  openPalette("move");
+  await settle();
+  eq("verb · a move palette says move", text(host!.querySelector(".title")), "move 1 frame to…");
+  eq("verb · on the confirm too", text(host!.querySelector(".primary")), "move ⏎");
+  closePalette();
 
   /* ---- a digit routes straight there ---- */
 
-  palette.show("move");
-  const slotHost = openPalette();
+  loadFrames();
+  app.setFocus(1);
+  openPalette();
   await settle();
-  // The freshly used path is now the most recent, so it holds digit 1 and
-  // the one the bench wants is behind it.
   const onTwo = destinations.forDigit(2);
   press("2");
   await settle();
   eq("slot · a digit routes the focused frame", app.groups[1].destination, onTwo?.path);
   eq("slot · and advances focus", app.focusIndex, 2);
   eq("slot · the palette closes", palette.open, false);
+  closePalette();
 
   /* ---- a digit routes a whole selection ---- */
 
@@ -296,8 +521,7 @@ async function run() {
   app.toggleSelect();
   app.setFocus(3);
   app.toggleSelect();
-  palette.show("move");
-  const bulkHost = openPalette();
+  openPalette();
   await settle();
   const onOne = destinations.forDigit(1);
   press("1");
@@ -307,28 +531,25 @@ async function run() {
     onOne?.path,
   ]);
   eq("slot · a selection does not move the focus", app.focusIndex, 3);
-  bulkHost.remove();
-  slotHost.remove();
+  closePalette();
 
   /* ---- 0 clears ---- */
 
   app.clearSelection();
-  app.setFocus(0);
-  palette.show("move");
-  const clearHost = openPalette();
+  app.setFocus(2);
+  openPalette();
   await settle();
   press("0");
   await settle();
-  eq("clear · 0 takes the routing off", app.groups[0].destination, "");
-  eq("clear · but leaves the verdict", app.groups[0].verdict, "keep");
+  eq("clear · 0 takes the routing off", app.groups[2].destination, "");
+  eq("clear · but leaves the verdict", app.groups[2].verdict, "keep");
   eq("clear · the palette closes", palette.open, false);
-  clearHost.remove();
+  closePalette();
 
   /* ---- a typed digit is part of a path, not a slot ---- */
 
   app.setFocus(0);
-  palette.show("move");
-  const typedHost = openPalette();
+  openPalette();
   await settle();
   type("/library/2026");
   await settle();
@@ -336,8 +557,7 @@ async function run() {
   eq("slot · and route nothing on their own", app.groups[0].destination, "");
   press("Escape");
   await settle();
-  typedHost.remove();
-  paletteHost.remove();
+  closePalette();
 
   /* ---- the chip on a tile ---- */
 
