@@ -13,6 +13,7 @@ import (
 	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/decide"
 	"github.com/tomaszcichy9825/culler/internal/exif"
+	"github.com/tomaszcichy9825/culler/internal/hash"
 	"github.com/tomaszcichy9825/culler/internal/journal"
 	"github.com/tomaszcichy9825/culler/internal/ops"
 	"github.com/tomaszcichy9825/culler/internal/platform"
@@ -58,14 +59,34 @@ type ResultDTO struct {
 	Err     string `json:"err"`
 }
 
+// FrameKeyDTO names one frame the way the grid holds it: the folder it was in,
+// its stem, and the identity its decision was recorded under.
+type FrameKeyDTO struct {
+	Dir  string `json:"dir"`
+	Stem string `json:"stem"`
+	Hash string `json:"hash"`
+}
+
 // BatchDTO is the journal record of one applied batch, as the frontend sees
 // it. A batch with failed actions is still a batch: partial completion is a
 // journaled fact, not an exception.
+//
+// Removed and Unrouted are what the batch actually consumed, so the grid can
+// be brought up to date in place rather than by reopening the folder — a
+// rescan of a full card after culling six frames is the same cost all over
+// again, for six frames' worth of news.
 type BatchDTO struct {
 	ID          string      `json:"id"`
 	Time        string      `json:"time"` // RFC3339
 	Description string      `json:"description"`
 	Actions     []ResultDTO `json:"actions"`
+
+	// Removed is the frames whose files all left the folder. They are gone
+	// from disk and from the catalogue, so the grid drops them.
+	Removed []FrameKeyDTO `json:"removed"`
+	// Unrouted is the frames the batch copied somewhere and which stayed where
+	// they were. They keep their verdict and lose their destination.
+	Unrouted []FrameKeyDTO `json:"unrouted"`
 }
 
 // ApplyService turns recorded decisions into file operations.
@@ -78,6 +99,32 @@ type ApplyService struct {
 	// every batch. nil is allowed: the prune then opens a short-lived handle
 	// of its own and closes it before returning.
 	catalogue *LibraryIndexService
+
+	// hashFn reads a frame's identity. nil means hash.Content; a test replaces
+	// it to count how many frames a plan actually opened, which is the whole
+	// cost of planning a big folder and not something the result reveals.
+	hashFn func(path string) (string, error)
+
+	// emit publishes progress to the webview. nil means emitEvent; a test
+	// replaces it to read the events without a running application.
+	emit func(name string, data any)
+}
+
+// identity is the hash read this service plans with.
+func (s *ApplyService) identity() func(path string) (string, error) {
+	if s.hashFn != nil {
+		return s.hashFn
+	}
+	return hash.Content
+}
+
+// report tells the webview how far the apply has got.
+func (s *ApplyService) report(phase string, done, total int) {
+	emit := s.emit
+	if emit == nil {
+		emit = emitEvent
+	}
+	emit(EventApplyProgress, ApplyProgress{Phase: phase, Done: done, Total: total})
 }
 
 // NewApplyService binds the service to the shared state. Pass the same
@@ -99,11 +146,24 @@ type FrameRef struct {
 // no side effects: nothing is trashed, moved or cleared. Passing no hashes
 // plans every decided frame in the folder.
 func (s *ApplyService) Plan(dir string, hashes []string) (PlanDTO, error) {
-	items, err := s.collect(dir, hashes)
+	items, err := s.collectFolder(dir, hashes)
 	if err != nil {
 		return PlanDTO{}, err
 	}
 	return s.planItems(items)
+}
+
+// collectFolder is collect for the one-folder entry points, with the planning
+// phase announced around it so a single big folder is as visibly busy as a
+// session spanning several is.
+func (s *ApplyService) collectFolder(dir string, hashes []string) ([]planned, error) {
+	s.report(ApplyPhasePlanning, 0, 1)
+	items, err := s.collect(dir, hashes)
+	if err != nil {
+		return nil, err
+	}
+	s.report(ApplyPhasePlanning, 1, 1)
+	return items, nil
 }
 
 // PlanScope reports what applying the named frames would do, across whatever
@@ -142,7 +202,7 @@ func (s *ApplyService) Apply(dir string, hashes []string) (BatchDTO, error) {
 	if err != nil {
 		return BatchDTO{}, err
 	}
-	items, err := s.collect(resolved, hashes)
+	items, err := s.collectFolder(resolved, hashes)
 	if err != nil {
 		return BatchDTO{}, err
 	}
@@ -201,18 +261,27 @@ func (s *ApplyService) run(items []planned, trasher platform.Trasher, exportDirs
 			Annotate: func(b *journal.Batch) {
 				b.Cleared = consumedBy(p.planned, *b).record
 			},
+			// Every few files, and always the last one: a copy of a 30MB RAW
+			// over a share is slow enough that silence reads as a hang, and an
+			// event per file on a card-sized cull is a needless flood.
+			Progress: func(done, total int) {
+				if done%8 == 0 || done == total {
+					s.report(ApplyPhaseApplying, done, total)
+				}
+			},
 		}
 		var applyErr error
 		batch, applyErr = executor.Apply(p.dto.Description, p.actions)
+		spent := consumedBy(p.planned, batch)
 		// Executor.Apply errors only on journal write failure, after the
 		// actions have already run. Files have moved either way, so clear
 		// the decisions for whatever succeeded before surfacing the error —
 		// otherwise a retry would re-execute completed operations.
-		if err := s.clearApplied(p.planned, batch); err != nil {
-			return batchDTO(batch), err
+		if err := s.clearApplied(spent); err != nil {
+			return consumedDTO(batch, spent), err
 		}
 		if applyErr != nil {
-			return batchDTO(batch), applyErr
+			return consumedDTO(batch, spent), applyErr
 		}
 		// With auto-export on, the surviving frames get fresh sidecars so a
 		// library read in Lightroom stays in step with the cull. Best-effort:
@@ -223,13 +292,14 @@ func (s *ApplyService) run(items []planned, trasher platform.Trasher, exportDirs
 				_, _ = NewXMPExportService(s.app).ExportFolder(dir)
 			}
 		}
-		return batchDTO(batch), nil
+		return consumedDTO(batch, spent), nil
 	}
 
-	if err := s.clearApplied(p.planned, batch); err != nil {
-		return batchDTO(batch), err
+	spent := consumedBy(p.planned, batch)
+	if err := s.clearApplied(spent); err != nil {
+		return consumedDTO(batch, spent), err
 	}
-	return batchDTO(batch), nil
+	return consumedDTO(batch, spent), nil
 }
 
 // distinctDirs is the folders a scope touches, in first-seen order, so an
@@ -311,6 +381,13 @@ var planOrder = []judgement{
 // scan is redone rather than trusted from the last open: files may have moved
 // under the app, and a plan must describe the disk as it is now. An empty
 // hashes list means every decided frame in the folder.
+//
+// Only the frames the store holds a judgement for are identified. The walk is
+// cheap; reading 64KB off the head of every file on a full card is not, and an
+// undecided frame can produce no action however it hashes. Identity itself is
+// untouched by the narrowing: a candidate is still read and still looked up
+// under the whole (hash, dir, stem) key, so a frame edited or replaced since it
+// was judged still finds no decision and a twin still cannot inherit one.
 func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 	resolved, err := expandPath(dir)
 	if err != nil {
@@ -328,7 +405,6 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan %s: %w", resolved, err)
 	}
-	computed := hashGroups(groups, s.app.hashWorkers(platform.IsNetwork(resolved)), nil)
 
 	wanted := make(map[string]bool, len(hashes))
 	for _, h := range hashes {
@@ -339,9 +415,31 @@ func (s *ApplyService) collect(dir string, hashes []string) ([]planned, error) {
 	if err != nil {
 		return nil, err
 	}
+	judged, err := store.ActionableIn(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read decisions: %w", err)
+	}
+	// The stems worth identifying. A scope narrows them further by the hashes
+	// it named, because a decision recorded against a hash the scope did not
+	// ask for cannot be part of this apply either way.
+	candidates := make(map[string]bool, len(judged))
+	for _, d := range judged {
+		if len(wanted) > 0 && !wanted[d.Hash] {
+			continue
+		}
+		candidates[d.Stem] = true
+	}
+
+	shortlist := make([]scan.PhotoGroup, 0, len(candidates))
+	for _, g := range groups {
+		if candidates[g.Stem] {
+			shortlist = append(shortlist, g)
+		}
+	}
+	computed := hashGroupsWith(shortlist, s.app.hashWorkers(platform.IsNetwork(resolved)), s.identity(), nil)
 
 	var items []planned
-	for i, g := range groups {
+	for i, g := range shortlist {
 		h := computed[i]
 		if h == "" || (len(wanted) > 0 && !wanted[h]) {
 			continue
@@ -383,7 +481,8 @@ func (s *ApplyService) collectScope(refs []FrameRef) ([]planned, error) {
 	}
 
 	var items []planned
-	for _, dir := range order {
+	s.report(ApplyPhasePlanning, 0, len(order))
+	for i, dir := range order {
 		hashes := make([]string, 0, len(byDir[dir]))
 		for h := range byDir[dir] {
 			hashes = append(hashes, h)
@@ -393,6 +492,7 @@ func (s *ApplyService) collectScope(refs []FrameRef) ([]planned, error) {
 			return nil, err
 		}
 		items = append(items, got...)
+		s.report(ApplyPhasePlanning, i+1, len(order))
 	}
 	return items, nil
 }
@@ -745,9 +845,7 @@ func consumedBy(items []planned, batch journal.Batch) consumed {
 // apply it again once the cause is fixed. Ratings are left alone: they judge
 // the photograph, not the cull, and a frame that survived still carries its
 // stars.
-func (s *ApplyService) clearApplied(items []planned, batch journal.Batch) error {
-	c := consumedBy(items, batch)
-
+func (s *ApplyService) clearApplied(c consumed) error {
 	// The catalogue must not keep frames whose files just left their folder.
 	// Best-effort: a prune failure never fails the apply — the files have
 	// already moved — and the self-healing reindex catches anything missed.
@@ -933,6 +1031,19 @@ func destroyed(b journal.Batch) bool {
 		}
 	}
 	return false
+}
+
+// consumedDTO flattens an executed batch together with what it spent, which is
+// what lets the grid patch itself instead of rescanning the folder.
+func consumedDTO(b journal.Batch, c consumed) BatchDTO {
+	dto := batchDTO(b)
+	for _, key := range c.pruned {
+		dto.Removed = append(dto.Removed, FrameKeyDTO{Dir: key.Dir, Stem: key.Stem, Hash: key.Hash})
+	}
+	for _, item := range c.routed {
+		dto.Unrouted = append(dto.Unrouted, FrameKeyDTO{Dir: item.Dir, Stem: item.Stem, Hash: item.Hash})
+	}
+	return dto
 }
 
 // batchDTO flattens an executed batch for the frontend.

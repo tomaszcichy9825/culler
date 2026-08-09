@@ -12,6 +12,27 @@ const (
 	EventScanDone     = "scan:done"
 )
 
+// EventApplyProgress reports how far an apply has got. An apply is the one
+// thing in the app that changes files, and on a full card it is long enough
+// that saying nothing reads as a hung window.
+const EventApplyProgress = "apply:progress"
+
+// The two halves of an apply, as the progress event names them. Planning is
+// working out what would happen; applying is doing it.
+const (
+	ApplyPhasePlanning = "planning"
+	ApplyPhaseApplying = "applying"
+)
+
+// ApplyProgress is one step of an apply. Done and Total count folders in the
+// planning phase and file actions in the applying one, so the bar always means
+// "this many of that many of whatever is currently slow".
+type ApplyProgress struct {
+	Phase string `json:"phase"` // planning | applying
+	Done  int    `json:"done"`
+	Total int    `json:"total"`
+}
+
 // ScanProgress reports how far a folder open has got. Done counts identity
 // hashes completed. Total is the number of frames found so far, which for a
 // streamed open still rises while the walk is running and only settles when it
@@ -74,6 +95,7 @@ func init() {
 	application.RegisterEvent[ScanFrames](EventScanFrames)
 	application.RegisterEvent[ScanHashed](EventScanHashed)
 	application.RegisterEvent[ScanDone](EventScanDone)
+	application.RegisterEvent[ApplyProgress](EventApplyProgress)
 }
 
 // emitEvent publishes to the webview when the app is running. Tests exercise

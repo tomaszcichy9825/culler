@@ -663,7 +663,7 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 	// landed for a frame whose library copy failed leaves the frame routed, so
 	// the user can apply it again.
 	library := journal.Batch{Actions: legRecords(batch, libraryAt, len(p.actions))}
-	clearErr := NewApplyService(s.app, s.catalogue).clearApplied(p.planned, library)
+	clearErr := NewApplyService(s.app, s.catalogue).clearApplied(consumedBy(p.planned, library))
 
 	s.report(ImportProgress{
 		Dir: resolved, Phase: lastPhase, Files: len(actions), Total: len(actions),

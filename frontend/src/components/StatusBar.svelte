@@ -17,28 +17,48 @@
     tone: "accent" | "amber";
   }
 
+  // What a running apply says, or null. It outranks everything: it is the only
+  // state in which files are moving, and the one the user most needs to see is
+  // still going.
+  let applying = $derived.by<string | null>(() => {
+    const p = app.applyProgress;
+    if (p === null) return null;
+    if (p.phase === "planning") return "PLANNING";
+    return p.total > 0 ? `APPLYING ${formatCount(p.done)}/${formatCount(p.total)}` : "APPLYING";
+  });
+
   // The chip names the state the mode is in. Indexing outranks the layout
   // because it is the thing the user is waiting on. A catalogue pass says how
   // far it has got: a climbing frame count while the listing walks, then
   // read-of-total once the hashing phase knows exactly what is left.
-  let chip = $derived<Chip>(
-    app.scanning !== null
-      ? { text: "INDEXING", tone: "amber" }
-      : library.indexing !== null
-        ? {
-            text:
-              library.indexing.phase === "hashing" && library.indexing.pending > 0
-                ? `INDEXING ${formatCount(library.indexing.hashed)}/${formatCount(library.indexing.pending)}`
-                : `INDEXING ${formatCount(library.indexing.frames)}`,
-            tone: "amber",
-          }
-        : { text: shell.layoutLabel.toUpperCase(), tone: "accent" },
+  let chip = $derived.by<Chip>(() => {
+    if (applying !== null) return { text: applying, tone: "amber" };
+    if (app.scanning !== null) return { text: "INDEXING", tone: "amber" };
+    const pass = library.indexing;
+    if (pass !== null) {
+      return {
+        text:
+          pass.phase === "hashing" && pass.pending > 0
+            ? `INDEXING ${formatCount(pass.hashed)}/${formatCount(pass.pending)}`
+            : `INDEXING ${formatCount(pass.frames)}`,
+        tone: "amber",
+      };
+    }
+    return { text: shell.layoutLabel.toUpperCase(), tone: "accent" };
+  });
+
+  // The share of the work done, for the sliver of a bar in the chip: the
+  // apply's files while one is running, otherwise the hashing phase. The
+  // listing has no total, so it draws no bar — the count is the movement.
+  let applyShare = $derived<number | null>(
+    app.applyProgress !== null && app.applyProgress.total > 0
+      ? Math.max(0, Math.min(100, (app.applyProgress.done / app.applyProgress.total) * 100))
+      : null,
   );
 
-  // The share of the hashing phase done, for the sliver of a bar in the chip.
-  // The listing has no total, so it draws no bar — the count is the movement.
   let indexingShare = $derived<number | null>(
-    app.scanning === null &&
+    app.applyProgress === null &&
+      app.scanning === null &&
       library.indexing !== null &&
       library.indexing.phase === "hashing" &&
       library.indexing.pending > 0
@@ -64,8 +84,10 @@
 
   <span class="chip {chip.tone}">
     {chip.text}
-    {#if indexingShare !== null}
-      <span class="track" aria-hidden="true"><span class="fill" style:width="{indexingShare}%"></span></span>
+    {#if (applyShare ?? indexingShare) !== null}
+      <span class="track" aria-hidden="true">
+        <span class="fill" style:width="{applyShare ?? indexingShare}%"></span>
+      </span>
     {/if}
   </span>
 

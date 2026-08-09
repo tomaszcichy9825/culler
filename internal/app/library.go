@@ -213,6 +213,18 @@ func primaryRef(g scan.PhotoGroup) *scan.FileRef {
 // for network volumes where parallel head reads stall the share. progress is
 // called with the completed count, throttled to every few frames.
 func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) []string {
+	return hashGroupsWith(groups, workers, hash.Content, progress)
+}
+
+// hashGroupsWith is hashGroups with the identity read named, so a caller that
+// has to know how many frames a pass actually opened can count them. read is
+// hash.Content everywhere but in a test.
+func hashGroupsWith(
+	groups []scan.PhotoGroup,
+	workers int,
+	read func(path string) (string, error),
+	progress func(done int),
+) []string {
 	if workers < 1 {
 		workers = 1
 	}
@@ -246,7 +258,7 @@ func hashGroups(groups []scan.PhotoGroup, workers int, progress func(done int)) 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if h, err := hash.Content(path); err == nil {
+			if h, err := read(path); err == nil {
 				hashes[i] = h
 			}
 			report()

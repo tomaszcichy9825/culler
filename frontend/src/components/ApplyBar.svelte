@@ -43,6 +43,20 @@
 
   /** How many frames in the sheet are routed, for the pending strip. */
   let routed = $derived(app.pending.filter((g) => (g.destination ?? "") !== "").length);
+
+  /**
+   * What the confirm button says. An apply moves real files and can take a
+   * while over a share, so once it is running the button stops offering to
+   * start one and starts reporting how far it has got. Without a count yet it
+   * still says it is working: the wait is the thing that needed explaining.
+   */
+  let applyLabel = $derived.by(() => {
+    const p = app.applyProgress;
+    if (p === null) return "↩ — apply";
+    if (p.phase === "planning") return "planning…";
+    if (p.total > 0) return `applying… ${p.done}/${p.total}`;
+    return "applying…";
+  });
 </script>
 
 <div class="bar">
@@ -138,8 +152,10 @@
       </dl>
 
       <div class="buttons">
-        <button class="ghost" onclick={cancelApply}>Esc — cancel</button>
-        <button class="primary" onclick={confirmApply} disabled={app.busy}>↩ — apply</button>
+        <button class="ghost" onclick={cancelApply} disabled={app.busy}>Esc — cancel</button>
+        <button class="primary" class:working={app.busy} onclick={confirmApply} disabled={app.busy}>
+          {applyLabel}
+        </button>
       </div>
     </div>
   </div>
@@ -377,6 +393,32 @@
 
   .primary:disabled {
     opacity: 0.5;
+    cursor: default;
+  }
+
+  /* A working apply is not the same as a disabled one: it is doing what it was
+     asked to. It keeps its colour and pulses so the dialog cannot be mistaken
+     for one that swallowed the keystroke. */
+  .primary.working:disabled {
+    opacity: 1;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.62;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .primary.working:disabled {
+      animation: none;
+      opacity: 0.8;
+    }
+  }
+
+  .ghost:disabled {
+    opacity: 0.4;
     cursor: default;
   }
 </style>
