@@ -51,6 +51,7 @@
     cancelApply,
     confirmApply,
     copyPath,
+    extendFocus,
     lastFolder,
     loadSettings,
     markNetwork,
@@ -58,6 +59,7 @@
     openFolder,
     pickRoot,
     requestApply,
+    selectFrame,
     showSearchResults,
     undo,
     watchApplyProgress,
@@ -65,7 +67,7 @@
     watchScanStream,
   } from "./lib/actions";
   import { flush } from "./lib/decisions";
-  import { buildLookup, eventSignature, inMapRegion, ownsKeys } from "./lib/keymap";
+  import { buildLookup, eventSignature, inMapRegion, ownsKeys, unshiftedSignature } from "./lib/keymap";
   import { CONTACT_SHEET, LOUPE_FIRST, shell } from "./lib/shell.svelte";
   import type { Pane } from "./lib/shell.svelte";
   import { app, picker, tree } from "./lib/state.svelte";
@@ -95,6 +97,19 @@
     "layout-1": 0,
     "layout-2": 1,
     "layout-3": 2,
+  };
+
+  /**
+   * The four focus actions and the step each one means, so Shift held with any
+   * of them can extend the selection instead of only moving. They are looked
+   * up by action id rather than by chord, so a remapped focus key keeps its
+   * shifted form without the config knowing anything about it.
+   */
+  const focusDeltas: Record<string, [number, number]> = {
+    "focus-left": [-1, 0],
+    "focus-right": [1, 0],
+    "focus-up": [0, -1],
+    "focus-down": [0, 1],
   };
 
   let path = $state(lastFolder());
@@ -391,7 +406,17 @@
     library.openAt(focused.dir, focused.hash);
   }
 
-  function run(action: string) {
+  function run(action: string, extend = false) {
+    // Shift with a focus key is the same movement carrying the selection with
+    // it, so it goes to the one stepper rather than to the registry — the
+    // registry's actions take no arguments, and a second set of entries for
+    // the shifted forms would be four more ids to keep in step with the
+    // config, the catalogue and the overlay.
+    if (extend && action in focusDeltas) {
+      const [dx, dy] = focusDeltas[action];
+      extendFocus(dx, dy);
+      return;
+    }
     // The registry runs everything it knows; the switch below keeps the
     // shell-owned behaviours (escape unwinding, layout cycling, apply flow)
     // that need this component's own state.
@@ -574,7 +599,19 @@
       e.preventDefault();
       return;
     }
-    const action = lookup.get(eventSignature(e));
+    let action = lookup.get(eventSignature(e));
+    // Nothing binds the shifted focus chords, deliberately. A press Shift made
+    // unrecognisable is read again without it, and if that is a focus action
+    // the press means "move, and bring the selection with you". Anything else
+    // shifted is left exactly as unbound as it was.
+    let extend = false;
+    if (action === undefined && e.shiftKey) {
+      const plain = lookup.get(unshiftedSignature(e));
+      if (plain !== undefined && plain in focusDeltas) {
+        action = plain;
+        extend = true;
+      }
+    }
     if (action === undefined) return;
     e.preventDefault();
 
@@ -591,7 +628,7 @@
     if (rejects.open && action !== "escape") return;
     if (library.storageOpen && action !== "escape") return;
     if (app.overlay && action !== "keymap-overlay" && action !== "escape") return;
-    run(action);
+    run(action, extend);
   }
 
   function dimmed(pane: Pane): boolean {
@@ -699,7 +736,13 @@
             <TableView
               groups={app.groups}
               focusIndex={app.focusIndex}
-              onFocus={(i) => (app.focusIndex = i)}
+              onFocus={(i, e) => {
+                // A row click carries its modifiers, so shift and ⌘ mean the
+                // same in the table as on the sheet. The table's own keyboard
+                // moves focus without them and must not disturb the selection.
+                if (e === undefined) app.focusIndex = i;
+                else selectFrame(i, e);
+              }}
               onActivate={() => (app.view = "loupe")}
               isSelected={(g) => app.selection.has(groupKey(g))}
               preview={false}

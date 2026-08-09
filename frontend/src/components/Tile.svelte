@@ -23,7 +23,12 @@
     /** Where the tile sits in the virtualised canvas. */
     x: number;
     y: number;
-    onfocus: (index: number) => void;
+    /**
+     * A click on the tile. The event goes with it because the modifiers decide
+     * what the click means — plain, shift-extend or ⌘-toggle — and that rule
+     * belongs to whoever owns the selection, not to one tile.
+     */
+    onfocus: (index: number, e: MouseEvent) => void;
     onopen: (index: number) => void;
   }
 
@@ -54,7 +59,7 @@
   data-verdict={verdict}
   data-mask={maskOf(group)}
   data-rating={stars}
-  onclick={() => onfocus(index)}
+  onclick={(e) => onfocus(index, e)}
   ondblclick={() => onopen(index)}
 >
   <div class="thumb">

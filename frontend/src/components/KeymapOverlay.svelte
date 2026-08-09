@@ -42,10 +42,12 @@
   ];
 
   const labels: Record<string, string> = {
-    "focus-left": "move focus left",
-    "focus-right": "move focus right",
-    "focus-up": "move focus up",
-    "focus-down": "move focus down",
+    // Shift is not a binding of its own — it modifies whatever the focus keys
+    // are bound to — so the overlay names it on the action it modifies.
+    "focus-left": "move focus left (shift extends the selection)",
+    "focus-right": "move focus right (shift extends the selection)",
+    "focus-up": "move focus up (shift extends the selection)",
+    "focus-down": "move focus down (shift extends the selection)",
     "cycle-layout": "cycle layout",
     zoom: "1:1 zoom (loupe)",
     "toggle-select": "toggle selection",

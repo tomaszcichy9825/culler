@@ -12,6 +12,7 @@
   // decision state of its own that could disagree with the store.
 
   import type { GroupDTO } from "../lib/bindings";
+  import { selectFrame } from "../lib/actions";
   import { app } from "../lib/state.svelte";
   import { setRating, setVerdict } from "../lib/decisions";
   import type { Bytes } from "../lib/frame";
@@ -26,8 +27,8 @@
     groups?: GroupDTO[];
     /** Defaults to the app's focused frame. */
     index?: number;
-    /** Defaults to moving the app's focus. */
-    onfocus?: (index: number) => void;
+    /** Defaults to the app's own click rules: plain, shift-extend, ⌘-toggle. */
+    onfocus?: (index: number, e?: MouseEvent) => void;
     /** Defaults to the same helper the k and x keys run. */
     onverdict?: (verdict: "keep" | "cut") => void;
     /** Defaults to the same helper the 1–5 keys run. */
@@ -57,9 +58,9 @@
   let verdict = $derived(group ? verdictOf(group) : "");
   let badge = $derived(group ? verdictBadge(group, cut) : null);
 
-  function focus(to: number) {
-    if (onfocus) onfocus(to);
-    else app.setFocus(to);
+  function focus(to: number, e?: MouseEvent) {
+    if (onfocus) onfocus(to, e);
+    else selectFrame(to, e);
   }
 
   // The cards and the dots are the keys by another route, so they go through
@@ -183,6 +184,7 @@
       {groups}
       {index}
       onselect={focus}
+      isSelected={(g) => app.isSelected(g)}
       height={104}
       thumbWidth={112}
       thumbHeight={72}

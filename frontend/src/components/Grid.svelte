@@ -10,6 +10,7 @@
   // − and + keycaps change that number — so the tiles divide whatever width
   // the pane has between them.
 
+  import { selectFrame } from "../lib/actions";
   import { library } from "../lib/library.svelte";
   import { gridSort } from "../lib/sort.svelte";
   import { app, groupKey } from "../lib/state.svelte";
@@ -199,7 +200,7 @@
         height={tileHeight}
         x={tile.x}
         y={tile.y}
-        onfocus={(i) => app.setFocus(i)}
+        onfocus={(i, e) => selectFrame(i, e)}
         onopen={open}
       />
     {/each}
