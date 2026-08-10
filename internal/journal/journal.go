@@ -70,8 +70,11 @@ type ClearedDecision struct {
 	Verdict string `json:"verdict,omitempty"`
 	Mask    string `json:"mask,omitempty"`
 	// Destination is the routing the batch consumed, empty when the frame had
-	// none.
+	// none, and Verb is how it was travelling — empty for a route that
+	// followed the configured default, and in journals written before routes
+	// carried a verb.
 	Destination string `json:"destination,omitempty"`
+	Verb        string `json:"verb,omitempty"`
 	// Files is the source files whose successful actions the clearing rested
 	// on, so undo can tell whether the frame's files all came back before
 	// restoring the decision over them.

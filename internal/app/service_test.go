@@ -352,7 +352,7 @@ func TestSkippedMoveKeepsTheVerdictAndTheFile(t *testing.T) {
 	if err := decisions.SetVerdict(frame.Hash, frame.Dir, frame.Stem, "keep", "rj"); err != nil {
 		t.Fatalf("SetVerdict: %v", err)
 	}
-	if err := decisions.SetDestination(frame.Hash, frame.Dir, frame.Stem, "keepers"); err != nil {
+	if err := decisions.SetDestination(frame.Hash, frame.Dir, frame.Stem, "keepers", ""); err != nil {
 		t.Fatalf("SetDestination: %v", err)
 	}
 

@@ -89,7 +89,7 @@ func routeAll(t *testing.T, a *App, dir, destination string) {
 	}
 	decisions := NewDecisionService(a)
 	for _, g := range folder.Groups {
-		if err := decisions.SetDestination(g.Hash, g.Dir, g.Stem, destination); err != nil {
+		if err := decisions.SetDestination(g.Hash, g.Dir, g.Stem, destination, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -347,7 +347,7 @@ func TestImportPlanSplitsRoutedFromUnrouted(t *testing.T) {
 	decisions := NewDecisionService(a)
 	// Two routed to one folder, one cut, one left alone.
 	for _, g := range folder.Groups[:2] {
-		if err := decisions.SetDestination(g.Hash, g.Dir, g.Stem, "2026/portraits"); err != nil {
+		if err := decisions.SetDestination(g.Hash, g.Dir, g.Stem, "2026/portraits", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -475,7 +475,7 @@ func TestExecuteClearsWhatItImportedAndLeavesTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	routed, untouched := folder.Groups[0], folder.Groups[1]
-	if err := NewDecisionService(a).SetDestination(routed.Hash, routed.Dir, routed.Stem, "2026/portraits"); err != nil {
+	if err := NewDecisionService(a).SetDestination(routed.Hash, routed.Dir, routed.Stem, "2026/portraits", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -519,7 +519,7 @@ func TestExecuteLeavesCutFramesOnTheCard(t *testing.T) {
 	decisions := NewDecisionService(a)
 	// One routed, one cut, one untouched.
 	routed, cut := folder.Groups[0], folder.Groups[1]
-	if err := decisions.SetDestination(routed.Hash, routed.Dir, routed.Stem, "2026/portraits"); err != nil {
+	if err := decisions.SetDestination(routed.Hash, routed.Dir, routed.Stem, "2026/portraits", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := decisions.SetVerdict(cut.Hash, cut.Dir, cut.Stem, string(decide.Cut), string(decide.MaskBoth)); err != nil {

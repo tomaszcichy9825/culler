@@ -44,6 +44,11 @@ type GroupDTO struct {
 	// template rather than a literal path.
 	Destination string `json:"destination"`
 
+	// Verb is how the frame gets there: "move" takes it off the card, "copy"
+	// leaves it. Empty means the frame was routed without saying, and the
+	// apply follows the configured default.
+	Verb string `json:"verb"` // empty | move | copy
+
 	// Decision is the verdict and mask named in the pre-verdict vocabulary,
 	// kept so the grid keeps rendering until it is restyled onto verdicts.
 	Decision string `json:"decision"` // none | keep_all | drop_raw | drop_jpeg | drop_all
@@ -174,6 +179,7 @@ func frameIdentity(g scan.PhotoGroup, hash string, rec decide.Record) FrameHash 
 		Mask:        string(rec.Mask),
 		Rating:      rec.Rating,
 		Destination: rec.Destination,
+		Verb:        string(rec.Verb),
 		Decision:    legacyDecision(rec),
 		Warnings:    append([]string{}, g.Warnings...),
 	}
@@ -193,6 +199,7 @@ func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
 	dto.Mask = id.Mask
 	dto.Rating = id.Rating
 	dto.Destination = id.Destination
+	dto.Verb = id.Verb
 	dto.Decision = id.Decision
 	dto.Warnings = id.Warnings
 	return dto

@@ -211,6 +211,7 @@ function frame(n: number, over: Partial<GroupDTO> = {}): GroupDTO {
     rating: 0,
     hash: `hash-${stem}`,
     destination: "",
+    verb: "",
     decision: "",
     ...over,
   };
@@ -501,6 +502,40 @@ async function run() {
   eq("verb · on the confirm too", text(host!.querySelector(".primary")), "move ⏎");
   closePalette();
 
+  /* ---- and the verb is recorded, not just displayed ---- */
+
+  // The key that opened the palette is the decision: c records a copy and m
+  // records a move, per frame, so one folder can hold frames arriving both
+  // ways and the apply does what was asked on each.
+  loadFrames();
+  app.setFocus(0);
+  openPalette("copy");
+  await settle();
+  press("Enter");
+  await settle();
+  eq("verb · a copy palette records a copy", app.groups[0].verb, "copy");
+  closePalette();
+
+  app.setFocus(1);
+  openPalette("move");
+  await settle();
+  press("Enter");
+  await settle();
+  eq("verb · a move palette records a move", app.groups[1].verb, "move");
+  eq("verb · the frame beside it keeps its own", app.groups[0].verb, "copy");
+  closePalette();
+
+  // Clearing the routing clears the verb with it: a frame going nowhere is
+  // neither being moved nor copied.
+  app.setFocus(1);
+  openPalette("move");
+  await settle();
+  press("0");
+  await settle();
+  eq("verb · clearing the routing clears the verb", app.groups[1].verb, "");
+  eq("verb · and the destination", app.groups[1].destination, "");
+  closePalette();
+
   /* ---- a digit routes straight there ---- */
 
   loadFrames();
@@ -580,7 +615,36 @@ async function run() {
   flushSync();
   const chip = tileHost.querySelector(".dest");
   eq("tile · the chip shows the leaf", text(chip), "→ {date:2006-01-02}");
-  eq("tile · and the whole path on hover", chip?.getAttribute("title"), "/library/2026/{date:2006-01-02}");
+  eq(
+    "tile · and the verb with the whole path on hover",
+    chip?.getAttribute("title"),
+    "copy to /library/2026/{date:2006-01-02}",
+  );
+
+  // A frame routed to move reads differently from one routed to copy: it is
+  // the only routing that empties the place the photograph is now.
+  const moveHost = stage(260, 220);
+  mount(Tile, {
+    target: moveHost,
+    props: {
+      group: frame(10, { destination: "/library/keepers", verdict: "keep", verb: "move" }),
+      index: 0,
+      focused: true,
+      selected: false,
+      width: 240,
+      height: 190,
+      x: 0,
+      y: 0,
+      onfocus: () => {},
+      onopen: () => {},
+    },
+  });
+  flushSync();
+  const moveChip = moveHost.querySelector(".dest");
+  eq("tile · a move chip carries its own glyph", text(moveChip), "⇥ keepers");
+  eq("tile · and says so on hover", moveChip?.getAttribute("title"), "move to /library/keepers");
+  check("tile · and is styled apart from a copy", moveChip?.classList.contains("moving") === true);
+
   eq("leafOf · a trailing separator is not a level", leafOf("/library/keepers/"), "keepers");
 
   const bare = stage(260, 220);

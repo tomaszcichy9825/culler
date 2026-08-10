@@ -11,6 +11,7 @@
 import { advanceFocus } from "./actions";
 import { DecisionService } from "./bindings";
 import type { DestinationItem, GroupDTO, RatingItem, VerdictItem } from "./bindings";
+import type { RouteVerb } from "./destination";
 import { app } from "./state.svelte";
 import { clampMask, hasHalf, MAX_RATING, maskOf, toggled, verdictOf } from "./verdict";
 import type { Half, Mask, Verdict } from "./verdict";
@@ -48,6 +49,7 @@ function queueDestination(g: GroupDTO) {
     dir: g.dir,
     stem: g.stem,
     destination: g.destination,
+    verb: g.verb,
   });
   schedule();
 }
@@ -248,6 +250,11 @@ export function toggleMask(half: Half) {
  * same way a verdict does: routing a run of frames to the same place needs no
  * navigation between them.
  *
+ * The verb is part of the routing, not a setting read later: m records a move
+ * and c records a copy, and the two can sit side by side in one folder. A
+ * frame routed with neither follows the configured default, which is what
+ * every route recorded before verbs existed means.
+ *
  * Naming a destination implies a keep, exactly as toggling a mask does — the
  * backend records the same implication, and it is mirrored here so the tile
  * says so on the next frame rather than after the next reload. A cut keeps its
@@ -255,7 +262,7 @@ export function toggleMask(half: Half) {
  *
  * It answers how many frames were routed, so the palette can say so and close.
  */
-export function setDestination(destination: string): number {
+export function setDestination(destination: string, verb: RouteVerb = ""): number {
   const frames = targets();
   if (frames === null) return 0;
 
@@ -268,6 +275,7 @@ export function setDestination(destination: string): number {
       continue;
     }
     g.destination = destination;
+    g.verb = destination === "" ? "" : verb;
     if (destination !== "" && verdictOf(g) === "") record(g, "keep", startingMask(g));
     queueDestination(g);
     changed++;
@@ -296,6 +304,7 @@ export function clearDestination(): number {
     }
     if (g.destination === "") continue;
     g.destination = "";
+    g.verb = "";
     queueDestination(g);
     changed++;
   }

@@ -67,6 +67,7 @@ type FrameHash struct {
 	Mask        string   `json:"mask"`
 	Rating      int      `json:"rating"`
 	Destination string   `json:"destination"`
+	Verb        string   `json:"verb"`
 	Decision    string   `json:"decision"`
 	Warnings    []string `json:"warnings"`
 }

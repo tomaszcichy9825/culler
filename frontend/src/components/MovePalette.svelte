@@ -1,14 +1,13 @@
 <script lang="ts">
   // m and c. Where the frames go.
   //
-  // The palette assigns a destination; it moves nothing. That separation is
-  // the whole design: routing is a decision like a verdict, reversible until
-  // the apply, and the apply is the one place files are touched. Whether the
-  // apply copies or moves is a setting, not a key — a card is the only copy of
-  // a photograph until an import has finished — so the verb in the title and on
-  // the confirm is the verb the user asked for by pressing m or c, and the
-  // "nothing moves until the apply" line under the preview is what keeps it
-  // from reading as a promise about what the apply will do.
+  // The palette assigns a destination and the verb it travels by; it moves
+  // nothing. That separation is the whole design: routing is a decision like a
+  // verdict, reversible until the apply, and the apply is the one place files
+  // are touched. The key chooses the verb — m takes the frames off the card, c
+  // leaves them — and it is recorded per frame, so one folder can hold frames
+  // arriving both ways. The "nothing moves until the apply" line under the
+  // preview is what keeps the verb from reading as something already done.
   //
   // Three things a destination can be, and the palette has to make which one is
   // which obvious before ⏎:
@@ -240,13 +239,17 @@
 
   /* ---- doing it ---- */
 
-  /** assign routes the target frames and remembers where they went. */
+  /**
+   * assign routes the target frames and remembers where they went. The verb
+   * is the one the palette was opened with, so pressing m and pressing c are
+   * two different decisions rather than two names for the same one.
+   */
   async function assign(path: string, pin: boolean) {
     if (targets.length === 0) {
       app.notify("no frames to route");
       return;
     }
-    const routed = setDestination(path);
+    const routed = setDestination(path, copying ? "copy" : "move");
     if (routed === 0) return;
     palette.close();
     try {
@@ -258,7 +261,7 @@
       app.notify(`routed, but could not remember ${path}: ${message(err)}`, "error");
       return;
     }
-    app.notify(`${routed} frame(s) → ${path}${pin ? " · pinned" : ""}`);
+    app.notify(`${routed} frame(s) to ${verb} → ${path}${pin ? " · pinned" : ""}`);
   }
 
   function run(alt: boolean) {
@@ -345,7 +348,13 @@
 
   {#snippet chips()}
     <span class="chip on">sidecars follow the RAW</span>
-    <span class="chip on">the card is never modified</span>
+    {#if copying}
+      <span class="chip on">the original stays where it is</span>
+    {:else}
+      <!-- The one chip that is a warning: a move is the only routing that
+           takes the photograph away from where it is now. -->
+      <span class="chip warn">the original is taken off the card</span>
+    {/if}
     <span class="chip">never overwrites</span>
     <span class="chip">applied on ⏎ in the grid</span>
   {/snippet}
@@ -529,6 +538,13 @@
     background: var(--accent-wash-16);
     border-color: var(--accent);
     color: var(--accent);
+    font-weight: 700;
+  }
+
+  .chip.warn {
+    background: var(--amber-wash-16);
+    border-color: var(--amber);
+    color: var(--amber);
     font-weight: 700;
   }
 

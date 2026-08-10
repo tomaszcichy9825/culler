@@ -275,7 +275,7 @@ func TestApplyImportsAndLeavesTheCardIntact(t *testing.T) {
 	if len(groups) != 1 {
 		t.Fatalf("scanned %d frames, want 1", len(groups))
 	}
-	if err := store.SetDestination(groups[0].Hash, card, groups[0].Stem, "keepers"); err != nil {
+	if err := store.SetDestination(groups[0].Hash, card, groups[0].Stem, "keepers", decide.VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,7 +332,7 @@ func TestApplyKeepsTheDecisionWhenACopyFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetDestination(groups[0].Hash, card, groups[0].Stem, "keepers"); err != nil {
+	if err := store.SetDestination(groups[0].Hash, card, groups[0].Stem, "keepers", decide.VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 

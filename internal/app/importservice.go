@@ -137,6 +137,9 @@ type ImportRouteDTO struct {
 	Frames int    `json:"frames"`
 	Files  int    `json:"files"`
 	Bytes  int64  `json:"bytes"`
+	// Verb is how this route's frames travel: copy or move. One folder can be
+	// both, and then it is two routes.
+	Verb string `json:"verb"` // copy | move
 }
 
 // ImportPlanDTO is the routing state of one folder: where its frames are going
@@ -156,8 +159,12 @@ type ImportPlanDTO struct {
 	Routes      []ImportRouteDTO `json:"routes"`
 	Files       int              `json:"files"`
 	Bytes       int64            `json:"bytes"`
-	Verb        string           `json:"verb"` // copy | move
-	LibraryRoot string           `json:"libraryRoot"`
+	// Verb is what the import as a whole does to the card, read off the plan
+	// rather than off the setting: the frames say how they travel. A card
+	// holding both is "mixed", because promising either one of them would be
+	// a promise about the card that the import does not keep.
+	Verb        string `json:"verb"` // copy | move | mixed
+	LibraryRoot string `json:"libraryRoot"`
 	Network     bool             `json:"network"`
 
 	// Space is the volume behind each route. It rides along with the plan
@@ -455,7 +462,7 @@ func (s *ImportService) ImportPlan(dir string) (ImportPlanDTO, error) {
 		Dir:         resolved,
 		Frames:      len(groups),
 		Routes:      []ImportRouteDTO{},
-		Verb:        routeVerb(r.moveOnImport),
+		Verb:        planVerb(p),
 		LibraryRoot: r.libraryRoot,
 		Network:     platform.IsNetwork(resolved),
 	}
@@ -481,6 +488,7 @@ func (s *ImportService) ImportPlan(dir string) (ImportPlanDTO, error) {
 			Frames:      d.Frames,
 			Files:       d.Files,
 			Bytes:       d.Bytes,
+			Verb:        d.Verb,
 		})
 		out.Files += d.Files
 		out.Bytes += d.Bytes
@@ -503,9 +511,22 @@ func (s *ImportService) destinationSpace(routes []ImportRouteDTO) ([]Destination
 
 	// Everything landing on one volume is weighed together: two destinations
 	// that each fit but together do not is exactly the case worth catching.
+	//
+	// A folder that is both copied and moved into is two routes but one place,
+	// so the rows merge on the destination: room on disk is a property of the
+	// folder, and two rows for one of them would read as two.
 	landing := map[string]int64{}
+	at := map[string]int{}
 	out := make([]DestinationSpaceDTO, 0, len(routes))
 	for _, route := range routes {
+		if i, seen := at[route.Destination]; seen {
+			out[i].Frames += route.Frames
+			out[i].Bytes += route.Bytes
+			if out[i].Volume != "" {
+				landing[out[i].Volume] += route.Bytes
+			}
+			continue
+		}
 		row := DestinationSpaceDTO{
 			Destination: route.Destination,
 			Path:        route.Path,
@@ -522,6 +543,7 @@ func (s *ImportService) destinationSpace(routes []ImportRouteDTO) ([]Destination
 			row.Removable = v.Removable
 			landing[v.Path] += route.Bytes
 		}
+		at[route.Destination] = len(out)
 		out = append(out, row)
 	}
 	for i, row := range out {
@@ -586,13 +608,18 @@ func (s *ImportService) execute(dir, backupDest string) (BatchDTO, error) {
 	// read before that happens: the backup leg goes first, and only then the
 	// library leg. A copying import leaves the source alone and reads better
 	// the other way round.
+	//
+	// Which it is comes from the plan, not the setting: a frame routed with m
+	// moves whatever the default says, and ordering this by the setting would
+	// take the original away before the backup had read it.
+	moving := p.takesFilesAway()
 	libraryPhase := ImportPhaseCopy
-	if r.moveOnImport {
+	if moving {
 		libraryPhase = ImportPhaseMove
 	}
 	actions, libraryAt := p.actions, 0
 	firstPhase, lastPhase := libraryPhase, ImportPhaseBackup
-	if r.moveOnImport && len(backup) > 0 {
+	if moving && len(backup) > 0 {
 		actions, libraryAt = append(append([]ops.FileAction{}, backup...), p.actions...), len(backup)
 		firstPhase, lastPhase = ImportPhaseBackup, libraryPhase
 	} else if len(backup) > 0 {

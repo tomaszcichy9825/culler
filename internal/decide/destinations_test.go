@@ -12,7 +12,7 @@ import (
 func TestDestinationImpliesAKeep(t *testing.T) {
 	s := openStore(t)
 
-	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "~/Pictures/2026"); err != nil {
+	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "~/Pictures/2026", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	r, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001")
@@ -36,7 +36,7 @@ func TestDestinationLeavesAnExistingVerdictAlone(t *testing.T) {
 	if err := s.SetVerdict("h1", "/cardA", "DSCF0001", Keep, MaskRAW); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
+	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	r, _ := mustGet(t, s, "h1", "/cardA", "DSCF0001")
@@ -49,7 +49,7 @@ func TestDestinationLeavesAnExistingVerdictAlone(t *testing.T) {
 	if err := s.SetVerdict("h2", "/cardA", "DSCF0002", Cut, MaskBoth); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDestination("h2", "/cardA", "DSCF0002", "/library/keepers"); err != nil {
+	if err := s.SetDestination("h2", "/cardA", "DSCF0002", "/library/keepers", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := mustGet(t, s, "h2", "/cardA", "DSCF0002"); r.Verdict != Cut {
@@ -60,10 +60,10 @@ func TestDestinationLeavesAnExistingVerdictAlone(t *testing.T) {
 func TestClearingADestinationKeepsTheVerdict(t *testing.T) {
 	s := openStore(t)
 
-	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
+	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDestination("h1", "/cardA", "DSCF0001", ""); err != nil {
+	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	r, ok := mustGet(t, s, "h1", "/cardA", "DSCF0001")
@@ -81,7 +81,7 @@ func TestClearingADestinationKeepsTheVerdict(t *testing.T) {
 func TestClearingTheVerdictClearsTheDestination(t *testing.T) {
 	s := openStore(t)
 
-	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
+	if err := s.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetVerdict("h1", "/cardA", "DSCF0001", Undecided, MaskBoth); err != nil {
@@ -120,10 +120,10 @@ func TestSetDestinationBatch(t *testing.T) {
 func TestSetDestinationAcceptsAnUnhashedFrame(t *testing.T) {
 	s := openStore(t)
 
-	if err := s.SetDestination("", "/cardA", "DSCF0001", "/library/a"); err != nil {
+	if err := s.SetDestination("", "/cardA", "DSCF0001", "/library/a", VerbDefault); err != nil {
 		t.Fatalf("an unhashed frame must be routable: %v", err)
 	}
-	if err := s.SetDestination("", "/cardA", "DSCF0002", "/library/b"); err != nil {
+	if err := s.SetDestination("", "/cardA", "DSCF0002", "/library/b", VerbDefault); err != nil {
 		t.Fatalf("a second unhashed frame must be routable: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestDestinationsSurviveAReopen(t *testing.T) {
 	if err := first.BindSlot("/library/keepers", 7); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
+	if err := first.SetDestination("h1", "/cardA", "DSCF0001", "/library/keepers", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Close(); err != nil {
@@ -460,7 +460,7 @@ func TestMigrationFromTheVerdictSchema(t *testing.T) {
 	}
 
 	// The new column and the new table are both usable straight away.
-	if err := s.SetDestination("hash-1", "/cardA", "DSCF0001", "/library/keepers"); err != nil {
+	if err := s.SetDestination("hash-1", "/cardA", "DSCF0001", "/library/keepers", VerbDefault); err != nil {
 		t.Fatalf("write a destination to a migrated store: %v", err)
 	}
 	if r, _ := mustGet(t, s, "hash-1", "/cardA", "DSCF0001"); r.Destination != "/library/keepers" || r.Rating != 5 {
