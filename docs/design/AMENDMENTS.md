@@ -46,3 +46,19 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   listing counts climb with no total, the hashing reports read-of-total as a measurement — and
   the UI shows them: the status-bar chip reads INDEXING n/m with a small bar, and a root's
   tree count dims until its listing lands.
+
+- **2026-08-10 — `m` and `c` are two decisions, not two names for one.** The verb a routed
+  frame travels by is recorded per frame beside its destination, in a `verb` column on the
+  decisions table (`'' | move | copy`, cleared with the destination and with the verdict). Until
+  now both keys wrote the same routing and the apply read `Behaviour.MoveOnImport` to decide
+  what it meant, so pressing `m` under the default settings copied — the palette said move and
+  the files stayed. The setting survives as the fallback for a route that names no verb, which
+  is what every route recorded before this means. A plan therefore groups by destination *and*
+  verb: one folder can be both copied and moved into, and shows as two rows in the apply summary
+  and on the IMPORT routing table, ordered copies-first at the same destination. The import
+  screen reads its verb off the plan rather than the setting and reports `mixed` when a card
+  holds both; the backup leg is ordered by whether the plan actually moves anything, so a card
+  routed with `m` under a copying default still has its second copy written before the original
+  leaves. Free space is still weighed per destination folder, since that does not depend on the
+  verb. The tile chip names the verb — amber and `⇥` for a move, accent and `→` for a copy — and
+  the palette's "the card is never modified" chip becomes a warning when the palette is a move.

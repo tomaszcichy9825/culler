@@ -32,6 +32,9 @@ type DestinationItem struct {
 	Dir         string `json:"dir"`
 	Stem        string `json:"stem"`
 	Destination string `json:"destination"`
+	// Verb is how the frame travels: "move" or "copy", as the key that routed
+	// it said. Empty leaves it to the configured default.
+	Verb string `json:"verb"`
 }
 
 // DestinationDTO is one remembered destination, as the move palette shows it.
@@ -137,8 +140,10 @@ func (s *DecisionService) SetRatingBatch(items []RatingItem) error {
 // destination is empty. Naming a destination implies the frame is worth
 // keeping, exactly as toggling a mask does, so an undecided frame becomes a
 // keep; a verdict the user has typed is left alone.
-func (s *DecisionService) SetDestination(hash, dir, stem, destination string) error {
-	item, err := toDestinationItem(DestinationItem{Hash: hash, Dir: dir, Stem: stem, Destination: destination})
+func (s *DecisionService) SetDestination(hash, dir, stem, destination, verb string) error {
+	item, err := toDestinationItem(DestinationItem{
+		Hash: hash, Dir: dir, Stem: stem, Destination: destination, Verb: verb,
+	})
 	if err != nil {
 		return err
 	}
@@ -146,7 +151,7 @@ func (s *DecisionService) SetDestination(hash, dir, stem, destination string) er
 	if err != nil {
 		return err
 	}
-	return store.SetDestination(item.Hash, item.Dir, item.Stem, item.Destination)
+	return store.SetDestination(item.Hash, item.Dir, item.Stem, item.Destination, item.Verb)
 }
 
 // SetDestinationBatch routes many frames in one transaction. Routing a whole
@@ -261,12 +266,34 @@ func toDestinationItem(it DestinationItem) (decide.DestinationItem, error) {
 	if err := requireHash(it.Hash, it.Stem); err != nil {
 		return decide.DestinationItem{}, err
 	}
+	verb, err := toRouteVerb(it.Verb, it.Stem)
+	if err != nil {
+		return decide.DestinationItem{}, err
+	}
 	return decide.DestinationItem{
 		Hash:        it.Hash,
 		Dir:         it.Dir,
 		Stem:        it.Stem,
 		Destination: strings.TrimSpace(it.Destination),
+		Verb:        verb,
 	}, nil
+}
+
+// toRouteVerb reads the verb the frontend sent. An empty one is legal and
+// means the configured default; anything the store does not know is refused
+// here rather than a transaction down, so the caller hears about it before
+// half a selection is routed.
+func toRouteVerb(verb, stem string) (decide.Verb, error) {
+	switch decide.Verb(verb) {
+	case decide.VerbDefault:
+		return decide.VerbDefault, nil
+	case decide.VerbMove:
+		return decide.VerbMove, nil
+	case decide.VerbCopy:
+		return decide.VerbCopy, nil
+	}
+	return "", fmt.Errorf("unknown route verb %q for %s: want %q or %q",
+		verb, stem, decide.VerbMove, decide.VerbCopy)
 }
 
 // Set records one decision in the pre-verdict vocabulary. Passing "none"

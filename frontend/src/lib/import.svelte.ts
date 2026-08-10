@@ -58,13 +58,17 @@ export interface ImportCardSummary {
   sampled: number;
 }
 
-/** One destination the folder's frames are routed to. Mirrors ImportRouteDTO. */
+/**
+ * One destination the folder's frames are routed to, and the verb they travel
+ * by. Mirrors ImportRouteDTO. One folder can appear twice, once per verb.
+ */
 export interface ImportRoute {
   destination: string;
   path: string;
   frames: number;
   files: number;
   bytes: number;
+  verb: string; // copy | move
 }
 
 /** The routing state of one folder. Mirrors ImportPlanDTO. */
@@ -78,6 +82,7 @@ export interface ImportPlan {
   routes: ImportRoute[];
   files: number;
   bytes: number;
+  /** What the import does to the card as a whole: copy, move, or mixed. */
   verb: string;
   libraryRoot: string;
   network: boolean;

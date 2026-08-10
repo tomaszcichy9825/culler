@@ -34,6 +34,20 @@ const (
 	MaskJPEG Mask = "j"
 )
 
+// Verb is how a routed frame reaches its destination: copied, leaving the
+// original where it is, or moved, taking it off the card. It belongs to the
+// decision rather than to the configuration because the user says which by
+// pressing c or m, and one selection can hold both.
+type Verb string
+
+const (
+	// VerbDefault leaves the choice to the configuration, which is what a
+	// route recorded before verbs existed means.
+	VerbDefault Verb = ""
+	VerbMove    Verb = "move"
+	VerbCopy    Verb = "copy"
+)
+
 // MaxRating is the top of the star scale. Zero means unrated.
 const MaxRating = 5
 
@@ -47,6 +61,9 @@ type Record struct {
 	// absolute directory, possibly holding token templates. Empty means the
 	// frame goes nowhere and stays where it is.
 	Destination string
+	// Verb is how the frame gets there. Only meaningful alongside a
+	// destination, and empty means the configured default.
+	Verb Verb
 }
 
 // VerdictItem is one frame's verdict in a batch.
@@ -72,6 +89,7 @@ type DestinationItem struct {
 	Dir         string
 	Stem        string
 	Destination string
+	Verb        Verb
 }
 
 // Store is the decision database.
@@ -97,6 +115,7 @@ CREATE TABLE IF NOT EXISTS decisions (
 	mask        TEXT NOT NULL CHECK (mask IN ('rj','r','j')),
 	rating      INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 5),
 	destination TEXT NOT NULL DEFAULT '',
+	verb        TEXT NOT NULL DEFAULT '' CHECK (verb IN ('','move','copy')),
 	updated_at  INTEGER NOT NULL,
 	PRIMARY KEY (hash, dir, stem)
 );
@@ -153,7 +172,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateToDestinations(db); err != nil {
 		return err
 	}
-	return migrateToCompositeKey(db)
+	if err := migrateToCompositeKey(db); err != nil {
+		return err
+	}
+	return migrateToRouteVerbs(db)
 }
 
 // migrateToVerdicts rewrites a database that still holds the single-column
@@ -259,6 +281,27 @@ func migrateToCompositeKey(db *sql.DB) error {
 	return tx.Commit()
 }
 
+// migrateToRouteVerbs adds the per-frame verb to a database whose routes only
+// ever had a destination. Existing routes come across verbless, which means
+// the configured default — precisely what they meant when they were written.
+//
+// It runs last, so the table it alters is already on the composite key.
+func migrateToRouteVerbs(db *sql.DB) error {
+	cols, err := columns(db, "decisions")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 || cols["verb"] {
+		return nil // fresh database, or already migrated
+	}
+	_, err = db.Exec(
+		`ALTER TABLE decisions ADD COLUMN verb TEXT NOT NULL DEFAULT '' CHECK (verb IN ('','move','copy'))`)
+	if err != nil {
+		return fmt.Errorf("decide: add verb column: %w", err)
+	}
+	return nil
+}
+
 // columns returns the column names of table, empty when the table does not
 // exist.
 func columns(db *sql.DB, table string) (map[string]bool, error) {
@@ -285,20 +328,22 @@ func (s *Store) Close() error {
 }
 
 // upsertVerdictSQL writes a verdict. Clearing one takes the destination with
-// it: a frame nobody is keeping is not being routed anywhere either.
+// it: a frame nobody is keeping is not being routed anywhere either. The verb
+// belongs to the destination, so it goes at the same time.
 const upsertVerdictSQL = `
-INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
-VALUES (?, ?, ?, ?, ?, 0, '', ?)
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, verb, updated_at)
+VALUES (?, ?, ?, ?, ?, 0, '', '', ?)
 ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	verdict = excluded.verdict,
 	mask = excluded.mask,
 	destination = CASE WHEN excluded.verdict = '' THEN '' ELSE decisions.destination END,
+	verb = CASE WHEN excluded.verdict = '' THEN '' ELSE decisions.verb END,
 	updated_at = excluded.updated_at
 `
 
 const upsertRatingSQL = `
-INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
-VALUES (?, ?, ?, '', 'rj', ?, '', ?)
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, verb, updated_at)
+VALUES (?, ?, ?, '', 'rj', ?, '', '', ?)
 ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	rating = excluded.rating,
 	updated_at = excluded.updated_at
@@ -308,15 +353,20 @@ ON CONFLICT(hash, dir, stem) DO UPDATE SET
 // the frame is worth keeping, so an undecided frame becomes a keep — the same
 // implication a mask toggle carries. A verdict the user has actually typed is
 // left exactly as it is, including a cut.
+//
+// The verb travels with the destination and is cleared with it: a frame going
+// nowhere is neither being moved nor copied, and a verb left behind would
+// attach itself to whatever destination is set next.
 const upsertDestinationSQL = `
-INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, updated_at)
-VALUES (?, ?, ?, ?, 'rj', 0, ?, ?)
+INSERT INTO decisions (hash, dir, stem, verdict, mask, rating, destination, verb, updated_at)
+VALUES (?, ?, ?, ?, 'rj', 0, ?, ?, ?)
 ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	verdict = CASE
 		WHEN decisions.verdict = '' AND excluded.destination <> '' THEN 'keep'
 		ELSE decisions.verdict
 	END,
 	destination = excluded.destination,
+	verb = CASE WHEN excluded.destination = '' THEN '' ELSE excluded.verb END,
 	updated_at = excluded.updated_at
 `
 
@@ -371,12 +421,12 @@ func (s *Store) SetRatingBatch(items []RatingItem) error {
 	})
 }
 
-// SetDestination routes a frame to dest, or clears its routing when dest is
-// empty. Clearing the destination leaves the verdict alone: the frame is still
-// being kept, it just stays where it is.
-func (s *Store) SetDestination(hash, dir, stem, dest string) error {
+// SetDestination routes a frame to dest with verb v, or clears its routing
+// when dest is empty. Clearing the destination leaves the verdict alone: the
+// frame is still being kept, it just stays where it is.
+func (s *Store) SetDestination(hash, dir, stem, dest string, v Verb) error {
 	return s.inTx(func(tx *sql.Tx) error {
-		return applyDestination(tx, DestinationItem{Hash: hash, Dir: dir, Stem: stem, Destination: dest})
+		return applyDestination(tx, DestinationItem{Hash: hash, Dir: dir, Stem: stem, Destination: dest, Verb: v})
 	})
 }
 
@@ -415,12 +465,15 @@ func applyVerdict(tx *sql.Tx, it VerdictItem) error {
 // — the composite key tells two unhashed frames apart by place, the same way
 // SetVerdict and SetRating already accept them.
 func applyDestination(tx *sql.Tx, it DestinationItem) error {
+	if !it.Verb.valid() {
+		return fmt.Errorf("decide: unknown route verb %q for %s: want %q or %q", it.Verb, it.Stem, VerbMove, VerbCopy)
+	}
 	verdict := ""
 	if it.Destination != "" {
 		verdict = string(Keep)
 	}
 	if _, err := tx.Exec(upsertDestinationSQL,
-		it.Hash, it.Dir, it.Stem, verdict, it.Destination, time.Now().Unix()); err != nil {
+		it.Hash, it.Dir, it.Stem, verdict, it.Destination, string(it.Verb), time.Now().Unix()); err != nil {
 		return err
 	}
 	_, err := tx.Exec(pruneSQL, it.Hash, it.Dir, it.Stem)
@@ -469,14 +522,24 @@ func (m Mask) valid() bool {
 	return false
 }
 
+// valid reports whether the store will accept this verb. The empty one is
+// legal: it names the configured default rather than the absence of a choice.
+func (v Verb) valid() bool {
+	switch v {
+	case VerbDefault, VerbMove, VerbCopy:
+		return true
+	}
+	return false
+}
+
 // Get returns the record held for one frame: this content, at this place. The
 // second result is false when the frame is neither decided nor rated.
 func (s *Store) Get(hash, dir, stem string) (Record, bool, error) {
 	var r Record
 	err := s.db.QueryRow(
-		`SELECT verdict, mask, rating, destination FROM decisions WHERE hash = ? AND dir = ? AND stem = ?`,
+		`SELECT verdict, mask, rating, destination, verb FROM decisions WHERE hash = ? AND dir = ? AND stem = ?`,
 		hash, dir, stem,
-	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination)
+	).Scan(&r.Verdict, &r.Mask, &r.Rating, &r.Destination, &r.Verb)
 	if err == sql.ErrNoRows {
 		return Record{}, false, nil
 	}

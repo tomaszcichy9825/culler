@@ -221,6 +221,7 @@ export function frameToGroup(frame: CatalogFrame): GroupDTO {
     rating: frame.rating,
     hash: frame.hash,
     destination: "",
+    verb: "",
     decision: "",
   };
 }

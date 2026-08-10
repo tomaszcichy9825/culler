@@ -31,7 +31,7 @@ func mustGet(t *testing.T, s *Store, hash, dir, stem string) (Record, bool) {
 func recordsIn(t *testing.T, s *Store, dir string) map[string]Record {
 	t.Helper()
 	rows, err := s.db.Query(
-		`SELECT stem, verdict, mask, rating, destination FROM decisions WHERE dir = ?`, dir)
+		`SELECT stem, verdict, mask, rating, destination, verb FROM decisions WHERE dir = ?`, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func recordsIn(t *testing.T, s *Store, dir string) map[string]Record {
 	for rows.Next() {
 		var stem string
 		var r Record
-		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating, &r.Destination); err != nil {
+		if err := rows.Scan(&stem, &r.Verdict, &r.Mask, &r.Rating, &r.Destination, &r.Verb); err != nil {
 			t.Fatal(err)
 		}
 		out[stem] = r
@@ -589,7 +589,7 @@ func TestActionableInNamesOnlyTheFramesAnApplyCouldActOn(t *testing.T) {
 	if err := s.SetRating("h2", dir, "DSCF0002", 5); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDestination("h3", dir, "DSCF0003", "2026/portraits"); err != nil {
+	if err := s.SetDestination("h3", dir, "DSCF0003", "2026/portraits", VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetVerdict("h4", "/card/OTHER", "DSCF0004", Cut, MaskBoth); err != nil {

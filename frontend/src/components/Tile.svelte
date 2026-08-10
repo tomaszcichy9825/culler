@@ -43,6 +43,10 @@
   // for; the full path is on the title, which is also what a screenshot of a
   // routed sheet needs to be checkable.
   let destination = $derived(group.destination ?? "");
+  // A move is the only routing that takes the photograph away from where it
+  // is now, so the chip says which one this is rather than leaving the sheet
+  // looking the same either way.
+  let moving = $derived(group.verb === "move");
 </script>
 
 <button
@@ -105,7 +109,15 @@
   <div class="footer">
     <span class="stem" title={group.stem}>{group.stem}</span>
     {#if destination !== ""}
-      <span class="dest" title={destination}>→ {leafOf(destination)}</span>
+      <span
+        class="dest"
+        class:moving
+        data-verb={group.verb}
+        title="{moving ? 'move' : 'copy'} to {destination}"
+      >
+        {moving ? "⇥" : "→"}
+        {leafOf(destination)}
+      </span>
     {/if}
   </div>
 </button>
@@ -348,5 +360,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Amber, the colour this app uses for work that removes something: a move
+     leaves nothing behind where the frame is now. */
+  .dest.moving {
+    background: var(--amber-wash-16);
+    color: var(--amber);
   }
 </style>

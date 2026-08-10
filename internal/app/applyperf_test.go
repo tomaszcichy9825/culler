@@ -267,7 +267,7 @@ func TestApplyReportsAnImportedFrameAsUnrouted(t *testing.T) {
 		t.Fatalf("OpenFolder: %v", err)
 	}
 	frame := folder.Groups[0]
-	if err := NewDecisionService(a).SetDestination(frame.Hash, frame.Dir, frame.Stem, dest); err != nil {
+	if err := NewDecisionService(a).SetDestination(frame.Hash, frame.Dir, frame.Stem, dest, ""); err != nil {
 		t.Fatalf("SetDestination: %v", err)
 	}
 

@@ -182,6 +182,7 @@ const groups: GroupDTO[] = positions.map((p) => ({
   rating: 0,
   hash: `hash-${p.stem}`,
   destination: "",
+  verb: "",
   decision: "",
 }));
 

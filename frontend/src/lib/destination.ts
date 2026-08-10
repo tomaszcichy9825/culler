@@ -9,6 +9,14 @@
 // slower and no more true. The apply itself never reads this module. If the two
 // ever disagree the backend is right, and the preview is the thing to fix.
 
+/**
+ * How a routed frame travels. "move" takes it off the card, "copy" leaves the
+ * original where it is, and the empty one leaves the choice to the configured
+ * default — which is what a route recorded before m and c meant different
+ * things means.
+ */
+export type RouteVerb = "" | "move" | "copy";
+
 /** What a template can name about the frame it is being previewed against. */
 export interface Tokens {
   /** When the frame was taken, or null when nothing knows. */

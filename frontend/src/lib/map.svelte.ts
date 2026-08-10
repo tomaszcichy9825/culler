@@ -275,6 +275,7 @@ export function positionToGroup(p: MapPosition, hash = ""): GroupDTO {
     rating: 0,
     hash,
     destination: "",
+    verb: "",
     decision: "",
   };
 }

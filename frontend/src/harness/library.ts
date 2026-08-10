@@ -246,6 +246,7 @@ function folder(dir: string, stems: string[]): FolderDTO {
     rating: 0,
     hash: `open-${stem}`,
     destination: "",
+    verb: "",
     decision: "",
   }));
   return { dir, network: false, groups } as FolderDTO;

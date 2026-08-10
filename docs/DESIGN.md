@@ -294,6 +294,9 @@ Behaviour:
   has never opened the catalogue does not open one to fill the palette.
 - The palette's text field is a real input: `←`/`→`, `⌥←`, `Home`/`End`, selection and paste are
   the field's, `↑`/`↓` walk the rows, `⏎` takes the row under the cursor.
+- The key chooses the verb, and it is stored per frame beside the destination: `M` records a
+  move, `C` records a copy, and one folder can be both. `Behaviour.MoveOnImport` is only the
+  fallback for a route that names no verb. See `docs/design/AMENDMENTS.md` (2026-08-10).
 - The nine most recent destinations auto-bind to slots 1–9 unless a slot is manually pinned.
   `Shift+C` `3` copies to slot 3 immediately. This is the feature that makes repeat sorting fast.
 - Destinations support token templates expanded at execution time:

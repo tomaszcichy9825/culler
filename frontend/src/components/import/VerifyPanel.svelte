@@ -19,7 +19,11 @@
   let plan = $derived(importState.plan);
   let progress = $derived(importState.progress);
   let done = $derived(importState.batch);
-  let moving = $derived(plan?.verb === "move");
+  // Anything that leaves the card counts as moving, including a card whose
+  // frames were routed both ways: the warning is about whether the card stops
+  // being a copy, and under a mixed plan it does.
+  let moving = $derived(plan?.verb === "move" || plan?.verb === "mixed");
+  let mixed = $derived(plan?.verb === "mixed");
 </script>
 
 <div class="verify">
@@ -172,14 +176,18 @@
         {:else if plan.routed === 0}
           nothing routed to import
         {:else}
-          {moving ? "move" : "copy"}
+          {mixed ? "import" : moving ? "move" : "copy"}
           {formatCount(plan.routed)}
           {plan.routed === 1 ? "frame" : "frames"} into the library
         {/if}
       </span>
     </button>
     {#if moving}
-      <p class="note centre">a moving import takes the frames off the card — the card stops being a copy</p>
+      <p class="note centre">
+        {mixed
+          ? "some of these frames are routed to move — those come off the card, and for them the card stops being a copy"
+          : "a moving import takes the frames off the card — the card stops being a copy"}
+      </p>
     {/if}
   {/if}
 </div>

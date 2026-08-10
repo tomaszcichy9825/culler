@@ -31,6 +31,10 @@ type ActionDTO struct {
 // confirmation summary. Path is the destination as the user set it, tokens
 // and all, because that is the thing they recognise — a template that expands
 // per frame has no single expanded path to show.
+//
+// One folder can appear twice, once per verb: frames copied there and frames
+// moved there are different promises about the card, and a summary that
+// merged them would have to lie about one of them.
 type DestinationPlanDTO struct {
 	Path   string `json:"path"`
 	Verb   string `json:"verb"` // copy | move
@@ -359,6 +363,41 @@ type plan struct {
 	dto     PlanDTO
 }
 
+// takesFilesAway reports whether anything in the plan removes a file from
+// where it is now. Ordering the backup leg and warning about the card both
+// hang off the plan rather than off the setting, because a frame routed with
+// m moves whatever the setting says.
+func (p plan) takesFilesAway() bool {
+	for _, a := range p.actions {
+		if a.Verb == ops.VerbMove {
+			return true
+		}
+	}
+	return false
+}
+
+// planVerb names what a plan does to the source as a whole. A plan that both
+// copies and moves is neither, and says so: a screen that picked one would be
+// promising something about the card that the import does not keep.
+func planVerb(p plan) string {
+	moves, copies := false, false
+	for _, a := range p.actions {
+		switch a.Verb {
+		case ops.VerbMove:
+			moves = true
+		case ops.VerbCopy:
+			copies = true
+		}
+	}
+	switch {
+	case moves && copies:
+		return "mixed"
+	case moves:
+		return string(ops.VerbMove)
+	}
+	return string(ops.VerbCopy)
+}
+
 // judgement is a verdict and the mask it applies to, which is all of a record
 // that decides what happens to the files. The rating plays no part.
 type judgement struct {
@@ -505,7 +544,22 @@ type rules struct {
 	// off. Already expanded, so nothing downstream has to know about ~.
 	libraryRoot string
 	// moveOnImport takes routed frames off the card instead of copying them.
+	// It is the fallback, not the rule: a frame routed with m or c says for
+	// itself how it travels, and only a frame that did not say follows this.
 	moveOnImport bool
+}
+
+// moves reports how a frame routed with verb v actually travels. The verb the
+// user pressed wins; a frame with none follows the setting, which is what
+// every route recorded before verbs existed means.
+func (r rules) moves(v decide.Verb) bool {
+	switch v {
+	case decide.VerbMove:
+		return true
+	case decide.VerbCopy:
+		return false
+	}
+	return r.moveOnImport
 }
 
 // planRules resolves the configuration a plan is built against, failing early
@@ -538,7 +592,7 @@ func buildPlan(items []planned, r rules) (plan, error) {
 	sizes := map[string]int64{}
 	var parts []string
 
-	staying, routed := splitRouted(items)
+	staying, routed := splitRouted(items, r)
 
 	for _, j := range planOrder {
 		record := decide.Record{Verdict: j.verdict, Mask: j.mask}
@@ -570,21 +624,21 @@ func buildPlan(items []planned, r rules) (plan, error) {
 		}
 	}
 
-	for _, dest := range sortedKeys(routed) {
-		target, err := resolveDestination(dest, r.libraryRoot)
+	for _, leg := range routeOrder(routed) {
+		target, err := resolveDestination(leg.dest, r.libraryRoot)
 		if err != nil {
 			return plan{}, err
 		}
-		summary := DestinationPlanDTO{Path: dest, Verb: routeVerb(r.moveOnImport)}
-		for _, it := range routed[dest] {
+		summary := DestinationPlanDTO{Path: leg.dest, Verb: routeVerb(leg.move)}
+		for _, it := range routed[leg] {
 			// The mask travels with the frame, so a keep on the RAW alone
 			// imports the RAW alone. It is read per frame rather than per
 			// destination because a plan can hold frames masked differently
 			// and importing the wrong half is not recoverable by re-running.
-			op := routeOp(target, ops.Halves(it.record.Mask), r.moveOnImport)
+			op := routeOp(target, ops.Halves(it.record.Mask), leg.move)
 			actions, err := op.Plan([]scan.PhotoGroup{it.group})
 			if err != nil {
-				return plan{}, fmt.Errorf("plan %s for %s: %w", dest, it.group.Stem, err)
+				return plan{}, fmt.Errorf("plan %s for %s: %w", leg.dest, it.group.Stem, err)
 			}
 			it.actions = actions
 			summary.Frames++
@@ -601,7 +655,7 @@ func buildPlan(items []planned, r rules) (plan, error) {
 		}
 		p.dto.Destinations = append(p.dto.Destinations, summary)
 		parts = append(parts, fmt.Sprintf("%s %s (%d %s)",
-			importVerb(r.moveOnImport), dest, summary.Frames, pluralFrames(summary.Frames)))
+			importVerb(leg.move), leg.dest, summary.Frames, pluralFrames(summary.Frames)))
 	}
 
 	p.dto.Actions = make([]ActionDTO, 0, len(p.actions))
@@ -616,20 +670,47 @@ func buildPlan(items []planned, r rules) (plan, error) {
 	return p, nil
 }
 
+// routeKey is one leg of an import: a destination and the verb the frames
+// reaching it travel by. Two frames going to the same folder, one copied and
+// one moved, are two legs — they plan different ops and promise different
+// things about the card.
+type routeKey struct {
+	dest string
+	move bool
+}
+
 // splitRouted separates the frames going somewhere from the frames staying
 // where they are. A cut with a destination is a contradiction the store
 // already refuses to create; if one turns up anyway the cut wins, because
 // deleting something the user asked to keep is the worse mistake.
-func splitRouted(items []planned) (staying []planned, routed map[string][]planned) {
-	routed = map[string][]planned{}
+func splitRouted(items []planned, r rules) (staying []planned, routed map[routeKey][]planned) {
+	routed = map[routeKey][]planned{}
 	for _, it := range items {
 		if it.record.Destination != "" && it.record.Verdict == decide.Keep {
-			routed[it.record.Destination] = append(routed[it.record.Destination], it)
+			key := routeKey{dest: it.record.Destination, move: r.moves(it.record.Verb)}
+			routed[key] = append(routed[key], it)
 			continue
 		}
 		staying = append(staying, it)
 	}
 	return staying, routed
+}
+
+// routeOrder fixes the order the legs are planned in, so the same frames
+// always produce the same plan: by destination, and copies before moves at the
+// same one.
+func routeOrder(routed map[routeKey][]planned) []routeKey {
+	keys := make([]routeKey, 0, len(routed))
+	for k := range routed {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].dest != keys[j].dest {
+			return keys[i].dest < keys[j].dest
+		}
+		return !keys[i].move && keys[j].move
+	})
+	return keys
 }
 
 // routeOp builds the op that carries one frame's surviving halves to target.
@@ -700,17 +781,6 @@ func resolveDestination(dest, libraryRoot string) (string, error) {
 // never mistaken for a library-relative folder.
 func standaloneDestination(dest string) bool {
 	return strings.HasPrefix(dest, "~") || filepath.IsAbs(dest)
-}
-
-// sortedKeys fixes the order destinations are planned in, so the same set of
-// frames always produces the same plan and the same summary.
-func sortedKeys(m map[string][]planned) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // opFor maps a recorded verdict onto the op that carries it out. A keep holds
@@ -824,7 +894,7 @@ func consumedBy(items []planned, batch journal.Batch) consumed {
 			c.record = append(c.record, journal.ClearedDecision{
 				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem,
 				Verdict: string(it.record.Verdict), Mask: string(it.record.Mask),
-				Destination: it.record.Destination, Files: files,
+				Destination: it.record.Destination, Verb: string(it.record.Verb), Files: files,
 			})
 			c.pruned = append(c.pruned, catalog.FrameKey{Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem})
 		} else if it.record.Destination != "" && len(files) > 0 {
@@ -833,7 +903,7 @@ func consumedBy(items []planned, batch journal.Batch) consumed {
 			})
 			c.record = append(c.record, journal.ClearedDecision{
 				Hash: it.hash, Dir: it.group.Dir, Stem: it.group.Stem,
-				Destination: it.record.Destination, Files: files,
+				Destination: it.record.Destination, Verb: string(it.record.Verb), Files: files,
 			})
 		}
 	}
@@ -934,6 +1004,7 @@ func (s *ApplyService) restoreCleared(target, undone journal.Batch) error {
 			if c.Destination != "" && c.Verdict == string(decide.Keep) {
 				routed = append(routed, decide.DestinationItem{
 					Hash: c.Hash, Dir: c.Dir, Stem: c.Stem, Destination: c.Destination,
+					Verb: decide.Verb(c.Verb),
 				})
 			}
 			continue
@@ -944,6 +1015,7 @@ func (s *ApplyService) restoreCleared(target, undone journal.Batch) error {
 			}
 			routed = append(routed, decide.DestinationItem{
 				Hash: c.Hash, Dir: c.Dir, Stem: c.Stem, Destination: c.Destination,
+				Verb: decide.Verb(c.Verb),
 			})
 		}
 	}

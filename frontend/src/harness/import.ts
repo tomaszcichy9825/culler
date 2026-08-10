@@ -181,6 +181,7 @@ const PLAN: ImportPlan = {
       frames: 24,
       files: 48,
       bytes: 900_000_000,
+      verb: "copy",
     },
     {
       destination: "/Users/t/Desktop/deliver",
@@ -188,6 +189,7 @@ const PLAN: ImportPlan = {
       frames: 7,
       files: 14,
       bytes: 260_000_000,
+      verb: "move",
     },
   ],
   files: 62,

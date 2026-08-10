@@ -214,7 +214,7 @@ func TestOpenFolderStreamMatchesOpenFolder(t *testing.T) {
 	if err := store.SetRating(jpegHash, dir, "DSCF0001", 4); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetDestination(jpegHash, dir, "DSCF0001", "/library/keepers"); err != nil {
+	if err := store.SetDestination(jpegHash, dir, "DSCF0001", "/library/keepers", decide.VerbDefault); err != nil {
 		t.Fatal(err)
 	}
 
