@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/catalog"
+	"github.com/tomaszcichy9825/culler/internal/config"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -143,6 +144,21 @@ type SessionDTO struct {
 	Source      string `json:"source"` // the folder's own name
 	Dir         string `json:"dir"`    // the folder it came from, in full
 	Dirs        int    `json:"dirs"`
+}
+
+// SessionListDTO is the Sessions list and what it is leaving out.
+//
+// The floor is what makes the list readable on a real library, and it is also
+// what could make a shoot vanish without explanation, so the count of what it
+// hid travels with it. A filtered list that looks complete is worse than no
+// filter at all.
+type SessionListDTO struct {
+	Sessions []SessionDTO `json:"sessions"`
+	// Hidden is how many shoots fell under the floor.
+	Hidden int `json:"hidden"`
+	// MinFrames is the floor the list was drawn at, so the UI can name it
+	// without reading the configuration itself.
+	MinFrames int `json:"minFrames"`
 }
 
 // UndecidedUnknown is what a tree node reports instead of an undecided count
@@ -643,17 +659,37 @@ func (s *LibraryIndexService) Counts(query string, facets FacetsDTO) (CountsDTO,
 // as it stands now: a session the user has just finished judging says so
 // without a reindex. That is a point query per catalogued frame, which is the
 // price of the whole table being true rather than nearly true.
-func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
+func (s *LibraryIndexService) Sessions(gapHours float64) (SessionListDTO, error) {
 	store, err := s.catalogue()
 	if err != nil {
-		return nil, err
+		return SessionListDTO{}, err
 	}
 	decisions, err := s.app.decisions()
 	if err != nil {
-		return nil, err
+		return SessionListDTO{}, err
 	}
-	sessions, err := store.SessionsWith(catalog.SessionOptions{
+
+	// A floor of zero is a configuration written before the setting existed,
+	// or hand-edited to nothing. Taking the default there is the only reading
+	// that cannot hide the whole list by accident.
+	floor := s.app.Config().Behaviour.MinSessionFrames
+	if floor < 1 {
+		floor = config.Default().Behaviour.MinSessionFrames
+	}
+
+	// Counted twice — once unfiltered, once at the floor — so the list can say
+	// how many shoots it is not showing. A filtered list that looks complete
+	// is how a session goes missing without anybody noticing.
+	all, err := store.SessionsWith(catalog.SessionOptions{
 		Gap: time.Duration(gapHours * float64(time.Hour)),
+	})
+	if err != nil {
+		return SessionListDTO{}, err
+	}
+
+	sessions, err := store.SessionsWith(catalog.SessionOptions{
+		Gap:       time.Duration(gapHours * float64(time.Hour)),
+		MinFrames: floor,
 		Verdict: func(hash, dir, stem string) (string, bool) {
 			rec, ok, err := decisions.Get(hash, dir, stem)
 			if err != nil || !ok {
@@ -666,11 +702,15 @@ func (s *LibraryIndexService) Sessions(gapHours float64) ([]SessionDTO, error) {
 		},
 	})
 	if err != nil {
-		return nil, err
+		return SessionListDTO{}, err
 	}
-	out := make([]SessionDTO, 0, len(sessions))
+	out := SessionListDTO{
+		Sessions:  make([]SessionDTO, 0, len(sessions)),
+		Hidden:    len(all) - len(sessions),
+		MinFrames: floor,
+	}
 	for _, sess := range sessions {
-		out = append(out, SessionDTO{
+		out.Sessions = append(out.Sessions, SessionDTO{
 			ID:          sess.ID,
 			Start:       stamp(sess.Start),
 			End:         stamp(sess.End),

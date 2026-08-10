@@ -39,6 +39,16 @@
             : formatCount(library.indexing.frames)}
         </span>
       {/if}
+      <!-- A pass runs at launch, but a card imported or a folder filed while
+           the app is open needs one now rather than next time. -->
+      <button
+        class="add"
+        disabled={library.indexing !== null}
+        onclick={() => void library.reindex()}
+        title="Re-read every folder in the sidebar, so frames added since the last pass show up"
+      >
+        rescan
+      </button>
       <button class="add" onclick={() => void pickRoot()} title="Add a folder to the sidebar"> + add </button>
       <button class="icon" onclick={() => (app.sidebar = false)} title="Collapse sidebar" aria-label="Collapse sidebar">
         ‹
@@ -56,6 +66,16 @@
     <div class="head sessions-head">
       <span class="title">Sessions</span>
       <span class="hair"></span>
+      <!-- The floor hides fragments, so the header owns up to it: a list that
+           silently drops two hundred shoots reads as a list that lost them. -->
+      {#if library.sessionsHidden > 0}
+        <span
+          class="hint muted"
+          title="{formatCount(library.sessionsHidden)} shoots of fewer than {library.sessionFloor} frames are hidden — change the minimum in Settings › Catalogue"
+        >
+          +{formatCount(library.sessionsHidden)} small
+        </span>
+      {/if}
       <span class="hint">{formatCount(library.sessions.length)}</span>
     </div>
 
@@ -132,6 +152,10 @@
     font-size: 10px;
     letter-spacing: 0;
     color: var(--text-dim);
+  }
+
+  .hint.muted {
+    color: var(--text-ghost);
   }
 
   .indexing {

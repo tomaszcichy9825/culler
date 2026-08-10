@@ -164,12 +164,18 @@
     Reindex: (dir) => LibraryIndexService.Reindex(dir),
     Search: (q, f, limit, offset) => LibraryIndexService.Search(q, f as never, limit, offset) as never,
     Counts: (q, f) => LibraryIndexService.Counts(q, f as never) as never,
-    Sessions: async (gap) => ((await LibraryIndexService.Sessions(gap)) ?? []) as never,
+    Sessions: async (gap) =>
+      ((await LibraryIndexService.Sessions(gap)) ?? { sessions: [], hidden: 0, minFrames: 1 }) as never,
     Storage: () => LibraryIndexService.Storage() as never,
     TreeRoots: async () => ((await LibraryIndexService.TreeRoots()) ?? []) as never,
     TreeChildren: async (dir) => ((await LibraryIndexService.TreeChildren(dir)) ?? []) as never,
   });
   void watchCatalogProgress();
+  // The catalogue is only as true as its last pass, and until now the last
+  // pass was the day each root was added — so a shoot filed last week was
+  // simply not in it. One background pass at launch keeps it level with the
+  // disk; an unchanged library costs a directory walk.
+  void library.catchUp();
   onOpenFolder((dir, focusHash) => {
     // A folder chosen from the tree is a scope pick: it stays in whatever mode
     // is up, exactly as picking a session does, so the left-pane picker does

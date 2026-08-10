@@ -16,7 +16,17 @@ import (
 // the service and the root.
 func catalogued(t *testing.T) (*LibraryIndexService, string) {
 	t.Helper()
+	return cataloguedAt(t, 0)
+}
+
+// cataloguedAt is catalogued with a chosen Sessions floor; zero takes the
+// configured default, which is what every caller but the session tests wants.
+func cataloguedAt(t *testing.T, minSessionFrames int) (*LibraryIndexService, string) {
+	t.Helper()
 	s := indexService(t)
+	if minSessionFrames > 0 {
+		s = floorService(t, minSessionFrames)
+	}
 	root := t.TempDir()
 	may := filepath.Join(root, "2026-05")
 	june := filepath.Join(root, "2026-06")
@@ -255,22 +265,24 @@ func TestFoldersDoesNotCreateACatalogue(t *testing.T) {
 }
 
 func TestSessionsCountTheDecisionsAsTheyStandNow(t *testing.T) {
-	s, _ := catalogued(t)
+	// The fixture's shoots are two frames and one, so the list is drawn with
+	// the floor down: this is about the counts, not about which shoots show.
+	s, _ := cataloguedAt(t, 1)
 	mark(t, s, "DSCF0001", decide.Keep, 0)
 	mark(t, s, "DSCF0002", decide.Cut, 0)
 
-	sessions, err := s.Sessions(4)
+	list, err := s.Sessions(4)
 	if err != nil {
 		t.Fatalf("Sessions: %v", err)
 	}
 	var may SessionDTO
-	for _, sess := range sessions {
+	for _, sess := range list.Sessions {
 		if sess.Source == "2026-05" {
 			may = sess
 		}
 	}
 	if may.Frames != 2 {
-		t.Fatalf("the May session holds %d frames, want 2: %+v", may.Frames, sessions)
+		t.Fatalf("the May session holds %d frames, want 2: %+v", may.Frames, list.Sessions)
 	}
 	if may.Kept != 1 || may.Cut != 1 || may.Undecided != 0 {
 		t.Errorf("May session = %d kept, %d cut, %d undecided; want 1/1/0",

@@ -62,3 +62,20 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   leaves. Free space is still weighed per destination folder, since that does not depend on the
   verb. The tile chip names the verb — amber and `⇥` for a move, accent and `→` for a copy — and
   the palette's "the card is never modified" chip becomes a warning when the palette is a move.
+
+- **2026-08-10 — The catalogue catches up at launch, and Sessions has a size floor.** Roots were
+  indexed when they were added and never again: nothing in the app called `Reindex` except
+  `addRoot`, so the catalogue was a snapshot of the day each root was registered and said so
+  nowhere. Every shoot filed since was missing from the tree's counts, from search, and from
+  Sessions — the one view whose whole job is to list what happened. A background pass now runs
+  over every registered root once at launch, and a `rescan` button beside `+ add` starts one on
+  demand; both report through the existing progress chip. The pass is cheap on an unchanged
+  folder — the listing phase walks names and the hashing phase re-reads only frames whose size
+  or mtime moved — so catching up costs a directory walk. Separately, `Behaviour.MinSessionFrames`
+  (default 5, minimum 1) is the smallest shoot the Sessions list shows: at four hours' gap a real
+  library turns every stray frame into a session of its own, and on a library of ten thousand
+  frames those fragments outnumber the shoots two to one. The floor filters the list and nothing
+  else — no frame is hidden from the grid, the search or the tree by it, and changing it costs a
+  query rather than a reindex. Because a filtered list that looks complete is exactly how a shoot
+  goes missing unnoticed, `Sessions` returns how many it hid and at what floor, and the sidebar
+  header shows "+N small" beside the count.

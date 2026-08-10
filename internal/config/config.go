@@ -86,6 +86,17 @@ type Behaviour struct {
 	// sidecar merely because this is true.
 	XMPExport bool `json:"xmpExport"`
 
+	// MinSessionFrames is the smallest shoot the Sessions list shows. A real
+	// library is full of one- and two-frame fragments — a test frame, a shot
+	// fired by accident, the one picture taken on a Tuesday — and at four
+	// hours' gap each of those is a session of its own, which buries the
+	// shoots among them. Five is where a run of frames starts looking like a
+	// session; one shows every last fragment.
+	//
+	// It filters the list and nothing else. No frame is hidden from the grid,
+	// the search or the tree by it, and changing it costs a query.
+	MinSessionFrames int `json:"minSessionFrames"`
+
 	// Concurrency limits for slow sources. Local disks tolerate parallel
 	// reads; network shares stall under them, so those caps stay low.
 	LocalReadSlots      int `json:"localReadSlots"`      // concurrent preview reads, local volumes
@@ -119,6 +130,7 @@ func Default() Config {
 			MoveOnImport:         false,
 			VerifyCopies:         true,
 			XMPExport:            false,
+			MinSessionFrames:     5,
 			LocalReadSlots:       16,
 			NetworkReadSlots:     4,
 			NetworkHashWorkers:   4,
@@ -298,6 +310,7 @@ func (c Config) Validate() error {
 		"networkReadSlots":    c.Behaviour.NetworkReadSlots,
 		"networkHashWorkers":  c.Behaviour.NetworkHashWorkers,
 		"slowScanHintSeconds": c.Behaviour.SlowScanHintSeconds,
+		"minSessionFrames":    c.Behaviour.MinSessionFrames,
 	} {
 		if v < 1 {
 			return fmt.Errorf("%s must be at least 1, got %d", name, v)
