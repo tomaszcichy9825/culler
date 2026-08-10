@@ -464,6 +464,13 @@ func (s *LibraryIndexService) reindex(root string) (reindexOutcome, error) {
 		}
 	}
 
+	// A root that will not read does not take the others with it. A pass runs
+	// at every launch now, so one drive left unplugged would otherwise freeze
+	// every other root's catalogue for as long as it stayed missing — and the
+	// symptom is the one hardest to spot, a library quietly out of date with
+	// nothing on screen to say so. The failures are collected and reported at
+	// the end, once every root that could be walked has been.
+	var failed []error
 	var out reindexOutcome
 	for _, r := range roots {
 		opts := catalog.IndexOptions{
@@ -503,10 +510,10 @@ func (s *LibraryIndexService) reindex(root string) (reindexOutcome, error) {
 		out.stats.Removed += stats.Removed
 		out.stats.Unreadable += stats.Unreadable
 		if err != nil {
-			return out, err
+			failed = append(failed, fmt.Errorf("%s: %w", r, err))
 		}
 	}
-	return out, nil
+	return out, errors.Join(failed...)
 }
 
 // report publishes one progress record, through the test seam when there is
