@@ -360,6 +360,17 @@ type SessionOptions struct {
 	// Gap is the break that ends a session. Zero takes DefaultSessionGap.
 	Gap time.Duration
 
+	// MinFrames is the smallest shoot worth listing. A real library is full of
+	// ones and twos — a test frame, a shot fired by accident, the one picture
+	// taken on a Tuesday — and at four hours' gap each is its own session,
+	// which on a library of any size buries the shoots among them. Anything
+	// below one means every shoot, since a shoot cannot hold no frames.
+	//
+	// It filters the list and nothing else: the clustering, the counts and the
+	// frames themselves are what they always were, so raising and lowering it
+	// costs a query rather than a reindex.
+	MinFrames int
+
 	// Verdict answers with how a frame is judged now, which is what lets the
 	// kept and cut columns follow the decision store rather than the last index
 	// pass. The second result is false when the caller has nothing to say, and
@@ -399,8 +410,10 @@ func (s *Store) SessionsWith(opts SessionOptions) ([]Session, error) {
 		if current == nil {
 			return
 		}
-		current.Source, current.Dir, current.Dirs = dominantDir(dirs)
-		out = append(out, *current)
+		if current.Frames >= opts.MinFrames {
+			current.Source, current.Dir, current.Dirs = dominantDir(dirs)
+			out = append(out, *current)
+		}
 		current = nil
 	}
 

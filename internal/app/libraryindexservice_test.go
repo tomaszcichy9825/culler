@@ -252,7 +252,9 @@ func TestCountsDTO(t *testing.T) {
 }
 
 func TestSessionsDTO(t *testing.T) {
-	s := indexService(t)
+	// A floor of one, so this test is about the DTO rather than about which
+	// shoots are big enough to list; the floor has its own tests.
+	s := floorService(t, 1)
 	dir := t.TempDir()
 	shoot(t, dir, "MORN0001", time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC))
 	shoot(t, dir, "MORN0002", time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC))
@@ -264,10 +266,11 @@ func TestSessionsDTO(t *testing.T) {
 		t.Fatalf("reindex: %v", err)
 	}
 
-	sessions, err := s.Sessions(0)
+	list, err := s.Sessions(0)
 	if err != nil {
 		t.Fatalf("Sessions: %v", err)
 	}
+	sessions := list.Sessions
 	if len(sessions) != 2 {
 		t.Fatalf("%d sessions, want 2: %+v", len(sessions), sessions)
 	}
@@ -293,8 +296,8 @@ func TestSessionsDTO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sessions(12): %v", err)
 	}
-	if len(wide) != 1 {
-		t.Errorf("%d sessions at a twelve-hour gap, want 1", len(wide))
+	if len(wide.Sessions) != 1 {
+		t.Errorf("%d sessions at a twelve-hour gap, want 1", len(wide.Sessions))
 	}
 }
 

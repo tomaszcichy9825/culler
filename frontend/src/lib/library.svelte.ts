@@ -103,6 +103,18 @@ export interface CatalogSession {
   dirs: number;
 }
 
+/**
+ * The Sessions list and what the floor left out of it. Mirrors
+ * SessionListDTO: a filtered list that looked complete would be how a shoot
+ * goes missing without anybody noticing, so the count of what is hidden
+ * travels with the rows.
+ */
+export interface CatalogSessions {
+  sessions: CatalogSession[];
+  hidden: number;
+  minFrames: number;
+}
+
 export interface CatalogStorageRoot {
   root: string;
   volume: string;
@@ -183,7 +195,7 @@ export interface CatalogSource {
   Reindex(dir: string): Promise<void>;
   Search(query: string, facets: CatalogFacets, limit: number, offset: number): Promise<CatalogSearch>;
   Counts(query: string, facets: CatalogFacets): Promise<CatalogCounts>;
-  Sessions(gapHours: number): Promise<CatalogSession[]>;
+  Sessions(gapHours: number): Promise<CatalogSessions>;
   Storage(): Promise<CatalogStorage>;
   /**
    * The tree's two calls. They are optional so that a shell which has not
@@ -327,6 +339,13 @@ class LibraryState {
   treeIndex = $state(0);
 
   sessions = $state<CatalogSession[]>([]);
+  /**
+   * How many shoots the size floor left out, and where the floor is. The
+   * sidebar says so: a list that quietly drops two hundred fragments has to
+   * admit it, or the next question is why a shoot is missing.
+   */
+  sessionsHidden = $state(0);
+  sessionFloor = $state(1);
   /** Which session row has the keyboard. */
   sessionIndex = $state(0);
   /** The break that ends a session, in hours. Four is the backend's default. */
@@ -737,6 +756,28 @@ class LibraryState {
     }
   }
 
+  /**
+   * catchUp brings the catalogue level with the disk, once, at launch.
+   *
+   * Without it a root is indexed when it is added and never again, so every
+   * shoot filed since then is invisible: not in the tree's counts, not in
+   * search, and — the way this was noticed — not in Sessions, which is the one
+   * view whose whole job is to list what happened. The catalogue was a
+   * snapshot of the day each root was registered and nothing said so.
+   *
+   * The pass is cheap on a folder that has not changed: the listing phase
+   * walks names, and the hashing phase re-reads only frames whose size or
+   * mtime moved, so an unchanged library costs a directory walk. It runs in
+   * the background and reports through the same progress chip a manual rescan
+   * does, so a slow network root is visible rather than silent.
+   */
+  async catchUp() {
+    if (source === null) return;
+    if (this.roots.length === 0) await this.loadRoots();
+    if (this.roots.length === 0) return;
+    await this.reindex();
+  }
+
   /** reindex starts a background pass. An empty dir covers every root. */
   async reindex(dir = "") {
     if (source === null) return;
@@ -776,7 +817,10 @@ class LibraryState {
     if (source === null) return;
     this.#sessionsAsked = true;
     try {
-      this.sessions = await source.Sessions(this.sessionGapHours);
+      const list = await source.Sessions(this.sessionGapHours);
+      this.sessions = list.sessions;
+      this.sessionsHidden = list.hidden;
+      this.sessionFloor = list.minFrames;
       if (this.session === null) this.selectedSession = this.sessions[0]?.id ?? null;
       this.sessionIndex = Math.max(
         0,

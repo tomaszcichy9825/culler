@@ -213,7 +213,7 @@ const source: CatalogSource = {
     };
   },
   Counts: async () => ({ total: FRAMES.length, kinds: [], verdicts: [], ratings: [] }),
-  Sessions: async () => SESSIONS,
+  Sessions: async () => ({ sessions: SESSIONS, hidden: 0, minFrames: 1 }),
   Storage: async () => ({ frames: 0, rawBytes: 0, jpegBytes: 0, bytes: 0, roots: [], volumes: [] }),
   TreeRoots: async () =>
     watched.map((r) =>
@@ -523,15 +523,49 @@ async function sessions() {
   press(el, "k");
   eq("sessions · k moves back up", library.sessionIndex, 0);
 
+  // Opening a session is a search over the time it ran, not an open of the
+  // folder its first frame happens to sit in: a shoot that spans two cards is
+  // one shoot, and opening a folder would silently drop the rest of it.
+  library.closeSearch();
   opened.length = 0;
   press(el, "Enter");
-  eq("sessions · return opens the session's folder", opened[0]?.dir, SESSIONS[0].dir);
-  eq("sessions · a session names no frame", opened[0]?.hash, undefined);
+  await settleSearch();
+  check("sessions · return opens the shoot as a search", library.searchOpen);
+  eq("sessions · scoped to when it started", library.facets.from, SESSIONS[0].start);
+  // The backend's To is exclusive, so the window reaches a second past the
+  // last frame or the last frame of the shoot falls outside its own session.
+  eq(
+    "sessions · and to a second past when it ended",
+    library.facets.to,
+    new Date(new Date(SESSIONS[0].end).getTime() + 1000).toISOString(),
+  );
+  // And it opens no folder at all: the results are the shoot, wherever its
+  // frames are filed.
+  eq("sessions · opening a shoot opens no folder", opened.length, 0);
 
-  opened.length = 0;
+  library.closeSearch();
   rows()[1].click();
   flushSync();
-  eq("sessions · a click opens that row's folder", opened[0]?.dir, SESSIONS[1].dir);
+  await settleSearch();
+  eq("sessions · a click scopes to that row's shoot", library.facets.from, SESSIONS[1].start);
+  library.closeSearch();
+
+  // The size floor is the backend's, and what it left out comes back with the
+  // list: a filtered list that looked complete is how a shoot goes missing
+  // without anybody noticing.
+  eq("sessions · a list with nothing filtered hides nothing", library.sessionsHidden, 0);
+  eq("sessions · and reports the floor it was drawn at", library.sessionFloor, 1);
+
+  const wholeList = source.Sessions;
+  source.Sessions = async () => ({ sessions: [SESSIONS[0]], hidden: 207, minFrames: 5 });
+  await library.loadSessions();
+  flushSync();
+  eq("sessions · a floor drops the shoots under it", rows().length, 1);
+  eq("sessions · and the store carries what was hidden", library.sessionsHidden, 207);
+  eq("sessions · with the floor that hid them", library.sessionFloor, 5);
+  source.Sessions = wholeList;
+  await library.loadSessions();
+  flushSync();
 
   host.remove();
 }

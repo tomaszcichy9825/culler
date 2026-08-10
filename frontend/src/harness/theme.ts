@@ -142,6 +142,7 @@ function stockConfig(): Config {
       moveOnImport: false,
       verifyCopies: true,
       xmpExport: false,
+      minSessionFrames: 5,
       localReadSlots: 16,
       networkReadSlots: 4,
       networkHashWorkers: 4,

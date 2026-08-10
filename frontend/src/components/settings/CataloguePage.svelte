@@ -1,11 +1,13 @@
 <script lang="ts">
   // Catalogue: what is indexed and what is cached.
   //
-  // This is the page the design drew furthest ahead of the build. There is no
-  // catalogue in this version — no index, no watcher, no preview budget — so
-  // every control here is disabled and says so, and the aside states what the
-  // app does keep on disk instead of quoting a frame count it does not have.
+  // This is the page the design drew furthest ahead of the build. The
+  // catalogue itself exists now — roots are indexed and re-indexed, and the
+  // Sessions group is drawn from it — but the watcher and the preview budget
+  // are not, so those controls stay disabled and say so rather than being
+  // drawn as if pressing them would change anything.
 
+  import { library } from "../../lib/library.svelte";
   import { settings } from "../../lib/settings.svelte";
   import Aside from "./Aside.svelte";
   import Choice from "./Choice.svelte";
@@ -13,6 +15,9 @@
   import PageShell from "./PageShell.svelte";
   import SettingGroup from "./SettingGroup.svelte";
   import SettingRow from "./SettingRow.svelte";
+  import ValueField from "./ValueField.svelte";
+
+  let behaviour = $derived(settings.draft?.behaviour);
 
   /** The data directory is the config file's own, which the backend has told us. */
   let dataDir = $derived(settings.path.replace(/[/\\][^/\\]*$/, ""));
@@ -99,6 +104,40 @@
           ]}
           onchange={() => {}}
           disabled
+        />
+      </SettingRow>
+    </SettingGroup>
+
+    <SettingGroup title="Sessions" hint="how the catalogue is grouped into shoots">
+      {#if behaviour}
+        <SettingRow
+          name="Smallest shoot listed"
+          desc="A library is full of one- and two-frame fragments, and at four hours' gap each is a session of its own. Below this they are left out of the list. One shows every last one; nothing is hidden from the grid or from search either way."
+          field="behaviour.minSessionFrames"
+          terms="session shoot minimum size frames"
+        >
+          <ValueField
+            label="Smallest shoot listed"
+            type="number"
+            min={1}
+            size={4}
+            suffix="frames"
+            value={behaviour.minSessionFrames}
+            invalid={settings.errorFor("behaviour.minSessionFrames") !== ""}
+            oninput={(v) => settings.patch({ minSessionFrames: Number(v) })}
+          />
+        </SettingRow>
+      {/if}
+
+      <SettingRow
+        name="Currently listed"
+        desc="What the sidebar is showing at the floor above, and how many shoots fall under it."
+        wired={false}
+      >
+        <ControlChip
+          label="{library.sessions.length} shown · {library.sessionsHidden} hidden"
+          disabled
+          title="Counted at the last pass over the catalogue"
         />
       </SettingRow>
     </SettingGroup>
