@@ -79,3 +79,20 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   query rather than a reindex. Because a filtered list that looks complete is exactly how a shoot
   goes missing unnoticed, `Sessions` returns how many it hid and at what floor, and the sidebar
   header shows "+N small" beside the count.
+
+- **2026-08-11 — Shot time is the capture time, not the file's mtime.** `PhotoGroup.Shot` was
+  documented as "EXIF DateTimeOriginal, falls back to mtime" and only the fallback was ever
+  built: the walk reads no file, so every shot time in the catalogue was the day the file was
+  last written. On a library assembled by copying folders about, that is the day of the copy —
+  so a shoot from the 2nd read as a shoot on the 8th, and a folder copied in one go collapsed
+  into a "session" as long as the copy took (28 photographs over four minutes became a
+  39-second session a week later). Sessions cannot work on that, and neither can the grid's
+  sort-by-shot. The catalogue now reads the capture time in the hashing phase, where the file is
+  already open — the hash wants the whole file and the capture time wants its head, so reading
+  them separately would touch every photograph twice. A frame carrying no capture time keeps the
+  file's time, because the grid has to sort it somewhere. `frames.shot_source` records which of
+  the two a row holds (`exif` | `mtime`), and empty marks a row written before any of this. Those
+  rows are repaired on the next pass by a header-only read — the identity in them is still good,
+  so re-hashing a whole library over a network share to correct a timestamp is not needed — and
+  once a row says where its time came from it is never repaired again. The opened-folder grid
+  still sorts on the walk's mtime; that path is next.

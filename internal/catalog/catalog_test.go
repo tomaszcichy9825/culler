@@ -201,7 +201,7 @@ func TestUnderRootOnTheFilesystemRoot(t *testing.T) {
 	if _, err := s.db.Exec(upsertFrameSQL,
 		"hash-under-root", trips, "DSCF0001", "raw-only", int64(0),
 		filepath.Join(trips, "DSCF0001.RAF"), "", int64(100), int64(0),
-		int64(0), int64(0), 0, "", int64(0)); err != nil {
+		int64(0), int64(0), sourceFileTime, 0, "", int64(0)); err != nil {
 		t.Fatal(err)
 	}
 	where, args := underRoot(fsRoot)

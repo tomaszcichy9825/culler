@@ -49,7 +49,7 @@ type PhotoGroup struct {
 	Raw      *FileRef  // nil if absent
 	Jpeg     *FileRef  // nil if absent
 	Sidecars []FileRef // follow the RAW on all operations
-	Shot     time.Time // EXIF DateTimeOriginal, falls back to mtime
+	Shot     time.Time // the primary file's mtime; the catalogue replaces it with the EXIF capture time
 	Warnings []string  // surfaced as badges in the UI
 }
 
@@ -200,8 +200,12 @@ func (b *stemBucket) group(dir string) (PhotoGroup, bool) {
 	default:
 		g.Kind = KindJPEGOnly
 	}
-	// EXIF DateTimeOriginal comes later with the preview pipeline; mtime of
-	// the primary file is the fallback either way.
+	// The walk reads no file, so all it can offer is the primary file's mtime.
+	// That is the day the file was written, not the day the photograph was
+	// taken, and on a library assembled by copying folders about the two are
+	// nothing alike — the catalogue therefore replaces this with the EXIF
+	// capture time while it is already reading the file to hash it, and
+	// records which of the two a row ended up holding.
 	if jpeg != nil {
 		g.Shot = jpeg.ModTime
 	} else {
