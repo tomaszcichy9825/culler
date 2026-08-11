@@ -1118,19 +1118,9 @@ func identifyGroups(
 	return out
 }
 
-// captureTimeOf reads when a photograph was taken. A file whose metadata will
-// not parse, or which carries no capture time, answers false — there is no
-// guess to make, and the caller falls back to the file's own time.
-func captureTimeOf(path string) (time.Time, bool) {
-	fields, err := exif.Read(path)
-	if err != nil {
-		return time.Time{}, false
-	}
-	if !fields.DateTimeOriginal.Present || fields.DateTimeOriginal.Value.IsZero() {
-		return time.Time{}, false
-	}
-	return fields.DateTimeOriginal.Value, true
-}
+// captureTimeOf reads when a photograph was taken, the same way every other
+// caller does.
+func captureTimeOf(path string) (time.Time, bool) { return exif.ReadCaptureTime(path) }
 
 // primaryRef is the file a frame is identified by: the JPEG when there is one,
 // because that is the frame the user is looking at, otherwise the RAW.

@@ -68,7 +68,11 @@ type FrameHash struct {
 	Rating      int      `json:"rating"`
 	Destination string   `json:"destination"`
 	Verb        string   `json:"verb"`
-	Decision    string   `json:"decision"`
+	// Shot is when the photograph was taken, RFC3339, empty when the file
+	// carried no capture time and the one the frame arrived with — its file's
+	// mtime — still stands.
+	Shot     string `json:"shot"`
+	Decision string `json:"decision"`
 	Warnings    []string `json:"warnings"`
 }
 

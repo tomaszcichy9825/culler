@@ -84,6 +84,7 @@ func (s *LibraryService) OpenFolderStream(dir string) (ScanTicket, error) {
 		cfg:     s.app.Config().ScanConfig(),
 		store:   store,
 		hashFn:  s.hashFn,
+		capture: s.captureFn,
 		emit:    s.emit,
 		workers: workers,
 		batch:   s.batch.withDefaults(),
@@ -116,6 +117,7 @@ type folderStream struct {
 	cfg     scan.Config
 	store   *decide.Store
 	hashFn  func(path string) (string, error)
+	capture func(path string) (time.Time, bool)
 	emit    func(name string, data any)
 	workers int
 	batch   streamBatching
@@ -132,6 +134,10 @@ type folderStream struct {
 type frameResult struct {
 	group scan.PhotoGroup
 	hash  string
+	// shot is the capture time out of the file's metadata; taken is false when
+	// the file carried none and the walk's mtime stands.
+	shot  time.Time
+	taken bool
 }
 
 // run walks the folder, hashes behind the walk and reports. It emits nothing
@@ -265,13 +271,21 @@ func (f *folderStream) hash(ctx context.Context, frames *frameQueue, results cha
 			return
 		}
 		var h string
+		var shot time.Time
+		var taken bool
 		if ref := primaryRef(g); ref != nil {
 			if v, err := f.hashFn(ref.Path); err == nil {
 				h = v
 			}
+			// Read on the file this pass already opened. A frame whose bytes
+			// would not hash may still say when it was taken, and a tile with
+			// the right date beats one with the day of the copy.
+			if f.capture != nil {
+				shot, taken = f.capture(ref.Path)
+			}
 		}
 		select {
-		case results <- frameResult{group: g, hash: h}:
+		case results <- frameResult{group: g, hash: h, shot: shot, taken: taken}:
 		case <-ctx.Done():
 			return
 		}
@@ -349,7 +363,7 @@ func (f *folderStream) identity(r frameResult) FrameHash {
 			rec = recorded
 		}
 	}
-	return frameIdentity(r.group, r.hash, rec)
+	return frameIdentity(r.group, r.hash, r.shot, rec)
 }
 
 // send drops the payload if the open has been abandoned. The frontend filters
