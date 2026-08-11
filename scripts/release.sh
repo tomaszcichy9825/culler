@@ -34,9 +34,15 @@ git checkout -b "$BRANCH"
 
 perl -pi -e "s/version: \"[0-9.]+\" # The application version/version: \"$VERSION\" # The application version/" build/config.yml
 perl -pi -e "s/\"file_version\": \"[0-9.]+\"/\"file_version\": \"$VERSION\"/; s/\"ProductVersion\": \"[0-9.]+\"/\"ProductVersion\": \"$VERSION\"/" build/windows/info.json
-# Only the assemblyIdentity carries the app version — the file's XML
-# declaration also says version="..." and must stay 1.0.
-perl -pi -e "s/(assemblyIdentity[^>]*version=)\"[0-9.]+\"/\${1}\"$VERSION\"/" build/windows/wails.exe.manifest
+# Only the application's own assemblyIdentity carries the app version. Two
+# other version attributes live in this file and neither is ours: the XML
+# declaration's, which stays 1.0, and the Microsoft.Windows.Common-Controls
+# dependency's, which is the fixed 6.0.0.0 that names the v6 common controls
+# assembly. Matching on assemblyIdentity alone rewrote that one too — every
+# release from v0.3.0 to v0.5.0 shipped a Windows binary asking for a
+# Common-Controls version that has never existed — so the line is picked by
+# the bundle identity instead.
+perl -pi -e "if (/name=\"com\\.tomaszcichy9825\\.culler\"/) { s/(assemblyIdentity[^>]*version=)\"[0-9.]+\"/\${1}\"$VERSION\"/ }" build/windows/wails.exe.manifest
 
 git commit -am "Release $TAG"
 git push -u origin "$BRANCH"
