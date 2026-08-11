@@ -59,7 +59,11 @@ type ScanTicket struct {
 // Opening another folder abandons whatever is still in flight: the abandoned
 // open stops emitting entirely, so a slow scan can never land on top of the
 // folder the user has moved to.
-func (s *LibraryService) OpenFolderStream(dir string) (ScanTicket, error) {
+// newestFirst asks the walk to hand its frames over backwards. The grid knows
+// which way it is sorting and the walk does not, so the sheet says: under a
+// newest-first sort the newest frames have to arrive first, or every batch
+// lands above what is painted and shoves the page down.
+func (s *LibraryService) OpenFolderStream(dir string, newestFirst bool) (ScanTicket, error) {
 	resolved, err := resolveFolder(dir)
 	if err != nil {
 		return ScanTicket{}, err
@@ -80,14 +84,15 @@ func (s *LibraryService) OpenFolderStream(dir string) (ScanTicket, error) {
 
 	ctx, cancel, ticket := s.begin(resolved, network)
 	st := &folderStream{
-		ticket:  ticket,
-		cfg:     s.app.Config().ScanConfig(),
-		store:   store,
-		hashFn:  s.hashFn,
-		capture: s.captureFn,
-		emit:    s.emit,
-		workers: workers,
-		batch:   s.batch.withDefaults(),
+		ticket:     ticket,
+		cfg:        s.app.Config().ScanConfig(),
+		store:      store,
+		hashFn:     s.hashFn,
+		capture:    s.captureFn,
+		emit:       s.emit,
+		workers:    workers,
+		batch:      s.batch.withDefaults(),
+		descending: newestFirst,
 	}
 	go st.run(ctx, cancel)
 	return ticket, nil
@@ -121,6 +126,9 @@ type folderStream struct {
 	emit    func(name string, data any)
 	workers int
 	batch   streamBatching
+	// descending hands the frames over newest-name first, for a sheet sorted
+	// that way. See OpenFolderStream.
+	descending bool
 
 	// discovered is how many frames the walk has handed over so far, which is
 	// all the total a progress bar can honestly show mid-walk.
@@ -130,14 +138,12 @@ type folderStream struct {
 	storeErr error
 }
 
-// frameResult is one frame with its identity read.
+// frameResult is one frame with its identity read. The shot time is not in
+// here: the frame already carries it, filled before the batch was painted, so
+// the identity has nothing to add to it.
 type frameResult struct {
 	group scan.PhotoGroup
 	hash  string
-	// shot is the capture time out of the file's metadata; taken is false when
-	// the file carried none and the walk's mtime stands.
-	shot  time.Time
-	taken bool
 }
 
 // run walks the folder, hashes behind the walk and reports. It emits nothing
@@ -166,10 +172,22 @@ func (f *folderStream) run(ctx context.Context, release context.CancelFunc) {
 	go f.collect(ctx, results, collected)
 
 	total := 0
-	opts := scan.StreamOptions{BatchSize: f.batch.Frames, MaxDelay: f.batch.Delay}
+	opts := scan.StreamOptions{BatchSize: f.batch.Frames, MaxDelay: f.batch.Delay, Descending: f.descending}
 	err := scan.ScanDirStreamContext(ctx, f.ticket.Dir, f.cfg, opts, func(batch []scan.PhotoGroup) {
 		total += len(batch)
 		f.discovered.Store(int64(total))
+
+		// Before anything is painted: a frame has to arrive carrying the time
+		// the sheet will order it by, or it lands in the wrong place and moves
+		// when its identity turns up behind it. The walk knows only the file's
+		// mtime, which on a folder copied off a card is the day of the copy,
+		// so the batch's capture times are read here.
+		//
+		// This is the one place the streamed open pays to read a file before
+		// showing it. It is a header read rather than the whole file, run
+		// across the same workers the hashes use, and it buys a sheet that
+		// only ever grows downwards.
+		f.fillCaptureTimes(ctx, batch)
 
 		// The grid paints from this, so it goes out before the frames are
 		// queued for hashing rather than after.
@@ -205,6 +223,42 @@ func (f *folderStream) run(ctx context.Context, release context.CancelFunc) {
 		done.Error = fmt.Sprintf("read decisions: %v", f.storeErr)
 	}
 	f.emit(EventScanDone, done)
+}
+
+// fillCaptureTimes replaces each frame's mtime with the time the photograph
+// was taken, for the frames of one batch, in place.
+//
+// It runs across f.workers because the reads are independent and the batch is
+// what the paint waits on: serially, a batch of sixty-four over a network
+// share would hold the first tile back by sixty-four round trips. A file that
+// says nothing keeps the time the walk gave it — the sheet has to put it
+// somewhere, and the file's own is the only other answer.
+func (f *folderStream) fillCaptureTimes(ctx context.Context, batch []scan.PhotoGroup) {
+	if f.capture == nil {
+		return
+	}
+	sem := make(chan struct{}, max(1, f.workers))
+	var wg sync.WaitGroup
+	for i := range batch {
+		ref := primaryRef(batch[i])
+		if ref == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, path string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			if shot, ok := f.capture(path); ok {
+				batch[i].Shot = shot
+			}
+		}(i, ref.Path)
+	}
+	wg.Wait()
 }
 
 // frameQueue hands frames from the walk to the hashers without ever making the
@@ -271,21 +325,13 @@ func (f *folderStream) hash(ctx context.Context, frames *frameQueue, results cha
 			return
 		}
 		var h string
-		var shot time.Time
-		var taken bool
 		if ref := primaryRef(g); ref != nil {
 			if v, err := f.hashFn(ref.Path); err == nil {
 				h = v
 			}
-			// Read on the file this pass already opened. A frame whose bytes
-			// would not hash may still say when it was taken, and a tile with
-			// the right date beats one with the day of the copy.
-			if f.capture != nil {
-				shot, taken = f.capture(ref.Path)
-			}
 		}
 		select {
-		case results <- frameResult{group: g, hash: h, shot: shot, taken: taken}:
+		case results <- frameResult{group: g, hash: h}:
 		case <-ctx.Done():
 			return
 		}
@@ -363,7 +409,7 @@ func (f *folderStream) identity(r frameResult) FrameHash {
 			rec = recorded
 		}
 	}
-	return frameIdentity(r.group, r.hash, r.shot, rec)
+	return frameIdentity(r.group, r.hash, r.group.Shot, rec)
 }
 
 // send drops the payload if the open has been abandoned. The frontend filters

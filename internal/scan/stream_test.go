@@ -235,3 +235,57 @@ func TestScanDirStreamCancelledBeforeStart(t *testing.T) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
+
+// The sheet is what a streamed walk feeds, and a sheet showing newest first
+// wants its newest frames first: emitted the other way round, every batch
+// lands above what is already painted and pushes the whole page down. The
+// walk cannot know when a photograph was taken — that is inside the file —
+// but the names it already holds run in shooting order on every camera, so
+// walking them backwards is what lets the page grow downwards.
+func TestScanDirStreamDescendingEmitsNewestNamesFirst(t *testing.T) {
+	dir := t.TempDir()
+	for _, stem := range []string{"DSCF0001", "DSCF0002", "DSCF0003", "DSCF0004"} {
+		touch(t, dir, stem+".JPG")
+	}
+
+	var seen []string
+	err := ScanDirStreamContext(context.Background(), dir, DefaultConfig(),
+		StreamOptions{BatchSize: 2, Descending: true}, func(batch []PhotoGroup) {
+			for _, g := range batch {
+				seen = append(seen, g.Stem)
+			}
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"DSCF0004", "DSCF0003", "DSCF0002", "DSCF0001"}
+	if len(seen) != len(want) {
+		t.Fatalf("emitted %v, want %v", seen, want)
+	}
+	for i, stem := range want {
+		if seen[i] != stem {
+			t.Errorf("frame %d is %s, want %s: %v", i, seen[i], stem, seen)
+		}
+	}
+}
+
+// And the default is unchanged: ascending, which is what a name sort shows.
+func TestScanDirStreamDefaultsToAscending(t *testing.T) {
+	dir := t.TempDir()
+	for _, stem := range []string{"DSCF0001", "DSCF0002"} {
+		touch(t, dir, stem+".JPG")
+	}
+
+	var seen []string
+	err := ScanDirStream(dir, DefaultConfig(), func(batch []PhotoGroup) {
+		for _, g := range batch {
+			seen = append(seen, g.Stem)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != "DSCF0001" {
+		t.Errorf("emitted %v, want DSCF0001 first", seen)
+	}
+}
