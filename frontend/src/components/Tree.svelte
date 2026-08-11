@@ -362,9 +362,15 @@
     outline: none;
   }
 
-  .name:focus-visible {
-    box-shadow: inset 0 0 0 2px var(--accent);
-  }
+  /* No focus ring on the button. The row already draws the keyboard position
+     from the tracked index, and this drew a second one — 2px accent, on the
+     button inside the row, nested inside the row's own 1px border. Two blue
+     borders one pixel apart, and because :focus-visible is what the webview
+     drops the moment the mouse moves, the inner one vanished on the next
+     mouse twitch: the exact flicker .row.cursor exists to avoid.
+
+     Focus stays visible. focusRow moves the tracked index and the DOM focus
+     together, so the focused row is always the cursor row. */
 
   .label {
     flex: 1;

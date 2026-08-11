@@ -78,6 +78,36 @@ function text(el: Element | null): string {
   return (el?.textContent ?? "").trim();
 }
 
+/**
+ * Every :focus-visible rule that paints a box-shadow on a selector, read off
+ * the loaded stylesheets.
+ *
+ * The keyboard position in the tree and in Sessions is drawn from a tracked
+ * index, deliberately, because the webview drops :focus-visible the moment the
+ * mouse moves. A ring declared on top of that draws a second border and then
+ * loses it on the next mouse twitch. It cannot be caught by focusing an
+ * element here — no headless browser sets the heuristic — so the rule itself
+ * is what gets asserted.
+ */
+function focusRingSelectors(on: string): string[] {
+  const out: string[] = [];
+  for (const sheet of [...document.styleSheets]) {
+    let rules: CSSRuleList;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue; // a cross-origin sheet, which none of ours are
+    }
+    for (const rule of [...rules]) {
+      if (!(rule instanceof CSSStyleRule)) continue;
+      if (!rule.selectorText.includes(":focus-visible")) continue;
+      if (!rule.selectorText.includes(on)) continue;
+      if (rule.style.boxShadow !== "") out.push(rule.selectorText);
+    }
+  }
+  return out;
+}
+
 const settle = () => new Promise((r) => setTimeout(r, 0));
 /** Long enough for the query field's debounce to have fired and answered. */
 const settleSearch = () => new Promise((r) => setTimeout(r, 200));
@@ -306,6 +336,22 @@ async function tree() {
   eq("tree · left closes an open one", library.expanded.has(`${ROOT}/2026-05`), false);
   press(el, "ArrowLeft");
   eq("tree · left again walks to the parent", library.treeIndex, 0);
+
+  // One keyboard position, drawn once. The row marks it from the tracked
+  // index; the button inside used to add a second, thicker ring of its own on
+  // :focus-visible, nested a pixel inside the row's — two blue borders that
+  // the webview then dropped one of on the next mouse movement. The row's
+  // border is the indicator, and the button carries none.
+  // Asserted against the stylesheet rather than by focusing something: a
+  // headless browser never sets the heuristic behind :focus-visible, so a test
+  // that focused a row and read its box-shadow would pass whether the rule
+  // existed or not — which is what the first version of this did.
+  eq("tree · no focus ring is declared on a row button", focusRingSelectors(".name").join(", "), "");
+  check(
+    "tree · the cursor row still marks the keyboard position",
+    getComputedStyle(rowOf(library.treeIndex)).boxShadow !== "none",
+    "the keyboard position has to be visible somewhere",
+  );
 
   press(el, "End");
   eq("tree · End goes to the last row", library.treeIndex, rows().length - 1);
@@ -553,6 +599,10 @@ async function sessions() {
   // The size floor is the backend's, and what it left out comes back with the
   // list: a filtered list that looked complete is how a shoot goes missing
   // without anybody noticing.
+  // Same rule as the tree: .active follows the keyboard, so a :focus-visible
+  // ring on top of it only ever drew a second border and then dropped it.
+  eq("sessions · no focus ring is declared on a row", focusRingSelectors(".row").join(", "), "");
+
   eq("sessions · a list with nothing filtered hides nothing", library.sessionsHidden, 0);
   eq("sessions · and reports the floor it was drawn at", library.sessionFloor, 1);
 
