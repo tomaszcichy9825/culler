@@ -67,16 +67,20 @@
       <span class="title">Sessions</span>
       <span class="hair"></span>
       <!-- The floor hides fragments, so the header owns up to it: a list that
-           silently drops two hundred shoots reads as a list that lost them. -->
+           silently drops two hundred shoots reads as a list that lost them.
+           "395 of 636" says that in the one form that needs no key — a bare
+           count and a separate "+241 small" left the reader working out what
+           either number was, which is the state this replaced. -->
       {#if library.sessionsHidden > 0}
         <span
-          class="hint muted"
-          title="{formatCount(library.sessionsHidden)} shoots of fewer than {library.sessionFloor} frames are hidden — change the minimum in Settings › Catalogue"
+          class="hint"
+          title="{formatCount(library.sessionsHidden)} shoots of fewer than {library.sessionFloor} frames are not listed — change the minimum in Settings › Catalogue › Sessions"
         >
-          +{formatCount(library.sessionsHidden)} small
+          {formatCount(library.sessions.length)} of {formatCount(library.sessions.length + library.sessionsHidden)}
         </span>
+      {:else}
+        <span class="hint">{formatCount(library.sessions.length)}</span>
       {/if}
-      <span class="hint">{formatCount(library.sessions.length)}</span>
     </div>
 
     <Sessions />
@@ -152,10 +156,6 @@
     font-size: 10px;
     letter-spacing: 0;
     color: var(--text-dim);
-  }
-
-  .hint.muted {
-    color: var(--text-ghost);
   }
 
   .indexing {
