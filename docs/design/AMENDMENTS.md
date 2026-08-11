@@ -96,3 +96,14 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   so re-hashing a whole library over a network share to correct a timestamp is not needed — and
   once a row says where its time came from it is never repaired again. The opened-folder grid
   still sorts on the walk's mtime; that path is next.
+
+- **2026-08-11 — The opened folder gets the capture time too.** The catalogue's shot times were
+  corrected the day before; the grid was still sorting a folder you had actually opened by its
+  files' mtimes, because that path is the walk's rather than the catalogue's. The identity pass
+  already opens every frame's primary file, so the capture time is read there and rides back on
+  the same `scan:hashed` patch that carries the hash and the recorded decision — `FrameHash.Shot`,
+  RFC3339, empty when the file carried none, in which case the mtime the frame was painted with
+  stands. `exif.ReadCaptureTime` is the single reader both the catalogue and the folder open
+  call, so "no capture time" means the same thing in both. The same patch was also dropping the
+  routing verb on the floor, which it has carried since verbs existed: a reopened folder showed
+  a routed frame as a copy however it had been routed.

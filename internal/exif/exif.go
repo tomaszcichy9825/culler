@@ -204,6 +204,26 @@ func Read(path string) (Fields, error) {
 	return Parse(data)
 }
 
+// ReadCaptureTime reads when the photograph at path was taken.
+//
+// It is the one question most of the app asks of a file's metadata — the
+// catalogue asks it of every frame it indexes, and an opened folder asks it of
+// every frame it paints — so it is answered here rather than in each caller,
+// with the same reading of "no answer" everywhere: a file whose metadata will
+// not parse, or which carries no capture time, reports false, and the caller
+// falls back to the file's own timestamp. There is no guess worth making
+// between the two.
+func ReadCaptureTime(path string) (time.Time, bool) {
+	fields, err := Read(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if !fields.DateTimeOriginal.Present || fields.DateTimeOriginal.Value.IsZero() {
+		return time.Time{}, false
+	}
+	return fields.DateTimeOriginal.Value, true
+}
+
 // Parse extracts metadata from the head of a file already in memory.
 func Parse(data []byte) (Fields, error) {
 	block, ok := tiffBlock(data)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tomaszcichy9825/culler/internal/decide"
+	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/hash"
 	"github.com/tomaszcichy9825/culler/internal/platform"
 	"github.com/tomaszcichy9825/culler/internal/scan"
@@ -63,6 +64,11 @@ type LibraryService struct {
 	// values are set in NewLibraryService.
 	emit   func(name string, data any)
 	hashFn func(path string) (string, error)
+	// captureFn reads when a photograph was taken. It runs beside the identity
+	// hash, on the file that pass has already opened, because the walk that
+	// painted the frame could only offer the file's mtime — which on a folder
+	// copied off a card is the day of the copy.
+	captureFn func(path string) (time.Time, bool)
 	// workers overrides the identity-hash concurrency; zero takes the cap that
 	// suits the volume the folder is on.
 	workers int
@@ -78,7 +84,7 @@ type LibraryService struct {
 
 // NewLibraryService binds the service to the shared state.
 func NewLibraryService(a *App) *LibraryService {
-	return &LibraryService{app: a, emit: emitEvent, hashFn: hash.Content}
+	return &LibraryService{app: a, emit: emitEvent, hashFn: hash.Content, captureFn: exif.ReadCaptureTime}
 }
 
 // OpenFolder scans dir and returns its frames with the decision recorded for
@@ -97,6 +103,19 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 	hashes := hashGroups(groups, s.app.hashWorkers(network), func(done int) {
 		emitEvent(EventScanProgress, ScanProgress{Dir: resolved, Done: done, Total: len(groups)})
 	})
+	// Read on the files the hash pass has just opened. The walk could only
+	// offer each frame's mtime, which on a folder copied off a card is the day
+	// of the copy rather than the day the photograph was taken.
+	shots := make([]time.Time, len(groups))
+	for i, g := range groups {
+		ref := primaryRef(g)
+		if ref == nil || s.captureFn == nil {
+			continue
+		}
+		if shot, ok := s.captureFn(ref.Path); ok {
+			shots[i] = shot
+		}
+	}
 
 	store, err := s.app.decisions()
 	if err != nil {
@@ -119,7 +138,7 @@ func (s *LibraryService) OpenFolder(dir string) (FolderDTO, error) {
 				rec = recorded
 			}
 		}
-		out.Groups = append(out.Groups, groupDTO(g, hashes[i], rec))
+		out.Groups = append(out.Groups, groupDTO(g, hashes[i], shots[i], rec))
 	}
 	return out, nil
 }
@@ -170,7 +189,12 @@ func frameDTO(g scan.PhotoGroup) GroupDTO {
 // primary file could not be hashed still shows up — it can be moved and
 // deleted like any other — but it carries a warning, because without an
 // identity its decision cannot be remembered across a reopen.
-func frameIdentity(g scan.PhotoGroup, hash string, rec decide.Record) FrameHash {
+//
+// shot, when the file carried a capture time, replaces the one the frame was
+// painted with: the walk could only offer the primary file's mtime, and on a
+// folder copied off a card that is the day of the copy rather than the day the
+// photograph was taken. A zero shot leaves the frame's own time standing.
+func frameIdentity(g scan.PhotoGroup, hash string, shot time.Time, rec decide.Record) FrameHash {
 	id := FrameHash{
 		Dir:         g.Dir,
 		Stem:        g.Stem,
@@ -183,6 +207,9 @@ func frameIdentity(g scan.PhotoGroup, hash string, rec decide.Record) FrameHash 
 		Decision:    legacyDecision(rec),
 		Warnings:    append([]string{}, g.Warnings...),
 	}
+	if !shot.IsZero() {
+		id.Shot = shot.Format(time.RFC3339)
+	}
 	if hash == "" {
 		id.Warnings = append(id.Warnings, "could not read this frame's primary file; its decision will not be remembered")
 	}
@@ -191,9 +218,12 @@ func frameIdentity(g scan.PhotoGroup, hash string, rec decide.Record) FrameHash 
 
 // groupDTO flattens one group with its identity already resolved, which is
 // what the unstreamed open hands back.
-func groupDTO(g scan.PhotoGroup, hash string, rec decide.Record) GroupDTO {
+func groupDTO(g scan.PhotoGroup, hash string, shot time.Time, rec decide.Record) GroupDTO {
 	dto := frameDTO(g)
-	id := frameIdentity(g, hash, rec)
+	id := frameIdentity(g, hash, shot, rec)
+	if id.Shot != "" {
+		dto.Shot = id.Shot
+	}
 	dto.Hash = id.Hash
 	dto.Verdict = id.Verdict
 	dto.Mask = id.Mask

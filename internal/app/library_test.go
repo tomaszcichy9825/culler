@@ -17,7 +17,7 @@ func TestGroupDTOPaired(t *testing.T) {
 	g := pairedGroup("DSCF0001")
 	g.Warnings = []string{"duplicate files for this frame"}
 
-	dto := groupDTO(g, "abc123", decide.Record{Verdict: decide.Keep, Mask: decide.MaskJPEG, Rating: 4})
+	dto := groupDTO(g, "abc123", time.Time{}, decide.Record{Verdict: decide.Keep, Mask: decide.MaskJPEG, Rating: 4})
 
 	if dto.Kind != "paired" {
 		t.Errorf("Kind = %q, want paired", dto.Kind)
@@ -64,7 +64,7 @@ func TestGroupDTORawOnly(t *testing.T) {
 		Raw:  &scan.FileRef{Path: "/card/DCIM/DSCF0002.RAF"},
 		Shot: time.Date(2026, 5, 1, 9, 31, 0, 0, time.UTC),
 	}
-	dto := groupDTO(g, "def456", decide.Record{})
+	dto := groupDTO(g, "def456", time.Time{}, decide.Record{})
 	if dto.HasJpeg || dto.JpegPath != "" {
 		t.Errorf("RAW-only frame reports a JPEG: %+v", dto)
 	}
@@ -80,7 +80,7 @@ func TestGroupDTORawOnly(t *testing.T) {
 }
 
 func TestGroupDTOUnhashableFrameIsWarned(t *testing.T) {
-	dto := groupDTO(pairedGroup("DSCF0003"), "", decide.Record{})
+	dto := groupDTO(pairedGroup("DSCF0003"), "", time.Time{}, decide.Record{})
 	if len(dto.Warnings) != 1 || !strings.Contains(dto.Warnings[0], "will not be remembered") {
 		t.Errorf("Warnings = %v, want a warning about the missing identity", dto.Warnings)
 	}
