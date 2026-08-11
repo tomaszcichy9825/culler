@@ -141,9 +141,11 @@
     box-shadow: inset 0 0 0 1px var(--border-selected);
   }
 
-  .row:focus-visible {
-    box-shadow: inset 0 0 0 2px var(--accent);
-  }
+  /* No focus ring: .active is the keyboard position here, moved by focusRow
+     alongside the DOM focus, so a :focus-visible ring only ever drew a second
+     border over the first — and dropped it again on the next mouse movement,
+     which reads as the row flickering rather than as anything being focused.
+     The tree next door had the same pair and lost it for the same reason. */
 
   .label {
     flex: 1;
