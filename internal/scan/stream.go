@@ -33,6 +33,21 @@ type StreamOptions struct {
 	// MaxDelay is the longest a partly filled batch is held. On a network
 	// volume where each stat is slow this is what keeps tiles arriving.
 	MaxDelay time.Duration
+
+	// Descending walks the stems backwards.
+	//
+	// It exists for the sheet the walk is feeding. A sheet showing newest
+	// first wants its newest frames first: emitted the other way round, every
+	// batch lands above what is already painted and shoves the whole page
+	// down, which is the flicker a streamed open is supposed to avoid. The
+	// walk cannot know when a photograph was taken — that is inside the file,
+	// and reading it is the expensive half — but the names are already in
+	// hand and run in shooting order on every camera, so walking them
+	// backwards puts the newest frames on screen first.
+	//
+	// It is the order frames are handed over in, nothing more. What the sheet
+	// finally shows is the sort, applied where the grid derives its list.
+	Descending bool
 }
 
 func (o StreamOptions) batchSize() int {
@@ -91,6 +106,9 @@ func ScanDirStreamContext(ctx context.Context, dir string, cfg Config, opts Stre
 	// Names are known, so grouping is already settled; what is left is the
 	// stat of each file, which is the slow half on a network share and the
 	// half worth streaming.
+	if opts.Descending {
+		order = reversed(order)
+	}
 	for _, key := range order {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -229,4 +247,15 @@ func readEntries(ctx context.Context, dir string, cfg Config) (map[string]*entry
 	// groups by, so batches arrive as a prefix of that same order.
 	sort.Strings(order)
 	return buckets, order, nil
+}
+
+// reversed is a copy of the walk order back to front. A copy rather than an
+// in-place flip: order belongs to readEntries, and a caller that walks the
+// same folder twice must get the same listing both times.
+func reversed(order []string) []string {
+	out := make([]string, len(order))
+	for i, key := range order {
+		out[len(order)-1-i] = key
+	}
+	return out
 }

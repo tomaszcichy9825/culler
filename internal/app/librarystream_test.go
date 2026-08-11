@@ -121,7 +121,7 @@ func TestOpenFolderStreamPaintsFramesBeforeHashing(t *testing.T) {
 		return hash.Content(path)
 	})
 
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatalf("OpenFolderStream: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestOpenFolderStreamPaintsEveryFrameWhileHashingIsBlocked(t *testing.T) {
 	})
 	s.workers = 2
 
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestOpenFolderStreamMatchesOpenFolder(t *testing.T) {
 
 	rec := &recorder{}
 	s := streamService(t, a, rec, nil)
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatalf("OpenFolderStream: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestOpenFolderStreamWarnsOnUnreadableFrame(t *testing.T) {
 		}
 		return hash.Content(path)
 	})
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,14 +327,14 @@ func TestOpenFolderStreamSupersedesThePreviousOpen(t *testing.T) {
 		return hash.Content(path)
 	})
 
-	old, err := s.OpenFolderStream(first)
+	old, err := s.OpenFolderStream(first, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the first open's frames", func() bool { return len(rec.frames(old.Token)) == 2 })
 	<-reached
 
-	fresh, err := s.OpenFolderStream(second)
+	fresh, err := s.OpenFolderStream(second, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestOpenFolderStreamRespectsWorkerCap(t *testing.T) {
 	})
 	s.workers = 2
 
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,17 +419,17 @@ func TestOpenFolderStreamRejectsBadPaths(t *testing.T) {
 	a := testApp(t)
 	s := NewLibraryService(a)
 
-	if _, err := s.OpenFolderStream(filepath.Join(t.TempDir(), "nope")); err == nil {
+	if _, err := s.OpenFolderStream(filepath.Join(t.TempDir(), "nope"), false); err == nil {
 		t.Error("a missing folder was accepted")
 	}
 	file := filepath.Join(t.TempDir(), "a.jpg")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OpenFolderStream(file); err == nil {
+	if _, err := s.OpenFolderStream(file, false); err == nil {
 		t.Error("a file was accepted as a folder")
 	}
-	if _, err := s.OpenFolderStream(""); err == nil {
+	if _, err := s.OpenFolderStream("", false); err == nil {
 		t.Error("an empty path was accepted")
 	}
 }
@@ -442,7 +442,7 @@ func TestOpenFolderStreamReportsProgress(t *testing.T) {
 	rec := &recorder{}
 
 	s := streamService(t, a, rec, nil)
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestOpenFolderStreamOnEmptyFolder(t *testing.T) {
 	rec := &recorder{}
 	s := streamService(t, a, rec, nil)
 
-	ticket, err := s.OpenFolderStream(t.TempDir())
+	ticket, err := s.OpenFolderStream(t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -107,3 +107,18 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   call, so "no capture time" means the same thing in both. The same patch was also dropping the
   routing verb on the floor, which it has carried since verbs existed: a reopened folder showed
   a routed frame as a copy however it had been routed.
+
+- **2026-08-11 — A folder loads into the order it will be shown in.** Opening a folder painted
+  tiles that then moved: batches arrived name-ascending and were sorted into a newest-first
+  sheet, so each one landed above what was already there and pushed the page down, and — since
+  the capture-time fix earlier the same day — every frame's sort key changed again when its
+  identity landed behind it. Two things settle it. The batch's capture times are read before the
+  batch is painted, so a tile arrives carrying the time it will be ordered by rather than its
+  file's mtime; this is the one read a streamed open now makes before showing anything, and it
+  is a header read across the same workers the hashes use. And the walk takes a direction:
+  `StreamOptions.Descending` hands the stems over backwards, which `OpenFolderStream` is told to
+  do when the grid is sorted newest-first. The walk cannot know when a photograph was taken, but
+  it holds the whole listing before it emits anything and camera filenames run in shooting
+  order, so walking them backwards puts the newest frames on screen first and the page grows
+  downwards. The identity pass no longer reads the capture time — the frame already carries it,
+  so that would be a second read of the same file.

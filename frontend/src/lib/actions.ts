@@ -258,7 +258,11 @@ async function scan(dir: string, { remember, announce }: ScanOptions) {
   try {
     // Decisions from the folder being left have to land before it is replaced.
     await flush();
-    const ticket = await LibraryService.OpenFolderStream(target);
+    // The walk hands frames over in name order and cannot know when a
+    // photograph was taken, so a newest-first sheet asks for them backwards:
+    // otherwise every batch lands above what is already painted and shoves
+    // the page down while the folder loads.
+    const ticket = await LibraryService.OpenFolderStream(target, gridSort.descending);
     // Two guards, because two clocks disagree. scanSeq is this side's order of
     // intent; ticket.seq is the backend's order of begin(), which is what
     // actually decides whose stream it cancelled. A ticket the backend has

@@ -91,7 +91,7 @@ func TestStreamedOpenPatchesTheCaptureTime(t *testing.T) {
 	rec := &recorder{}
 	s.emit = rec.emit
 
-	ticket, err := s.OpenFolderStream(dir)
+	ticket, err := s.OpenFolderStream(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +103,52 @@ func TestStreamedOpenPatchesTheCaptureTime(t *testing.T) {
 	}
 	if got := parseStamp(t, hashed[0].Shot); !got.Equal(shot) {
 		t.Errorf("the identity carries shot %v, want the capture time %v", got, shot)
+	}
+}
+
+// The sheet must not reorder itself while a folder loads. That means a frame
+// has to arrive carrying the time it will be sorted by — the walk reads no
+// file, so the capture time is read for each batch before that batch is
+// painted, and a tile lands in its final position rather than being shuffled
+// there when its identity turns up behind it.
+func TestStreamedOpenPaintsFramesWithTheCaptureTime(t *testing.T) {
+	a := testApp(t)
+	dir := t.TempDir()
+	copied := time.Date(2026, 8, 8, 23, 14, 13, 0, time.UTC)
+	shoot(t, dir, "DSCF0001", copied)
+	shoot(t, dir, "DSCF0002", copied.Add(time.Second))
+
+	shot := time.Date(2026, 8, 2, 11, 48, 13, 0, time.UTC)
+	s := NewLibraryService(a)
+	s.captureFn = captureAt(map[string]time.Time{
+		"DSCF0001": shot,
+		"DSCF0002": shot.Add(time.Minute),
+	})
+
+	rec := &recorder{}
+	s.emit = rec.emit
+	// A hash that never returns would still let the frames paint; this one
+	// simply proves the painted frames did not wait for it to say anything.
+	s.hashFn = func(string) (string, error) { return "", nil }
+
+	ticket, err := s.OpenFolderStream(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the open to finish", func() bool { _, ok := rec.done(ticket.Token); return ok })
+
+	painted := rec.frames(ticket.Token)
+	if len(painted) != 2 {
+		t.Fatalf("%d frames painted, want 2", len(painted))
+	}
+	for _, g := range painted {
+		want := shot
+		if g.Stem == "DSCF0002" {
+			want = shot.Add(time.Minute)
+		}
+		if got := parseStamp(t, g.Shot); !got.Equal(want) {
+			t.Errorf("%s painted with %v, want the capture time %v — the tile would move when its identity landed",
+				g.Stem, got, want)
+		}
 	}
 }
