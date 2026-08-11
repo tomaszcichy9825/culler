@@ -131,11 +131,11 @@
 
       <SettingRow
         name="Currently listed"
-        desc="What the sidebar is showing at the floor above, and how many shoots fall under it."
+        desc="How many of the library's shoots the sidebar is showing at the floor above."
         wired={false}
       >
         <ControlChip
-          label="{library.sessions.length} shown · {library.sessionsHidden} hidden"
+          label="{library.sessions.length} of {library.sessions.length + library.sessionsHidden}"
           disabled
           title="Counted at the last pass over the catalogue"
         />
