@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS frames (
 	jpeg_bytes INTEGER NOT NULL,
 	raw_mtime  INTEGER NOT NULL DEFAULT 0,
 	jpeg_mtime INTEGER NOT NULL DEFAULT 0,
+	-- Where the shot column came from: 'exif' is the photograph's own capture
+	-- time, 'mtime' the file's, which is all a frame carrying no EXIF can
+	-- offer. Empty means a row written before the catalogue read capture
+	-- times at all, and is what makes those rows findable and re-readable.
+	shot_source TEXT NOT NULL DEFAULT '' CHECK (shot_source IN ('','exif','mtime')),
 	rating     INTEGER NOT NULL,
 	verdict    TEXT NOT NULL CHECK (verdict IN ('','keep','cut')),
 	indexed_at INTEGER NOT NULL,
@@ -188,6 +193,20 @@ func migrate(db *sql.DB) error {
 		}
 		if _, err := db.Exec(`ALTER TABLE frames ADD COLUMN ` + name + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("catalog: add %s: %w", name, err)
+		}
+	}
+	// Every row written before the catalogue read capture times holds the
+	// file's mtime in `shot` and says nothing about where that came from. The
+	// column arrives empty on those rows, which is what marks them as needing
+	// one more read: the next pass re-reads them, replaces the file time with
+	// the photograph's own, and is incremental again afterwards. It has to be
+	// a re-read — only the file knows when it was taken, and mtime cannot be
+	// converted into a capture time by any amount of arithmetic.
+	if !held["shot_source"] {
+		if _, err := db.Exec(
+			`ALTER TABLE frames ADD COLUMN shot_source TEXT NOT NULL DEFAULT ''
+			 CHECK (shot_source IN ('','exif','mtime'))`); err != nil {
+			return fmt.Errorf("catalog: add shot_source: %w", err)
 		}
 	}
 	if err := migrateFramesToCompositeKey(db); err != nil {

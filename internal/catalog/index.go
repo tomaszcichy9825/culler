@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tomaszcichy9825/culler/internal/exif"
 	"github.com/tomaszcichy9825/culler/internal/hash"
 	"github.com/tomaszcichy9825/culler/internal/scan"
 )
@@ -95,6 +96,12 @@ type IndexOptions struct {
 	// hashFile replaces the content hasher in tests, which is how a test can
 	// count — or refuse — the reads a pass makes. Nil reads the file.
 	hashFile func(path string) (string, error)
+
+	// captureTime replaces the EXIF reader in tests. Nil reads the file's
+	// metadata, which is the only thing that knows when a photograph was
+	// taken. The second result is false for a frame that carries no capture
+	// time, and the file's own mtime stands in.
+	captureTime func(path string) (time.Time, bool)
 }
 
 func (o IndexOptions) scanConfig() scan.Config {
@@ -405,11 +412,12 @@ func hiddenUnder(dir, root string) bool {
 const upsertFrameSQL = `
 INSERT INTO frames
 	(hash, dir, stem, kind, shot, raw_path, jpeg_path, raw_bytes, jpeg_bytes,
-	 raw_mtime, jpeg_mtime, rating, verdict, indexed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	 raw_mtime, jpeg_mtime, shot_source, rating, verdict, indexed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hash, dir, stem) DO UPDATE SET
 	kind = excluded.kind,
 	shot = excluded.shot,
+	shot_source = excluded.shot_source,
 	raw_path = excluded.raw_path,
 	jpeg_path = excluded.jpeg_path,
 	raw_bytes = excluded.raw_bytes,
@@ -431,12 +439,25 @@ type fileState struct {
 }
 
 // rowState is one catalogued frame as the last pass left it.
+// Where a row's shot time came from. A row written before the catalogue read
+// capture times holds neither value, and that emptiness is what marks it as
+// still owing one read.
+const (
+	sourceCaptureTime = "exif"
+	sourceFileTime    = "mtime"
+)
+
 type rowState struct {
 	hash    string
 	raw     fileState
 	jpeg    fileState
 	verdict string
 	rating  int
+	// shotSource is empty on a row from a build that recorded the file's time
+	// as the shot time without saying so. Such a row is re-read once, however
+	// well its sizes and mtimes still match, because the time it holds is the
+	// day the file was written rather than the day the photograph was taken.
+	shotSource string
 }
 
 // stateOf reads a group's files the way a row records them.
@@ -472,7 +493,7 @@ func sameRecordedContent(row rowState, raw, jpeg fileState) bool {
 // bounded by what fits in a folder.
 func (s *Store) dirState(dir string) (map[string]rowState, error) {
 	rows, err := s.db.Query(
-		`SELECT hash, raw_path, jpeg_path, raw_bytes, jpeg_bytes, raw_mtime, jpeg_mtime, verdict, rating
+		`SELECT hash, raw_path, jpeg_path, raw_bytes, jpeg_bytes, raw_mtime, jpeg_mtime, verdict, rating, shot_source
 		 FROM frames WHERE dir = ?`, dir)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: read %s: %w", dir, err)
@@ -483,7 +504,7 @@ func (s *Store) dirState(dir string) (map[string]rowState, error) {
 	for rows.Next() {
 		var r rowState
 		if err := rows.Scan(&r.hash, &r.raw.path, &r.jpeg.path, &r.raw.bytes, &r.jpeg.bytes,
-			&r.raw.mtime, &r.jpeg.mtime, &r.verdict, &r.rating); err != nil {
+			&r.raw.mtime, &r.jpeg.mtime, &r.verdict, &r.rating, &r.shotSource); err != nil {
 			return nil, err
 		}
 		if key := primaryPath(r.raw, r.jpeg); key != "" {
@@ -495,8 +516,14 @@ func (s *Store) dirState(dir string) (map[string]rowState, error) {
 
 // currentRow reports whether row already describes this exact state of the
 // frame's files, identity included — the one case a pass has nothing to read.
+//
+// A row that never had its capture time read is not current however well its
+// files match: it holds the day the file was written where the day the
+// photograph was taken belongs, and only the file can settle that. Those rows
+// are re-read once, and the row written in their place says where its time
+// came from, so it is never re-read for this reason again.
 func currentRow(row rowState, raw, jpeg fileState) bool {
-	return row.hash != "" && row.raw == raw && row.jpeg == jpeg
+	return row.hash != "" && row.shotSource != "" && row.raw == raw && row.jpeg == jpeg
 }
 
 // listDir is the listing phase over one directory: every frame the scan found
@@ -556,10 +583,13 @@ func (s *Store) listDir(dir string, groups []scan.PhotoGroup, lookup func(hash, 
 			// The listing alone makes it a row — no identity, no judgement,
 			// but a frame the tree can count and the search can find.
 			if !ok || row.raw != raw || row.jpeg != jpeg {
+				// The listing reads no file, so all it can offer is the file's
+				// own time — said plainly, so the hashing phase knows to come
+				// back for the photograph's.
 				if _, err := tx.Exec(upsertFrameSQL,
 					"", g.Dir, g.Stem, g.Kind.String(), g.Shot.Unix(),
 					raw.path, jpeg.path, raw.bytes, jpeg.bytes, raw.mtime, jpeg.mtime,
-					0, "", now); err != nil {
+					sourceFileTime, 0, "", now); err != nil {
 					return stats, 0, fmt.Errorf("catalog: list %s: %w", g.Stem, err)
 				}
 			}
@@ -612,20 +642,36 @@ func (s *Store) hashDir(dir string, cfg scan.Config, workers int, opts IndexOpti
 		return Stats{}, 0, err
 	}
 
+	// Two kinds of work, and they cost very different amounts. A frame whose
+	// files the catalogue does not recognise needs its whole content read, to
+	// hash it. A frame it does recognise, but whose row predates capture
+	// times, needs only the head of the file — the identity in the row is
+	// still good, because the files have not changed. Re-hashing those would
+	// mean pulling an entire library back down over a network share to correct
+	// a timestamp, which is the difference between seconds and an afternoon.
 	todo := make([]scan.PhotoGroup, 0, len(groups))
+	repair := make([]scan.PhotoGroup, 0)
 	for _, g := range groups {
 		raw, jpeg := stateOf(g)
-		if row, ok := held[primaryPath(raw, jpeg)]; ok && currentRow(row, raw, jpeg) {
-			continue
+		row, ok := held[primaryPath(raw, jpeg)]
+		switch {
+		case ok && currentRow(row, raw, jpeg):
+			// Nothing to do: identity and shot time are both settled.
+		case ok && row.hash != "" && row.shotSource == "" && row.raw == raw && row.jpeg == jpeg:
+			repair = append(repair, g)
+		default:
+			todo = append(todo, g)
 		}
-		todo = append(todo, g)
 	}
 
 	var stats Stats
 	done := 0
+	if err := s.repairShotTimes(repair, workers, opts.captureTime, &stats); err != nil {
+		return stats, done, err
+	}
 	for start := 0; start < len(todo); start += hashBatch {
 		batch := todo[start:min(start+hashBatch, len(todo))]
-		fresh := hashGroups(batch, workers, opts.hashFile)
+		fresh := identifyGroups(batch, workers, opts.hashFile, opts.captureTime)
 		if err := s.fillRows(held, batch, fresh, opts.Lookup, &stats); err != nil {
 			return stats, done, err
 		}
@@ -637,10 +683,53 @@ func (s *Store) hashDir(dir string, cfg scan.Config, workers int, opts IndexOpti
 	return stats, done, nil
 }
 
+// repairShotTimes corrects rows that hold a file's mtime where a photograph's
+// capture time belongs, which is every row written before the catalogue read
+// capture times at all.
+//
+// It reads the head of each file and nothing else: these frames are already
+// identified and their files have not moved, so the hash in the row still
+// stands. Each row then records where its new time came from, and is never
+// repaired again.
+func (s *Store) repairShotTimes(groups []scan.PhotoGroup, workers int, captureTime func(string) (time.Time, bool), stats *Stats) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	for start := 0; start < len(groups); start += hashBatch {
+		batch := groups[start:min(start+hashBatch, len(groups))]
+		// The hash is not wanted here, so the reader that would compute it is
+		// replaced by one that reads nothing.
+		times := identifyGroups(batch, workers,
+			func(string) (string, error) { return "", nil }, captureTime)
+
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		for i, g := range batch {
+			shot, source := g.Shot, sourceFileTime
+			if times[i].taken {
+				shot, source = times[i].shot, sourceCaptureTime
+			}
+			if _, err := tx.Exec(
+				`UPDATE frames SET shot = ?, shot_source = ? WHERE dir = ? AND stem = ?`,
+				shot.Unix(), source, g.Dir, g.Stem); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("catalog: repair shot time for %s: %w", g.Stem, err)
+			}
+			stats.Changed++
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // fillRows writes one hashed batch: each frame that got an identity replaces
 // whatever row stood for it — the pending listing row, or the old identity
 // its content outgrew.
-func (s *Store) fillRows(held map[string]rowState, groups []scan.PhotoGroup, fresh []string, lookup func(hash, dir, stem string) (string, int), stats *Stats) error {
+func (s *Store) fillRows(held map[string]rowState, groups []scan.PhotoGroup, fresh []identity, lookup func(hash, dir, stem string) (string, int), stats *Stats) error {
 	now := time.Now().Unix()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -651,7 +740,7 @@ func (s *Store) fillRows(held map[string]rowState, groups []scan.PhotoGroup, fre
 	for i, g := range groups {
 		raw, jpeg := stateOf(g)
 		row, ok := held[primaryPath(raw, jpeg)]
-		hash := fresh[i]
+		hash := fresh[i].hash
 		if hash == "" {
 			// The file is on disk — the listing saw it — but its bytes cannot
 			// be read, so the frame keeps whatever row it has: pending, or the
@@ -681,10 +770,17 @@ func (s *Store) fillRows(held map[string]rowState, groups []scan.PhotoGroup, fre
 			g.Dir, g.Stem, hash); err != nil {
 			return fmt.Errorf("catalog: supersede %s: %w", g.Stem, err)
 		}
+		// When the photograph was taken, and where that answer came from. The
+		// file's own time is the fallback and is recorded as such, so a row
+		// standing on it is not mistaken for one standing on the EXIF.
+		shot, shotSource := g.Shot, sourceFileTime
+		if fresh[i].taken {
+			shot, shotSource = fresh[i].shot, sourceCaptureTime
+		}
 		if _, err := tx.Exec(upsertFrameSQL,
-			hash, g.Dir, g.Stem, g.Kind.String(), g.Shot.Unix(),
+			hash, g.Dir, g.Stem, g.Kind.String(), shot.Unix(),
 			raw.path, jpeg.path, raw.bytes, jpeg.bytes, raw.mtime, jpeg.mtime,
-			rating, verdict, now); err != nil {
+			shotSource, rating, verdict, now); err != nil {
 			return fmt.Errorf("catalog: write %s: %w", g.Stem, err)
 		}
 		stats.Changed++
@@ -954,13 +1050,47 @@ func walkDir(path string, d fs.DirEntry, fn fs.WalkDirFunc) error {
 // the caller's: all CPUs for a local disk, the configured low cap for a
 // network volume. hashFile replaces the reader in tests; nil reads the file.
 func hashGroups(groups []scan.PhotoGroup, workers int, hashFile func(string) (string, error)) []string {
+	ids := identifyGroups(groups, workers, hashFile, func(string) (time.Time, bool) { return time.Time{}, false })
+	hashes := make([]string, len(ids))
+	for i, id := range ids {
+		hashes[i] = id.hash
+	}
+	return hashes
+}
+
+// identity is what one read of a frame's primary file yields: what the frame
+// is, and when the photograph was taken.
+type identity struct {
+	hash string
+	// shot is the capture time out of the file's metadata; taken is false for
+	// a frame that carries none, and the file's own time stands in.
+	shot  time.Time
+	taken bool
+}
+
+// identifyGroups reads each frame's primary file once and answers with both
+// the content hash and the capture time.
+//
+// They are read together on purpose. The hash needs the whole file and the
+// capture time needs its head, so a pass that read them separately would touch
+// every photograph twice — which on a network share or a cloud-synced folder
+// is the difference between one download and two.
+func identifyGroups(
+	groups []scan.PhotoGroup,
+	workers int,
+	hashFile func(string) (string, error),
+	captureTime func(string) (time.Time, bool),
+) []identity {
 	if workers < 1 {
 		workers = 1
 	}
 	if hashFile == nil {
 		hashFile = hash.Content
 	}
-	hashes := make([]string, len(groups))
+	if captureTime == nil {
+		captureTime = captureTimeOf
+	}
+	out := make([]identity, len(groups))
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	for i, g := range groups {
@@ -974,12 +1104,32 @@ func hashGroups(groups []scan.PhotoGroup, workers int, hashFile func(string) (st
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			if h, err := hashFile(path); err == nil {
-				hashes[i] = h
+				out[i].hash = h
+			}
+			// The capture time is read whether or not the hash came back: a
+			// file that will not hash may still say when it was taken, and a
+			// frame in the grid with the right date beats one with none.
+			if shot, ok := captureTime(path); ok {
+				out[i].shot, out[i].taken = shot, true
 			}
 		}(i, ref.Path)
 	}
 	wg.Wait()
-	return hashes
+	return out
+}
+
+// captureTimeOf reads when a photograph was taken. A file whose metadata will
+// not parse, or which carries no capture time, answers false — there is no
+// guess to make, and the caller falls back to the file's own time.
+func captureTimeOf(path string) (time.Time, bool) {
+	fields, err := exif.Read(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if !fields.DateTimeOriginal.Present || fields.DateTimeOriginal.Value.IsZero() {
+		return time.Time{}, false
+	}
+	return fields.DateTimeOriginal.Value, true
 }
 
 // primaryRef is the file a frame is identified by: the JPEG when there is one,

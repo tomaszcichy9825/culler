@@ -644,7 +644,7 @@ func seedDir(t *testing.T, s *Store, dir string, n int) []FrameKey {
 		if _, err := tx.Exec(upsertFrameSQL,
 			h, dir, stem, "raw-only", int64(i),
 			filepath.Join(dir, stem+".RAF"), "", int64(100), int64(0),
-			int64(0), int64(0), 0, "", int64(0)); err != nil {
+			int64(0), int64(0), sourceFileTime, 0, "", int64(0)); err != nil {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
 		keys = append(keys, FrameKey{Hash: h, Dir: dir, Stem: stem})
@@ -729,14 +729,14 @@ func TestPruneMissingDirsSurvivesAThousandFailedDirs(t *testing.T) {
 		if _, err := tx.Exec(upsertFrameSQL,
 			fmt.Sprintf("lock-%04d", i), dir, fmt.Sprintf("LOCK%04d", i), "raw-only", int64(i),
 			filepath.Join(dir, "LOCK.RAF"), "", int64(100), int64(0),
-			int64(0), int64(0), 0, "", int64(0)); err != nil {
+			int64(0), int64(0), sourceFileTime, 0, "", int64(0)); err != nil {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
 	}
 	if _, err := tx.Exec(upsertFrameSQL,
 		"gone-0000", filepath.Join(root, "gone"), "GONE0000", "raw-only", int64(0),
 		filepath.Join(root, "gone", "GONE.RAF"), "", int64(100), int64(0),
-		int64(0), int64(0), 0, "", int64(0)); err != nil {
+		int64(0), int64(0), sourceFileTime, 0, "", int64(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
