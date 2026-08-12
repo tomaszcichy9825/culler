@@ -69,29 +69,42 @@ jobs:
           hdiutil create -volname culler -srcfolder "$STAGE" -ov -format UDZO \
             "dist/culler-${GITHUB_REF_NAME}-macos-arm64.dmg"
 
+      # Named the way the DMG is: culler-<tag>-<platform>[-installer].<ext>.
+      # Prefixing the packager's own filename instead produced
+      # culler-v0.6.0-windows-amd64-culler-amd64-installer.exe, which says
+      # culler twice and amd64 twice.
       - name: Collect artefacts (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           mkdir -p dist
-          # NSIS installer if the packager produced one, else the bare exe
+          # The NSIS installer if the packager produced one, and the bare exe.
           found=0
           for f in bin/*.exe; do
             [ -e "$f" ] || continue
-            cp "$f" "dist/culler-${GITHUB_REF_NAME}-windows-amd64-$(basename "$f")"
+            case "$(basename "$f")" in
+              *installer*) out="culler-${GITHUB_REF_NAME}-windows-amd64-installer.exe" ;;
+              *)           out="culler-${GITHUB_REF_NAME}-windows-amd64.exe" ;;
+            esac
+            cp "$f" "dist/$out"
             found=1
           done
           [ "$found" = 1 ]
 
+      # These carried no version at all — culler.deb from two releases are the
+      # same filename in a downloads folder, and nothing in them says which is
+      # which.
       - name: Collect artefacts (Linux)
         if: runner.os == 'Linux'
         run: |
           mkdir -p dist
           shopt -s nullglob
+          found=0
           for f in bin/*.AppImage bin/*.deb; do
-            cp "$f" dist/
+            cp "$f" "dist/culler-${GITHUB_REF_NAME}-linux-amd64.${f##*.}"
+            found=1
           done
-          ls dist | grep . # fail if nothing was packaged
+          [ "$found" = 1 ] # fail if nothing was packaged
 
       - uses: actions/upload-artifact@v4
         with:
