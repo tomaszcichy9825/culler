@@ -15,6 +15,16 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	// Registered for image.Decode, so a frame in one of these formats can
+	// enter the cache rather than being served whole. Everything is pure Go:
+	// HEIC and AVIF want a C library and are still passed through as they
+	// are, which works because the webview decodes them itself.
+	_ "image/gif"
+	_ "image/png"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 	"io/fs"
 	"math"
 	"os"
@@ -150,7 +160,12 @@ func (s *Store) PutOriented(key string, size Size, srcJPEG []byte, orientation i
 		return "", fmt.Errorf("thumbs: invalid size %d", size)
 	}
 
-	src, err := jpeg.Decode(bytes.NewReader(srcJPEG))
+	// image.Decode, not jpeg.Decode: the cache exists so the grid never hands
+	// a whole photograph to the webview, and a source it cannot decode gets
+	// exactly that treatment instead. Refusing everything but JPEG meant a
+	// TIFF — 228 MB is ordinary for an edited one — was streamed in full for
+	// every tile showing it. The decoders the build has are registered below.
+	src, _, err := image.Decode(bytes.NewReader(srcJPEG))
 	if err != nil {
 		return "", fmt.Errorf("thumbs: decode source for %s: %w", key, err)
 	}
