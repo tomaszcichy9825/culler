@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/tomaszcichy9825/culler/internal/config"
+	"golang.org/x/image/tiff"
 )
 
 // previewApp returns a service over stock configuration; nothing it does
@@ -205,6 +206,58 @@ func writeTestJPEG(t *testing.T, path string, w, h int) {
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A TIFF is a frame like any other and has to reach the grid as a small
+// cached JPEG. Before the cache could decode one, a TIFF failed to enter it
+// and the whole file was served instead — on the library this was found
+// against that is 228 MB per tile, over SMB, which is why they never appeared.
+func TestGridThumbOfATIFFIsASmallJPEG(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "DSCF0001.TIF")
+	writeTestTIFF(t, src, 1600, 1200)
+	full, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := previewApp(t)
+	s.thumbDir = t.TempDir()
+
+	target := PreviewRoute + "?path=" + url.QueryEscape(src) + "&tier=jpeg&size=grid&hash=deadbeef"
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grid request: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("content type %q, want image/jpeg — the webview is handed a thumbnail, not the source", ct)
+	}
+	body := rec.Body.Bytes()
+	if _, err := jpeg.Decode(bytes.NewReader(body)); err != nil {
+		t.Fatalf("the grid was served something that is not a JPEG: %v", err)
+	}
+	// The point of the cache: what crosses to the webview is a fraction of the
+	// file, not the file.
+	if int64(len(body)) >= full.Size() {
+		t.Errorf("served %d bytes for a %d byte source; the whole file is being passed through",
+			len(body), full.Size())
+	}
+}
+
+func writeTestTIFF(t *testing.T, path string, w, h int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i * 31)
+	}
+	var buf bytes.Buffer
+	if err := tiff.Encode(&buf, img, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {

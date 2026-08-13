@@ -122,3 +122,16 @@ Decisions made after the spec was extracted; these override DESIGN-SPEC.md where
   order, so walking them backwards puts the newest frames on screen first and the page grows
   downwards. The identity pass no longer reads the capture time — the frame already carries it,
   so that would be a second read of the same file.
+
+- **2026-08-13 — The thumbnail cache takes any format the build can decode.** It only ever
+  accepted JPEG bytes: `thumbs.Store.PutOriented` called `jpeg.Decode` directly, so a frame in
+  any other format failed to enter the cache and fell to the branch that serves the source file
+  whole. For the formats the webview renders itself — PNG, WebP — that was invisible and merely
+  wasteful. For TIFF it was fatal: an edited 16-bit TIFF is 228 MB, so a sheet showing nine of
+  them pushed two gigabytes across the bridge, and the tiles never arrived. `image.Decode` now
+  does the work with the pure-Go decoders registered alongside it (PNG, GIF, TIFF, BMP, WebP);
+  no new module, since `golang.org/x/image` was already a dependency, and no cgo. HEIC and AVIF
+  still pass through untouched — they want a C library, and the webview decodes them. Measured
+  on a real 228 MB TIFF: 4.8s to read over SMB and 394ms to decode and re-encode, once, for a
+  3 KB thumbnail thereafter. The full-size view of a non-JPEG frame still passes the source
+  through; only the grid is cached.
